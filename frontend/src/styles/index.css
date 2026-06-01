@@ -1,0 +1,120 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Merriweather:wght@400;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+    margin: 0;
+    padding: 0;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    background-color: #f9fafb;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+h1, h2, h3, h4, h5, h6 {
+    margin: 0;
+    font-weight: 600;
+}
+
+a {
+    color: #3b82f6; /* Tailwind's blue-500 */
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 1rem;
+}
+
+.btn {
+    @apply bg-blue-500 text-white font-bold py-2 px-4 rounded;
+}
+
+.btn:hover {
+    @apply bg-blue-600;
+}
+
+.modal {
+    @apply fixed inset-0 flex items-center justify-center z-50;
+}
+
+.loading {
+    @apply flex items-center justify-center;
+    height: 100vh;
+}
+
+.hidden {
+    display: none;
+}
+
+/* Smooth scroll */
+html {
+    scroll-behavior: smooth;
+}
+
+/* Line clamp utility */
+.line-clamp-2 {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.line-clamp-3 {
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+/* Section entrance animation */
+@keyframes fadeInUp {
+    from {
+        opacity: 0;
+        transform: translateY(24px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.animate-fade-in-up {
+    animation: fadeInUp 0.7s ease-out both;
+}
+
+/* Subtle floating animation for hero elements */
+@keyframes float {
+    0%, 100% { transform: translateY(0px); }
+    50% { transform: translateY(-8px); }
+}
+
+.animate-float {
+    animation: float 6s ease-in-out infinite;
+}
+
+/* Image hover zoom */
+.img-zoom:hover img {
+    transform: scale(1.05);
+}
+
+/* Focus ring for accessibility */
+input:focus-visible,
+button:focus-visible,
+a:focus-visible {
+    outline: 2px solid #4f46e5;
+    outline-offset: 2px;
+}
+
+/* Selection color */
+::selection {
+    background-color: #c7d2fe;
+    color: #312e81;
+}

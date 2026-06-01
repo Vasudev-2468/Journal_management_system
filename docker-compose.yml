@@ -1,0 +1,86 @@
+services:
+  db:
+    image: postgres:16
+    restart: always
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: journaladmin
+      POSTGRES_PASSWORD: journalpass
+      POSTGRES_DB: journaldb
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U journaladmin -d journaldb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - backend_network
+
+  redis:
+    image: redis:7
+    restart: always
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - backend_network
+
+  adminer:
+    image: adminer
+    restart: always
+    ports:
+      - "8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - backend_network
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: always
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: postgresql://journaladmin:journalpass@db:5432/journaldb
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - backend_network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        REACT_APP_API_URL: http://localhost:8000
+    restart: always
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: "3000"
+    networks:
+      - frontend_network
+
+networks:
+  backend_network:
+  frontend_network:
+
+volumes:
+  postgres_data:
