@@ -54,6 +54,11 @@ htmlcov/
 uploads/
 media/
 
+# Local dev SQLite databases
+*.db
+*.sqlite
+*.sqlite3
+
 # Secrets
 *.pem
 *.key

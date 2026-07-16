@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
+import { Article } from '../../types';
 
 const ArticleSearch: React.FC = () => {
     const [query, setQuery] = useState('');
-    const [results, setResults] = useState([]);
+    const [results, setResults] = useState<Article[]>([]);
 
     const handleSearch = async () => {
         // TODO: Implement the search API call to fetch articles based on the query

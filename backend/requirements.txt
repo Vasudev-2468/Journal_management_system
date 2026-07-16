@@ -14,13 +14,11 @@ mypy
 black
 flake8
 boto3
-celery[redis]
 python-jose[cryptography]
 python-multipart
 email-validator
 sendgrid
 pdfplumber
 PyMuPDF
-anthropic
-sentence-transformers
+openai
 twilio

@@ -1,30 +1,23 @@
 """
-Notification-related Celery tasks.
+Notification background tasks.
 
-These are triggered from the reviews router after a reviewer submits
-a review or the editor makes a decision.
+Originally Celery tasks; now plain functions wrapped by `InlineTask` so they
+run on a background thread without needing a broker or worker.  Router code
+still calls `task.delay(...)`, unchanged.
 """
 
 import logging
 import uuid
 
-from app.tasks.celery_app import celery_app
 from app.database import SessionLocal
+from app.tasks.inline_task import InlineTask
 
 logger = logging.getLogger(__name__)
 
 
-@celery_app.task(
-    name="notify_editor_review_complete",
-    bind=True,
-    max_retries=3,
-    default_retry_delay=30,
-)
-def notify_editor_review_complete(self, review_id: str):
-    """
-    Notify the editor that a reviewer has completed their review.
-    If all reviews for the submission are done, flag that too.
-    """
+# ── notify_editor_review_complete ────────────────────────
+
+def _notify_editor_review_complete(review_id: str) -> None:
     from app.models.review import Review, ReviewStatus
     from app.services import notification_service
 
@@ -66,26 +59,21 @@ def notify_editor_review_complete(self, review_id: str):
             all_complete,
         )
 
-    except Exception as exc:
+    except Exception:
         db.rollback()
         logger.exception("notify_editor_review_complete failed for %s", review_id)
-        raise self.retry(exc=exc)
     finally:
         db.close()
 
 
-@celery_app.task(
-    name="send_decision_to_author",
-    bind=True,
-    max_retries=3,
-    default_retry_delay=30,
-)
-def send_decision_to_author(
-    self, submission_id: str, decision: str, editor_comments: str
-):
-    """
-    Email the author with the editor's decision and comments.
-    """
+notify_editor_review_complete = InlineTask(_notify_editor_review_complete)
+
+
+# ── send_decision_to_author ──────────────────────────────
+
+def _send_decision_to_author(
+    submission_id: str, decision: str, editor_comments: str
+) -> None:
     from app.models.submission import Submission
     from app.services import notification_service
 
@@ -115,9 +103,11 @@ def send_decision_to_author(
             submission_id,
         )
 
-    except Exception as exc:
+    except Exception:
         db.rollback()
         logger.exception("send_decision_to_author failed for %s", submission_id)
-        raise self.retry(exc=exc)
     finally:
         db.close()
+
+
+send_decision_to_author = InlineTask(_send_decision_to_author)

@@ -1,39 +1,25 @@
 """
-Paper-lifecycle Celery tasks.
+Paper-lifecycle background tasks.
 
-All tasks that relate to submissions, reviewer embeddings, invitations,
-and deadline reminders live here.
+Originally Celery tasks; now plain functions wrapped by `InlineTask` so they
+run on a background thread without needing a broker or worker.  Router code
+still calls `task.delay(...)`, unchanged.
 """
 
 import logging
 import uuid
 from datetime import datetime, timedelta
 
-from app.tasks.celery_app import celery_app
 from app.database import SessionLocal
 from app.config import settings
+from app.tasks.inline_task import InlineTask
 
 logger = logging.getLogger(__name__)
 
 
-def _get_db():
-    """Create a short-lived session for use inside a Celery worker."""
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-
 # ── Task 1: process_new_submission ───────────────────────
 
-@celery_app.task(
-    name="process_new_submission",
-    bind=True,
-    max_retries=3,
-    default_retry_delay=30,
-)
-def process_new_submission(self, submission_id: str):
+def _process_new_submission(submission_id: str) -> None:
     """
     Full intake pipeline triggered right after a paper is uploaded.
 
@@ -43,6 +29,7 @@ def process_new_submission(self, submission_id: str):
     4. Notify editor (or escalate if low-confidence)
     5. Redact author information → save redacted PDF to S3
     6. Compute + store paper embedding
+    7. Trigger the agent intake pipeline
     """
     from app.models.submission import Submission, SubmissionStatus
     from app.services.pdf_processor import (
@@ -63,27 +50,22 @@ def process_new_submission(self, submission_id: str):
             logger.error("Submission %s not found — aborting.", submission_id)
             return
 
-        # Step 1 — extract abstract & title from uploaded PDF
         extracted = extract_abstract_and_intro(submission.pdf_url)
         abstract = extracted.get("abstract") or submission.abstract
         title = extracted.get("title") or submission.paper_title
 
-        # Update abstract if we got a better one from the PDF
         if extracted.get("abstract"):
             submission.abstract = abstract
 
-        # Step 2 — classify
         classification = classify_paper(abstract, title)
         classified_field = classification["classified_field"]
         confidence = classification["confidence"]
 
-        # Step 3 — persist classification
         submission.classified_field = classified_field
         submission.classification_confidence = confidence
         submission.status = SubmissionStatus.pending_assignment
         db.commit()
 
-        # Step 4 — notify editor
         if classified_field == "NEEDS_MANUAL_REVIEW":
             notification_service.notify_editor_escalation(
                 db, submission_id, reason="low_confidence"
@@ -91,46 +73,40 @@ def process_new_submission(self, submission_id: str):
         else:
             notification_service.notify_editor_new_submission(db, submission_id)
 
-        # Step 5 — redact author info
         redacted_key = redact_author_information(submission.pdf_url, submission_id)
         submission.redacted_pdf_url = redacted_key
         db.commit()
 
-        # Step 6 — compute & store paper embedding
         embedding_text = f"{classified_field} {abstract}"
         embedding = compute_text_embedding(embedding_text)
-        # Store on keywords JSON column (or a dedicated column if added later)
-        # For now we log it; the embedding is used at query time via ai_agent.match_reviewers
         logger.info(
-            "Submission %s processed — field=%s confidence=%.2f",
+            "Submission %s processed — field=%s confidence=%.2f embedding_dims=%s",
             submission_id,
             classified_field,
             confidence,
+            len(embedding) if embedding else "n/a",
         )
 
-        # Step 7 — Trigger Agent Pipeline (Stages 1+2: Acknowledge + Format Check)
         run_agent_intake_pipeline.delay(submission_id)
 
-    except Exception as exc:
+    except Exception:
         db.rollback()
         logger.exception("process_new_submission failed for %s", submission_id)
-        raise self.retry(exc=exc)
     finally:
         db.close()
 
 
+process_new_submission = InlineTask(_process_new_submission)
+
+
 # ── Task 2: compute_reviewer_embedding ───────────────────
 
-@celery_app.task(
-    name="compute_reviewer_embedding",
-    bind=True,
-    max_retries=3,
-    default_retry_delay=30,
-)
-def compute_reviewer_embedding(self, reviewer_id: str):
+def _compute_reviewer_embedding(reviewer_id: str) -> None:
     """
     Build a semantic embedding from a reviewer's expertise tags and
-    institution, then persist it on the reviewer row.
+    institution, then persist it on the reviewer row.  When no embedding
+    provider is configured `compute_text_embedding` returns None and this
+    task becomes a no-op (match_reviewers falls back to Jaccard overlap).
     """
     from app.models.reviewer import Reviewer
     from app.services.ai_agent import compute_text_embedding
@@ -151,6 +127,13 @@ def compute_reviewer_embedding(self, reviewer_id: str):
             tags_text = f"{tags_text} {reviewer.institution}"
 
         embedding = compute_text_embedding(tags_text)
+        if embedding is None:
+            logger.info(
+                "No embedding provider — skipping embedding for reviewer %s",
+                reviewer_id,
+            )
+            return
+
         reviewer.embedding_vector = embedding
         db.commit()
 
@@ -160,23 +143,19 @@ def compute_reviewer_embedding(self, reviewer_id: str):
             len(embedding),
         )
 
-    except Exception as exc:
+    except Exception:
         db.rollback()
         logger.exception("compute_reviewer_embedding failed for %s", reviewer_id)
-        raise self.retry(exc=exc)
     finally:
         db.close()
 
 
+compute_reviewer_embedding = InlineTask(_compute_reviewer_embedding)
+
+
 # ── Task 3: send_reviewer_invitations ────────────────────
 
-@celery_app.task(
-    name="send_reviewer_invitations",
-    bind=True,
-    max_retries=3,
-    default_retry_delay=30,
-)
-def send_reviewer_invitations(self, review_ids: list[str]):
+def _send_reviewer_invitations(review_ids: list[str]) -> None:
     """
     For each Review record, send an invitation email + WhatsApp to the
     assigned reviewer with their unique review link.
@@ -202,9 +181,7 @@ def send_reviewer_invitations(self, review_ids: list[str]):
                 logger.warning("Review %s missing reviewer/submission — skipping.", rid)
                 continue
 
-            review_link = (
-                f"{settings.FRONTEND_URL}/review/{review.link_token}"
-            )
+            review_link = f"{settings.FRONTEND_URL}/review/{review.link_token}"
 
             notification_service.send_reviewer_invitation(
                 db,
@@ -217,29 +194,25 @@ def send_reviewer_invitations(self, review_ids: list[str]):
 
         logger.info("Invitations sent for %d review(s).", len(review_ids))
 
-    except Exception as exc:
+    except Exception:
         db.rollback()
         logger.exception("send_reviewer_invitations failed")
-        raise self.retry(exc=exc)
     finally:
         db.close()
 
 
-# ── Task 4: send_deadline_reminders (scheduled daily) ────
+send_reviewer_invitations = InlineTask(_send_reviewer_invitations)
 
-@celery_app.task(
-    name="send_deadline_reminders",
-    bind=True,
-    max_retries=3,
-    default_retry_delay=60,
-)
-def send_deadline_reminders(self):
+
+# ── Task 4: send_deadline_reminders ──────────────────────
+
+def _send_deadline_reminders() -> None:
     """
-    Runs daily at 09:00 UTC (configured in celery_app.py beat_schedule).
+    Notify reviewers whose pending reviews expire within 3 days.
 
-    Finds all pending reviews expiring within 3 days and sends a WhatsApp
-    reminder to each reviewer.  Also notifies the editor with the total
-    pending count.
+    Originally scheduled by Celery beat.  On the free tier this runs when
+    triggered externally (e.g. cron-job.org POST to an admin endpoint)
+    or manually via a management command.
     """
     from app.models.review import Review, ReviewStatus
     from app.services import notification_service
@@ -268,9 +241,7 @@ def send_deadline_reminders(self):
             if not reviewer.whatsapp_number:
                 continue
 
-            review_link = (
-                f"{settings.FRONTEND_URL}/review/{review.link_token}"
-            )
+            review_link = f"{settings.FRONTEND_URL}/review/{review.link_token}"
 
             notification_service.send_reviewer_deadline_reminder(
                 db,
@@ -281,7 +252,6 @@ def send_deadline_reminders(self):
             )
             reminded += 1
 
-        # Notify editor with summary
         total_pending = (
             db.query(Review)
             .filter(Review.status == ReviewStatus.pending)
@@ -295,23 +265,21 @@ def send_deadline_reminders(self):
             total_pending,
         )
 
-    except Exception as exc:
+    except Exception:
         db.rollback()
         logger.exception("send_deadline_reminders failed")
-        raise self.retry(exc=exc)
     finally:
         db.close()
 
 
+send_deadline_reminders = InlineTask(_send_deadline_reminders)
+
+
 # ── Task 5: run_agent_intake_pipeline ────────────────────
 
-@celery_app.task(
-    name="run_agent_intake_pipeline",
-    bind=True,
-    max_retries=3,
-    default_retry_delay=30,
-)
-def run_agent_intake_pipeline(self, submission_id: str, consult_party_email: str = None):
+def _run_agent_intake_pipeline(
+    submission_id: str, consult_party_email: str | None = None
+) -> None:
     """
     Agent pipeline Stages 1+2: Acknowledgement + Format Validation.
     Called after process_new_submission completes classification.
@@ -321,79 +289,66 @@ def run_agent_intake_pipeline(self, submission_id: str, consult_party_email: str
     db = SessionLocal()
     try:
         orchestrator = AgentOrchestrator(db)
-        result = orchestrator.run_intake_pipeline(
+        orchestrator.run_intake_pipeline(
             uuid.UUID(submission_id),
             consult_party_email=consult_party_email,
         )
         logger.info("Agent intake pipeline completed for %s", submission_id)
-        return result
-    except Exception as exc:
+    except Exception:
         db.rollback()
         logger.exception("run_agent_intake_pipeline failed for %s", submission_id)
-        raise self.retry(exc=exc)
     finally:
         db.close()
+
+
+run_agent_intake_pipeline = InlineTask(_run_agent_intake_pipeline)
 
 
 # ── Task 6: run_agent_reviewer_suggestion ────────────────
 
-@celery_app.task(
-    name="run_agent_reviewer_suggestion",
-    bind=True,
-    max_retries=3,
-    default_retry_delay=30,
-)
-def run_agent_reviewer_suggestion(self, submission_id: str, provided_reviewers: list = None):
-    """
-    Agent pipeline Stage 3: Reviewer suggestion.
-    Called when consult party submits their review.
-    """
+def _run_agent_reviewer_suggestion(
+    submission_id: str, provided_reviewers: list | None = None
+) -> None:
     from app.agents.orchestrator import AgentOrchestrator
 
     db = SessionLocal()
     try:
         orchestrator = AgentOrchestrator(db)
-        result = orchestrator.run_reviewer_suggestion(
+        orchestrator.run_reviewer_suggestion(
             uuid.UUID(submission_id),
             provided_reviewers=provided_reviewers,
         )
         logger.info("Agent reviewer suggestion completed for %s", submission_id)
-        return result
-    except Exception as exc:
+    except Exception:
         db.rollback()
         logger.exception("run_agent_reviewer_suggestion failed for %s", submission_id)
-        raise self.retry(exc=exc)
     finally:
         db.close()
 
 
+run_agent_reviewer_suggestion = InlineTask(_run_agent_reviewer_suggestion)
+
+
 # ── Task 7: run_agent_reviewer_assignment ────────────────
 
-@celery_app.task(
-    name="run_agent_reviewer_assignment",
-    bind=True,
-    max_retries=3,
-    default_retry_delay=30,
-)
-def run_agent_reviewer_assignment(self, submission_id: str, reviewer_ids: list):
-    """
-    Agent pipeline Stages 4+5: Link generation + Notifications.
-    Called when editor finalizes reviewer selection.
-    """
+def _run_agent_reviewer_assignment(
+    submission_id: str, reviewer_ids: list
+) -> None:
     from app.agents.orchestrator import AgentOrchestrator
 
     db = SessionLocal()
     try:
         orchestrator = AgentOrchestrator(db)
-        result = orchestrator.run_reviewer_assignment(
+        orchestrator.run_reviewer_assignment(
             uuid.UUID(submission_id),
             [uuid.UUID(rid) for rid in reviewer_ids],
         )
         logger.info("Agent reviewer assignment completed for %s", submission_id)
-        return result
-    except Exception as exc:
+    except Exception:
         db.rollback()
         logger.exception("run_agent_reviewer_assignment failed for %s", submission_id)
-        raise self.retry(exc=exc)
     finally:
         db.close()
+
+
+run_agent_reviewer_assignment = InlineTask(_run_agent_reviewer_assignment)

@@ -1,17 +1,18 @@
 import React, { useEffect, useState } from 'react';
-import { getArticles } from '../../api/articles';
+import { fetchArticles } from '../../api/articles';
+import { Article } from '../../types';
 import ArticleCard from './ArticleCard';
 
 const ArticleList: React.FC = () => {
-    const [articles, setArticles] = useState([]);
+    const [articles, setArticles] = useState<Article[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
-        const fetchArticles = async () => {
+        const loadArticles = async () => {
             try {
-                const response = await getArticles();
-                setArticles(response.data);
+                const data = await fetchArticles();
+                setArticles(data);
             } catch (err) {
                 setError('Failed to fetch articles');
             } finally {
@@ -19,7 +20,7 @@ const ArticleList: React.FC = () => {
             }
         };
 
-        fetchArticles();
+        loadArticles();
     }, []);
 
     if (loading) {

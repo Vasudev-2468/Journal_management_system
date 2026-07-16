@@ -1,16 +1,22 @@
 import React, { useEffect, useState } from 'react';
 import { fetchReviews } from '../../api/reviews';
+import { Review } from '../../types';
 import ReviewForm from './ReviewForm';
 
-const ReviewPanel: React.FC = () => {
-    const [reviews, setReviews] = useState([]);
-    const [loading, setLoading] = useState(true);
+interface ReviewPanelProps {
+    review?: Review;
+}
+
+const ReviewPanel: React.FC<ReviewPanelProps> = ({ review }) => {
+    const [reviews, setReviews] = useState<Review[]>(review ? [review] : []);
+    const [loading, setLoading] = useState(!review);
 
     useEffect(() => {
-        const fetchReviews = async () => {
+        if (review) return;
+        const loadReviews = async () => {
             try {
-                const response = await fetchReviews();
-                setReviews(response.data);
+                const data = await fetchReviews();
+                setReviews(data);
             } catch (error) {
                 console.error('Error fetching reviews:', error);
             } finally {
@@ -18,8 +24,8 @@ const ReviewPanel: React.FC = () => {
             }
         };
 
-        fetchReviews();
-    }, []);
+        loadReviews();
+    }, [review]);
 
     return (
         <div className="review-panel">
@@ -28,10 +34,10 @@ const ReviewPanel: React.FC = () => {
                 <p>Loading reviews...</p>
             ) : (
                 <ul>
-                    {reviews.map((review) => (
-                        <li key={review.id} className="border-b py-2">
-                            <p className="font-semibold">{review.title}</p>
-                            <p>{review.content}</p>
+                    {reviews.map((r) => (
+                        <li key={r.id} className="border-b py-2">
+                            {r.title && <p className="font-semibold">{r.title}</p>}
+                            <p>{r.content}</p>
                         </li>
                     ))}
                 </ul>

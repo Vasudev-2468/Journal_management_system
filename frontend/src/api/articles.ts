@@ -26,7 +26,7 @@ export const fetchArticleById = async (id: string): Promise<Article> => {
 };
 
 // Function to create a new article
-export const createArticle = async (articleData: Article): Promise<Article> => {
+export const createArticle = async (articleData: Omit<Article, 'id'>): Promise<Article> => {
     try {
         const response = await axios.post(API_URL, articleData);
         return response.data;

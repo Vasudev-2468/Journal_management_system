@@ -14,6 +14,7 @@ import EditorialBoardPage from './pages/EditorialBoardPage';
 import ForAuthorsPage from './pages/ForAuthorsPage';
 import ForReviewersPage from './pages/ForReviewersPage';
 import IssuesArchivesPage from './pages/IssuesArchivesPage';
+import IssueDetailPage from './pages/IssueDetailPage';
 import ConsultPartyDashboard from './pages/ConsultPartyDashboard';
 import EditorLoginPage from './pages/EditorLoginPage';
 import AuthorLoginPage from './pages/AuthorLoginPage';
@@ -52,6 +53,7 @@ const App: React.FC = () => {
                     <Route path="/for-authors" element={<ForAuthorsPage />} />
                     <Route path="/for-reviewers" element={<ForReviewersPage />} />
                     <Route path="/issues" element={<IssuesArchivesPage />} />
+                    <Route path="/issues/:volume/:issue" element={<IssueDetailPage />} />
                     <Route path="/consult-party/:submissionId" element={
                         <ProtectedEditorRoute>
                             <ConsultPartyDashboard />

@@ -4,7 +4,7 @@ const Loading: React.FC = () => {
     return (
         <div className="flex items-center justify-center h-screen">
             <div className="loader"></div>
-            <style jsx>{`
+            <style>{`
                 .loader {
                     border: 8px solid rgba(255, 255, 255, 0.3);
                     border-left-color: #ffffff;
