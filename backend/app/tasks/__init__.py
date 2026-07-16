@@ -1,9 +1,12 @@
 """
-tasks package — re-exports the celery app and all task functions so existing
+tasks package — re-exports each background task so existing
 ``from app.tasks import <task>`` imports continue to work.
+
+All tasks are `InlineTask` instances (`.delay()` / `.apply_async()` fire a
+background thread).  If you later re-introduce Celery, swap `InlineTask` for
+`@celery_app.task` in each individual task module and re-export from here.
 """
 
-from app.tasks.celery_app import celery_app
 from app.tasks.paper_tasks import (
     process_new_submission,
     compute_reviewer_embedding,
@@ -19,7 +22,6 @@ from app.tasks.notification_tasks import (
 )
 
 __all__ = [
-    "celery_app",
     "process_new_submission",
     "compute_reviewer_embedding",
     "send_reviewer_invitations",

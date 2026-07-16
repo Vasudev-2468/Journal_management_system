@@ -21,16 +21,20 @@ export interface Article {
     id: number;
     title: string;
     content: string;
-    journalId: number;
+    journalId?: number;
+    author?: string;
+    abstract?: string;
     // Add more fields as necessary
 }
 
 // TODO: Define review-related types
 export interface Review {
     id: number;
-    articleId: number;
-    reviewerId: number;
+    articleId?: number;
+    reviewerId?: number;
     content: string;
+    title?: string;
+    rating?: number;
     // Add more fields as necessary
 }
 

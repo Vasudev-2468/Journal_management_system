@@ -1,8 +1,13 @@
 """
 AI agent service: paper classification, text embeddings, and reviewer matching.
 
-Uses the Anthropic Python SDK for classification and sentence-transformers
-for cost-efficient embedding generation.
+Both classification and embeddings run through the OpenAI Python SDK:
+  * classify_paper()          → chat completions on ``gpt-4o-mini``
+  * compute_text_embedding()  → embeddings on ``text-embedding-3-small``
+
+Set ``OPENAI_API_KEY`` in the environment (or .env) to enable either.  When
+the key is unset ``compute_text_embedding()`` returns None and reviewer
+matching gracefully falls back to Jaccard keyword overlap.
 """
 
 import json
@@ -12,8 +17,7 @@ import time
 import uuid
 from typing import List, Optional
 
-import anthropic
-from sentence_transformers import SentenceTransformer
+from openai import OpenAI
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -51,23 +55,17 @@ CLASSIFY_SYSTEM_PROMPT = (
     '"reasoning": "<string, max 2 sentences>"}'
 )
 
-CLAUDE_MODEL = "claude-sonnet-4-20250514"
+OPENAI_CHAT_MODEL = "gpt-4o-mini"
+OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
 MAX_RETRIES = 3
-EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
-
-# Lazy-loaded singleton so the model is only downloaded once per process.
-_embedding_model: Optional[SentenceTransformer] = None
 
 
-def _get_embedding_model() -> SentenceTransformer:
-    global _embedding_model
-    if _embedding_model is None:
-        _embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
-    return _embedding_model
-
-
-def _get_anthropic_client() -> anthropic.Anthropic:
-    return anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+def _get_openai_client() -> OpenAI:
+    if not settings.OPENAI_API_KEY:
+        raise RuntimeError(
+            "OPENAI_API_KEY is not configured — cannot call OpenAI."
+        )
+    return OpenAI(api_key=settings.OPENAI_API_KEY)
 
 
 # ── Retry helper ─────────────────────────────────────────
@@ -96,7 +94,7 @@ def _retry_with_backoff(fn, max_retries: int = MAX_RETRIES):
 
 def classify_paper(abstract: str, title: str) -> dict:
     """
-    Call Claude to classify a paper into one of JOURNAL_SCOPE_CATEGORIES.
+    Ask OpenAI to classify a paper into one of JOURNAL_SCOPE_CATEGORIES.
 
     Returns:
         {"classified_field": str, "confidence": float, "reasoning": str}
@@ -104,7 +102,7 @@ def classify_paper(abstract: str, title: str) -> dict:
     If confidence < 0.6 the classified_field is overridden to
     ``NEEDS_MANUAL_REVIEW``.
     """
-    client = _get_anthropic_client()
+    client = _get_openai_client()
 
     user_message = (
         f"Title: {title}\n\n"
@@ -112,21 +110,24 @@ def classify_paper(abstract: str, title: str) -> dict:
         f"Categories: {json.dumps(JOURNAL_SCOPE_CATEGORIES)}"
     )
 
-    def _call():
-        response = client.messages.create(
-            model=CLAUDE_MODEL,
+    def _call() -> str:
+        response = client.chat.completions.create(
+            model=OPENAI_CHAT_MODEL,
             max_tokens=500,
-            system=CLASSIFY_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_message}],
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": CLASSIFY_SYSTEM_PROMPT},
+                {"role": "user", "content": user_message},
+            ],
         )
-        return response.content[0].text
+        return response.choices[0].message.content or ""
 
     raw_text = _retry_with_backoff(_call)
 
     try:
         result = json.loads(raw_text)
     except json.JSONDecodeError:
-        logger.error("Claude returned non-JSON: %s", raw_text[:200])
+        logger.error("OpenAI returned non-JSON: %s", raw_text[:200])
         return {
             "classified_field": "NEEDS_MANUAL_REVIEW",
             "confidence": 0.0,
@@ -148,16 +149,33 @@ def classify_paper(abstract: str, title: str) -> dict:
 
 # ── Function 2: compute_text_embedding ───────────────────
 
-def compute_text_embedding(text: str) -> list[float]:
+def compute_text_embedding(text: str) -> Optional[list[float]]:
     """
-    Generate a normalised embedding vector for *text* using
-    sentence-transformers (all-MiniLM-L6-v2).
+    Generate a 1536-dim embedding for *text* via OpenAI.
 
-    Returns a list of floats (384 dimensions).
+    Returns None when ``OPENAI_API_KEY`` is not configured or the input is
+    empty.  Callers must treat None as "embedding unavailable" and fall back
+    accordingly (see :func:`match_reviewers`).
     """
-    model = _get_embedding_model()
-    embedding = model.encode(text, normalize_embeddings=True)
-    return embedding.tolist()
+    if not settings.OPENAI_API_KEY:
+        return None
+    if not text or not text.strip():
+        return None
+
+    client = _get_openai_client()
+
+    def _call() -> list[float]:
+        response = client.embeddings.create(
+            model=OPENAI_EMBEDDING_MODEL,
+            input=text[:8000],
+        )
+        return response.data[0].embedding
+
+    try:
+        return _retry_with_backoff(_call)
+    except Exception:
+        logger.exception("OpenAI embedding request failed; returning None")
+        return None
 
 
 # ── Function 3: match_reviewers ──────────────────────────
@@ -172,14 +190,23 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
+def _jaccard(submission: Submission, reviewer: Reviewer) -> float:
+    """Keyword-overlap fallback when embeddings are unavailable."""
+    kw = set(kw.lower() for kw in (submission.keywords or []))
+    tags = set(t.lower() for t in (reviewer.expertise_tags or []))
+    total = len(kw | tags) or 1
+    return len(kw & tags) / total
+
+
 def match_reviewers(
     db: Session, submission_id: uuid.UUID, top_k: int = 5
 ) -> List[dict]:
     """
     Return the top-k reviewers best matching a submission using cosine
     similarity between the submission embedding and stored reviewer
-    embeddings.  Falls back to keyword-overlap scoring if embeddings are
-    not yet available.
+    embeddings.  Falls back to keyword-overlap scoring when either
+    the paper embedding or the reviewer embedding is unavailable
+    (e.g. no OPENAI_API_KEY configured).
 
     Each result dict contains:
         reviewer_id, name, email, expertise_tags, current_load,
@@ -200,20 +227,19 @@ def match_reviewers(
         .all()
     )
 
-    # Build a paper embedding from abstract + classified_field
     paper_text = f"{submission.classified_field or ''} {submission.abstract or ''}"
     paper_embedding = compute_text_embedding(paper_text)
 
     scored: List[dict] = []
     for r in reviewers:
-        if r.embedding_vector and isinstance(r.embedding_vector, list):
+        if (
+            paper_embedding is not None
+            and r.embedding_vector
+            and isinstance(r.embedding_vector, list)
+        ):
             score = _cosine_similarity(paper_embedding, r.embedding_vector)
         else:
-            # Fallback: keyword overlap (Jaccard)
-            kw = set(kw.lower() for kw in (submission.keywords or []))
-            tags = set(t.lower() for t in (r.expertise_tags or []))
-            total = len(kw | tags) or 1
-            score = len(kw & tags) / total
+            score = _jaccard(submission, r)
 
         scored.append(
             {

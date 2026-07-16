@@ -10,8 +10,8 @@ const AIInsightsPage: React.FC = () => {
     useEffect(() => {
         const getInsights = async () => {
             try {
-                const data = await fetchAIInsights();
-                setInsights(data);
+                const data = await fetchAIInsights({});
+                setInsights(Array.isArray(data) ? data : []);
             } catch (err) {
                 setError('Failed to fetch AI insights');
             } finally {

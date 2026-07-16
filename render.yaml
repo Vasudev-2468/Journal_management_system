@@ -1,0 +1,71 @@
+# Render Blueprint — one-click deploy for the backend on Render's free tier.
+# See https://render.com/docs/blueprint-spec
+#
+# What this deploys:
+#   1. A FastAPI web service backed by uvicorn.
+#
+# What you still need to provision (outside this file):
+#   - PostgreSQL — recommended: Neon (free 3 GB).  Set DATABASE_URL env var
+#     on the service dashboard after this blueprint deploys.
+#   - Optional: Voyage AI API key for embeddings (free tier available).
+#     Without it, reviewer matching falls back to keyword overlap.
+#
+# Deploy steps:
+#   1. Push the repo to GitHub.
+#   2. In Render → "New +" → "Blueprint" → point at your repo.
+#   3. Render provisions the service.  Open the service → "Environment"
+#      and fill in DATABASE_URL, SECRET_KEY, ANTHROPIC_API_KEY,
+#      ALLOW_ORIGINS, etc.
+#   4. First deploy runs Alembic migrations automatically on startup.
+
+services:
+  - type: web
+    name: journal-backend
+    runtime: python
+    rootDir: backend
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      # Required — fill these in on the Render dashboard after first deploy.
+      - key: DATABASE_URL
+        sync: false
+      - key: SECRET_KEY
+        generateValue: true
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      # CORS — replace with your frontend origin after Vercel/CF Pages deploy.
+      - key: ALLOW_ORIGINS
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      # Optional
+      - key: VOYAGE_API_KEY
+        sync: false
+      - key: SENDGRID_API_KEY
+        sync: false
+      - key: SENDGRID_FROM_EMAIL
+        sync: false
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_WHATSAPP_FROM
+        sync: false
+      - key: EDITOR_WHATSAPP_NUMBER
+        sync: false
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: AWS_S3_BUCKET_NAME
+        sync: false
+      - key: AWS_REGION
+        value: auto
+      - key: SIMILARITY_THRESHOLD
+        value: "0.60"
+      - key: JWT_EXPIRE_DAYS
+        value: "14"
+      - key: ALGORITHM
+        value: HS256

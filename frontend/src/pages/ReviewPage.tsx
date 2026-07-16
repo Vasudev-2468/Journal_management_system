@@ -1,17 +1,18 @@
 import React, { useEffect, useState } from 'react';
 import { fetchReviews as getReviews } from '../api/reviews';
+import { Review } from '../types';
 import ReviewPanel from '../components/reviews/ReviewPanel';
 
 const ReviewPage: React.FC = () => {
-    const [reviews, setReviews] = useState([]);
+    const [reviews, setReviews] = useState<Review[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
-        const fetchReviews = async () => {
+        const loadReviews = async () => {
             try {
-                const response = await getReviews();
-                setReviews(response.data);
+                const data = await getReviews();
+                setReviews(data);
             } catch (err) {
                 setError('Failed to fetch reviews');
             } finally {
@@ -19,7 +20,7 @@ const ReviewPage: React.FC = () => {
             }
         };
 
-        fetchReviews();
+        loadReviews();
     }, []);
 
     if (loading) {

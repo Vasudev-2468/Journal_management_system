@@ -3,6 +3,14 @@ import { Link } from 'react-router-dom';
 import Header from '../components/layout/Header';
 import Footer from '../components/layout/Footer';
 import JournalLogo from '../components/common/JournalLogo';
+import {
+    volumes,
+    categoryColor,
+    statusBadge,
+    getCurrentIssue,
+    getForthcomingIssue,
+    pageRangeFor,
+} from '../data/issues';
 
 /* ── Images & Video ──────────────────────────────────── */
 const IMG = {
@@ -13,123 +21,22 @@ const IMG = {
 };
 const HERO_VIDEO = 'https://videos.pexels.com/video-files/7710243/7710243-hd_1920_1080_30fps.mp4';
 
-/* ── Volume / Issue data ─────────────────────────────── */
-
-interface ArticleEntry {
-    id: number;
-    title: string;
-    authors: string;
-    pages: string;
-    doi: string;
-    category: string;
-}
-
-interface Issue {
-    number: number;
-    month: string;
-    status: 'published' | 'forthcoming' | 'accepting' | 'not-open';
-    articleCount: number;
-    articles: ArticleEntry[];
-    deadline?: string;
-    theme?: string;
-}
-
-interface Volume {
-    volume: number;
-    year: number;
-    issues: Issue[];
-}
-
-const categoryColor: Record<string, string> = {
-    'Deep Learning': 'bg-blue-100 text-blue-700',
-    'AI for Healthcare': 'bg-emerald-100 text-emerald-700',
-    'Edge AI': 'bg-orange-100 text-orange-700',
-    'Generative AI': 'bg-purple-100 text-purple-700',
-    'AI Ethics': 'bg-rose-100 text-rose-700',
-    NLP: 'bg-sky-100 text-sky-700',
-    'Computer Vision': 'bg-teal-100 text-teal-700',
-    'Reinforcement Learning': 'bg-amber-100 text-amber-700',
-    Robotics: 'bg-indigo-100 text-indigo-700',
-    'Federated Learning': 'bg-lime-100 text-lime-700',
-    Editorial: 'bg-gray-100 text-gray-700',
-    'Review Article': 'bg-violet-100 text-violet-700',
-    'Short Communication': 'bg-cyan-100 text-cyan-700',
-};
-
-const statusBadge: Record<string, { text: string; color: string }> = {
-    published: { text: 'Published', color: 'bg-emerald-100 text-emerald-700' },
-    forthcoming: { text: 'Forthcoming', color: 'bg-amber-100 text-amber-700' },
-    accepting: { text: 'Accepting Submissions', color: 'bg-blue-100 text-blue-700' },
-    'not-open': { text: 'Not Yet Open', color: 'bg-gray-100 text-gray-500' },
-};
-
-const volumes: Volume[] = [
-    {
-        volume: 1,
-        year: 2026,
-        issues: [
-            {
-                number: 1,
-                month: 'March',
-                status: 'published',
-                articleCount: 8,
-                theme: 'Inaugural Issue',
-                articles: [
-                    { id: 1, title: 'Editorial: Welcome to the International Journal of AI & Computing Research', authors: 'Dr. Sarah Mitchell (Editor-in-Chief)', pages: 'i–iv', doi: '10.xxxxx/ijacr.2026.01.000', category: 'Editorial' },
-                    { id: 2, title: 'Transformer-Based Architectures for Multi-Modal Learning: A Comprehensive Survey', authors: 'J. Chen, A. Kumar, M. Rodriguez', pages: '1–28', doi: '10.xxxxx/ijacr.2026.01.001', category: 'Deep Learning' },
-                    { id: 3, title: 'Federated Learning with Differential Privacy Guarantees for Healthcare Applications', authors: 'S. Patel, L. Wang, R. Müller', pages: '29–48', doi: '10.xxxxx/ijacr.2026.01.002', category: 'AI for Healthcare' },
-                    { id: 4, title: 'Energy-Efficient Edge AI: Compiler Optimizations for Neural Network Inference on IoT Devices', authors: 'K. Nakamura, F. Silva, D. Kim', pages: '49–67', doi: '10.xxxxx/ijacr.2026.01.003', category: 'Edge AI' },
-                    { id: 5, title: 'Causal Reasoning in Large Language Models: Benchmarks, Methods, and Open Challenges', authors: 'P. Gupta, E. Thompson, Y. Zhang', pages: '68–89', doi: '10.xxxxx/ijacr.2026.01.004', category: 'Generative AI' },
-                    { id: 6, title: 'State of Explainable AI: A 2026 Survey', authors: 'Fei-Fei Li, Yoshua Bengio', pages: '90–125', doi: '10.xxxxx/ijacr.2026.01.005', category: 'Review Article' },
-                    { id: 7, title: 'A Note on Reproducibility in Reinforcement Learning', authors: 'David Silver', pages: '126–132', doi: '10.xxxxx/ijacr.2026.01.006', category: 'Short Communication' },
-                    { id: 8, title: 'Explainable AI for Autonomous Driving: Integrating Visual Saliency with Decision Rationale', authors: 'T. Anderson, H. Liu, C. Fernandez', pages: '133–155', doi: '10.xxxxx/ijacr.2026.01.007', category: 'AI Ethics' },
-                ],
-            },
-            {
-                number: 2,
-                month: 'June',
-                status: 'accepting',
-                articleCount: 0,
-                deadline: 'April 30, 2026',
-                articles: [],
-            },
-            {
-                number: 3,
-                month: 'September',
-                status: 'accepting',
-                articleCount: 0,
-                deadline: 'July 15, 2026',
-                theme: 'Special Section: Trustworthy AI',
-                articles: [],
-            },
-            {
-                number: 4,
-                month: 'December',
-                status: 'not-open',
-                articleCount: 0,
-                deadline: 'October 15, 2026',
-                articles: [],
-            },
-        ],
-    },
-    {
-        volume: 2,
-        year: 2027,
-        issues: [
-            { number: 1, month: 'March', status: 'not-open', articleCount: 0, articles: [] },
-            { number: 2, month: 'June', status: 'not-open', articleCount: 0, articles: [] },
-            { number: 3, month: 'September', status: 'not-open', articleCount: 0, articles: [] },
-            { number: 4, month: 'December', status: 'not-open', articleCount: 0, articles: [] },
-        ],
-    },
-];
-
 /* ── Archiving Partners ──────────────────────────────── */
 const archivePartners = [
     { name: 'CLOCKSS', purpose: 'Dark archive for disaster recovery', icon: '🔒' },
     { name: 'Portico', purpose: 'Digital preservation', icon: '🏛️' },
     { name: 'Internet Archive', purpose: 'Public backup & long-term access', icon: '🌐' },
     { name: 'Crossref DOI', purpose: 'Persistent article identification', icon: '🔗' },
+];
+
+/* ── Indexing / Abstracting ──────────────────────────── */
+const indexingServices = [
+    { name: 'Scopus', label: 'Indexing (applied)', tint: 'bg-orange-50 text-orange-800 border-orange-200' },
+    { name: 'DOAJ', label: 'Open access directory', tint: 'bg-emerald-50 text-emerald-800 border-emerald-200' },
+    { name: 'Crossref', label: 'DOI registration', tint: 'bg-sky-50 text-sky-800 border-sky-200' },
+    { name: 'Google Scholar', label: 'Full-text indexed', tint: 'bg-blue-50 text-blue-800 border-blue-200' },
+    { name: 'DBLP', label: 'CS bibliography', tint: 'bg-violet-50 text-violet-800 border-violet-200' },
+    { name: 'OpenAIRE', label: 'Open science network', tint: 'bg-teal-50 text-teal-800 border-teal-200' },
 ];
 
 /* ── Reader Features ─────────────────────────────────── */
@@ -170,6 +77,9 @@ const IssuesArchivesPage: React.FC = () => {
     }, []);
 
     const activeVolume = volumes.find((v) => v.volume === selectedVolume)!;
+    const current = getCurrentIssue();
+    const forthcoming = getForthcomingIssue();
+    const currentPageRange = current ? pageRangeFor(current.issue) : null;
 
     const toggleIssue = (key: string) => {
         setExpandedIssue(expandedIssue === key ? null : key);
@@ -227,23 +137,159 @@ const IssuesArchivesPage: React.FC = () => {
 
             <main className="flex-1">
 
-                {/* ── Call for Papers Banner ──────────────── */}
-                <section className="bg-gradient-to-r from-amber-50 to-amber-100 border-b border-amber-200">
-                    <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex flex-col sm:flex-row items-center justify-between gap-3">
-                        <div className="flex items-center gap-3">
-                            <span className="text-2xl">📢</span>
-                            <div>
-                                <p className="text-sm font-bold text-amber-900">Call for Papers — Volume 1, Issue 2 (June 2026)</p>
-                                <p className="text-xs text-amber-700">Submission deadline: April 30, 2026 · All topics within scope</p>
+                {/* ── 1. Current Issue (featured) ─────────── */}
+                {current && (
+                    <section className="py-12 bg-white border-b border-gray-100">
+                        <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
+                            <div className="text-center mb-8">
+                                <span className="text-brand-600 text-sm font-bold uppercase tracking-wider">Current Issue</span>
+                                <h2 className="text-3xl font-extrabold text-gray-900 mt-2 tracking-tight">
+                                    Latest from IJACR
+                                </h2>
+                            </div>
+                            <div className="bg-gradient-to-br from-brand-50 via-white to-brand-50/50 rounded-3xl border border-brand-100 shadow-xl overflow-hidden">
+                                <div className="grid lg:grid-cols-5 gap-0">
+                                    {/* Cover */}
+                                    <div className="lg:col-span-2 bg-gradient-to-br from-brand-600 to-brand-900 p-10 flex items-center justify-center">
+                                        <div className="aspect-[3/4] w-full max-w-[220px] rounded-xl bg-gradient-to-br from-brand-500 to-brand-800 border-4 border-white/15 shadow-2xl flex flex-col items-center justify-center p-6">
+                                            <span className="text-brand-100 text-[10px] font-bold uppercase tracking-widest">IJACR</span>
+                                            <p className="mt-3 text-brand-100 text-xs font-semibold">Volume {current.volume.volume}</p>
+                                            <p className="text-white text-5xl font-extrabold my-2">{current.issue.number}</p>
+                                            <p className="text-brand-100 text-xs font-semibold">{current.issue.month} {current.volume.year}</p>
+                                            {current.issue.theme && (
+                                                <div className="mt-5 pt-4 border-t border-white/20 w-full">
+                                                    <p className="text-[10px] text-brand-100 text-center italic">{current.issue.theme}</p>
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+
+                                    {/* Meta */}
+                                    <div className="lg:col-span-3 p-8 lg:p-10 flex flex-col justify-center">
+                                        <div className="flex flex-wrap items-center gap-2 mb-2">
+                                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-emerald-100 text-emerald-700 text-[11px] font-bold rounded-full">
+                                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" /> Just Published
+                                            </span>
+                                            <span className="text-xs text-gray-500 font-semibold">
+                                                {current.issue.month} {current.volume.year}
+                                            </span>
+                                        </div>
+                                        <h3 className="text-2xl sm:text-3xl font-extrabold text-gray-900 tracking-tight">
+                                            Volume {current.volume.volume}, Issue {current.issue.number}
+                                        </h3>
+                                        {current.issue.theme && (
+                                            <p className="mt-1 text-sm font-semibold text-brand-700">{current.issue.theme}</p>
+                                        )}
+                                        {current.issue.editorialNote && (
+                                            <p className="mt-4 text-sm text-gray-600 leading-relaxed">
+                                                {current.issue.editorialNote}
+                                            </p>
+                                        )}
+
+                                        <div className="mt-5 grid grid-cols-3 gap-3 text-center">
+                                            <div className="bg-white rounded-xl border border-gray-100 py-3 px-2">
+                                                <p className="text-2xl font-extrabold text-brand-700">{current.issue.articleCount}</p>
+                                                <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">Articles</p>
+                                            </div>
+                                            <div className="bg-white rounded-xl border border-gray-100 py-3 px-2">
+                                                <p className="text-sm font-extrabold text-brand-700 mt-1.5">{currentPageRange ?? '—'}</p>
+                                                <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mt-0.5">Pages</p>
+                                            </div>
+                                            <div className="bg-white rounded-xl border border-gray-100 py-3 px-2">
+                                                <p className="text-sm font-extrabold text-brand-700 mt-1.5 font-mono">10.xxxxx</p>
+                                                <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mt-0.5">DOI Prefix</p>
+                                            </div>
+                                        </div>
+
+                                        <div className="mt-6 flex flex-wrap gap-3">
+                                            <Link
+                                                to={`/issues/${current.volume.volume}/${current.issue.number}`}
+                                                className="inline-flex items-center gap-2 px-6 py-3 bg-brand-600 text-white text-sm font-bold rounded-xl hover:bg-brand-700 transition shadow-lg no-underline"
+                                            >
+                                                Browse Issue →
+                                            </Link>
+                                            <button className="inline-flex items-center gap-2 px-6 py-3 bg-white text-gray-700 border border-gray-200 text-sm font-bold rounded-xl hover:bg-gray-50 transition">
+                                                📥 Download PDF
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
                         </div>
-                        <Link to="/author-login" className="px-5 py-2 bg-amber-600 text-white text-sm font-bold rounded-lg hover:bg-amber-700 transition no-underline flex-shrink-0">
-                            Submit Manuscript →
-                        </Link>
-                    </div>
-                </section>
+                    </section>
+                )}
 
-                {/* ── Archive Search ──────────────────────── */}
+                {/* ── 2. Forthcoming / Articles in Press ──── */}
+                {forthcoming && (
+                    <section className="py-12 bg-gradient-to-r from-amber-50 to-orange-50 border-b border-amber-100">
+                        <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
+                            <div className="text-center mb-8">
+                                <span className="text-amber-700 text-sm font-bold uppercase tracking-wider">Forthcoming</span>
+                                <h2 className="text-3xl font-extrabold text-gray-900 mt-2 tracking-tight">
+                                    Articles in Press
+                                </h2>
+                                <p className="text-sm text-gray-500 mt-2 max-w-xl mx-auto">
+                                    Accepted, citable articles will appear here before the issue is formally compiled.
+                                </p>
+                            </div>
+
+                            <div className="grid lg:grid-cols-3 gap-6">
+                                {/* CFP card */}
+                                <div className="bg-white rounded-2xl border-2 border-amber-200 p-6 shadow-sm">
+                                    <span className="inline-block px-2.5 py-1 bg-amber-100 text-amber-800 text-[11px] font-bold rounded-full mb-3">
+                                        📢 Call for Papers
+                                    </span>
+                                    <h3 className="text-lg font-extrabold text-gray-900">
+                                        Volume {forthcoming.volume.volume}, Issue {forthcoming.issue.number}
+                                    </h3>
+                                    <p className="text-sm font-semibold text-amber-700 mt-0.5">
+                                        {forthcoming.issue.month} {forthcoming.volume.year}
+                                    </p>
+                                    {forthcoming.issue.theme && (
+                                        <p className="mt-3 text-xs text-gray-600 italic">
+                                            Theme: {forthcoming.issue.theme}
+                                        </p>
+                                    )}
+                                    <div className="mt-4 space-y-2 text-xs">
+                                        <p className="text-gray-500">
+                                            <span className="font-semibold text-gray-700">Submission deadline:</span> {forthcoming.issue.deadline || 'TBA'}
+                                        </p>
+                                        <p className="text-gray-500">
+                                            <span className="font-semibold text-gray-700">Expected publication:</span> {forthcoming.issue.month} {forthcoming.volume.year}
+                                        </p>
+                                        <p className="text-gray-500">
+                                            <span className="font-semibold text-gray-700">Scope:</span> All topics within journal scope
+                                        </p>
+                                    </div>
+                                    <Link
+                                        to="/author-login"
+                                        className="mt-5 inline-flex items-center gap-2 w-full justify-center px-4 py-2.5 bg-amber-600 text-white text-sm font-bold rounded-lg hover:bg-amber-700 transition no-underline"
+                                    >
+                                        Submit Manuscript →
+                                    </Link>
+                                </div>
+
+                                {/* Accepted-articles placeholder */}
+                                <div className="lg:col-span-2 bg-white rounded-2xl border border-gray-200 p-8 flex flex-col justify-center items-center text-center">
+                                    <span className="text-4xl mb-3 block">📝</span>
+                                    <h3 className="text-lg font-bold text-gray-900">
+                                        No accepted articles yet
+                                    </h3>
+                                    <p className="text-sm text-gray-500 mt-2 max-w-md">
+                                        Once the editorial team accepts a manuscript for Issue {forthcoming.issue.number}, it will be listed here with full DOI and PDF — citable before the issue is compiled.
+                                    </p>
+                                    <div className="mt-5 flex flex-wrap justify-center gap-2 text-[11px] text-gray-400">
+                                        <span className="px-2.5 py-1 bg-gray-50 border border-gray-100 rounded-full">Online-first workflow</span>
+                                        <span className="px-2.5 py-1 bg-gray-50 border border-gray-100 rounded-full">Individual DOI on acceptance</span>
+                                        <span className="px-2.5 py-1 bg-gray-50 border border-gray-100 rounded-full">Rolling publication</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </section>
+                )}
+
+                {/* ── 3. Archive Search ───────────────────── */}
                 <section className="py-8 bg-white border-b border-gray-100">
                     <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
                         <div className="flex flex-col sm:flex-row items-stretch gap-3">
@@ -272,7 +318,6 @@ const IssuesArchivesPage: React.FC = () => {
                             </select>
                         </div>
 
-                        {/* Search results */}
                         {searchQuery.trim() && (
                             <div className="mt-4">
                                 <p className="text-xs text-gray-500 mb-3">{filteredArticles.length} result{filteredArticles.length !== 1 ? 's' : ''} found</p>
@@ -283,7 +328,12 @@ const IssuesArchivesPage: React.FC = () => {
                                                 <div className="min-w-0 flex-1">
                                                     <div className="flex items-center gap-2 mb-1">
                                                         <span className={`inline-block px-2 py-0.5 rounded-full text-[11px] font-semibold ${categoryColor[a.category] || 'bg-gray-100 text-gray-600'}`}>{a.category}</span>
-                                                        <span className="text-[11px] text-gray-400">Vol. {a.volumeNum}, Issue {a.issueNum} ({a.month} {a.year})</span>
+                                                        <Link
+                                                            to={`/issues/${a.volumeNum}/${a.issueNum}`}
+                                                            className="text-[11px] text-gray-400 hover:text-brand-700 no-underline"
+                                                        >
+                                                            Vol. {a.volumeNum}, Issue {a.issueNum} ({a.month} {a.year})
+                                                        </Link>
                                                     </div>
                                                     <h4 className="text-sm font-bold text-gray-900 leading-snug">{a.title}</h4>
                                                     <p className="text-xs text-gray-500 mt-1">{a.authors}</p>
@@ -301,7 +351,7 @@ const IssuesArchivesPage: React.FC = () => {
                     </div>
                 </section>
 
-                {/* ── Archive Browser (Volume / Issue) ───── */}
+                {/* ── 4. Archive Browser (Volume / Issue) ── */}
                 <section className="py-12 bg-gray-50">
                     <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
                         <div className="text-center mb-10">
@@ -345,18 +395,25 @@ const IssuesArchivesPage: React.FC = () => {
                                         })}
                                     </div>
 
-                                    {/* Quick stats */}
                                     <div className="mt-6 pt-5 border-t border-gray-100">
                                         <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Quick Links</h4>
                                         <div className="space-y-2 text-xs">
-                                            <button onClick={() => { setSelectedVolume(1); setExpandedIssue('1-1'); }} className="flex items-center gap-2 text-brand-600 hover:text-brand-800 font-semibold transition w-full text-left">
-                                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" /> Current Issue
-                                            </button>
+                                            {current && (
+                                                <Link
+                                                    to={`/issues/${current.volume.volume}/${current.issue.number}`}
+                                                    className="flex items-center gap-2 text-brand-600 hover:text-brand-800 font-semibold transition no-underline"
+                                                >
+                                                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" /> Current Issue
+                                                </Link>
+                                            )}
                                             <a href="#publication-timeline" className="flex items-center gap-2 text-gray-500 hover:text-gray-700 transition no-underline">
                                                 <span className="w-1.5 h-1.5 rounded-full bg-gray-300" /> Publication Timeline
                                             </a>
+                                            <a href="#indexing" className="flex items-center gap-2 text-gray-500 hover:text-gray-700 transition no-underline">
+                                                <span className="w-1.5 h-1.5 rounded-full bg-gray-300" /> Indexing &amp; Abstracting
+                                            </a>
                                             <a href="#archiving" className="flex items-center gap-2 text-gray-500 hover:text-gray-700 transition no-underline">
-                                                <span className="w-1.5 h-1.5 rounded-full bg-gray-300" /> Archiving & Preservation
+                                                <span className="w-1.5 h-1.5 rounded-full bg-gray-300" /> Archiving &amp; Preservation
                                             </a>
                                         </div>
                                     </div>
@@ -436,7 +493,7 @@ const IssuesArchivesPage: React.FC = () => {
                                                         {issue.status === 'published' && issue.articles.length > 0 ? (
                                                             <>
                                                                 <div className="space-y-4">
-                                                                    {issue.articles.map((article) => (
+                                                                    {issue.articles.slice(0, 4).map((article) => (
                                                                         <div key={article.id} className="flex items-start gap-4 py-3 border-b border-gray-50 last:border-0 group">
                                                                             <div className="flex-1 min-w-0">
                                                                                 <div className="flex items-center gap-2 mb-1.5">
@@ -451,13 +508,7 @@ const IssuesArchivesPage: React.FC = () => {
                                                                                     </Link>
                                                                                 </h4>
                                                                                 <p className="text-xs text-gray-500 mt-1">{article.authors}</p>
-                                                                                <div className="flex items-center gap-3 mt-1.5">
-                                                                                    <p className="text-xs text-gray-400 font-mono">{article.doi}</p>
-                                                                                    <span className="text-[11px] text-gray-300">|</span>
-                                                                                    <button className="text-[11px] text-gray-400 hover:text-gray-600 transition">Abstract</button>
-                                                                                    <span className="text-[11px] text-gray-300">|</span>
-                                                                                    <button className="text-[11px] text-gray-400 hover:text-gray-600 transition">Cite</button>
-                                                                                </div>
+                                                                                <p className="text-xs text-gray-400 mt-0.5 font-mono">{article.doi}</p>
                                                                             </div>
                                                                             <div className="flex-shrink-0 flex items-center gap-2 pt-1">
                                                                                 <span className="text-xs text-brand-600 bg-brand-50 px-2.5 py-1 rounded-lg font-semibold cursor-pointer hover:bg-brand-100 transition">
@@ -467,16 +518,18 @@ const IssuesArchivesPage: React.FC = () => {
                                                                         </div>
                                                                     ))}
                                                                 </div>
-                                                                {/* Issue footer */}
                                                                 <div className="mt-4 pt-4 border-t border-gray-100 flex flex-wrap items-center gap-3">
+                                                                    <Link
+                                                                        to={`/issues/${activeVolume.volume}/${issue.number}`}
+                                                                        className="text-xs text-white bg-brand-600 px-3 py-1.5 rounded-lg font-bold hover:bg-brand-700 transition no-underline flex items-center gap-1.5"
+                                                                    >
+                                                                        View full issue →
+                                                                    </Link>
                                                                     <button className="text-xs text-brand-600 bg-brand-50 px-3 py-1.5 rounded-lg font-semibold hover:bg-brand-100 transition flex items-center gap-1.5">
                                                                         📥 Download Full Issue (PDF)
                                                                     </button>
                                                                     <button className="text-xs text-gray-500 bg-gray-50 px-3 py-1.5 rounded-lg font-semibold hover:bg-gray-100 transition">
                                                                         Export Citations (RIS)
-                                                                    </button>
-                                                                    <button className="text-xs text-gray-500 bg-gray-50 px-3 py-1.5 rounded-lg font-semibold hover:bg-gray-100 transition">
-                                                                        Export Citations (BibTeX)
                                                                     </button>
                                                                 </div>
                                                             </>
@@ -489,17 +542,31 @@ const IssuesArchivesPage: React.FC = () => {
                                                                 </p>
                                                                 {issue.theme && <p className="text-xs text-violet-600 mb-3">Theme: {issue.theme}</p>}
                                                                 <p className="text-xs text-gray-400 mb-4">Table of contents will be announced upon publication.</p>
-                                                                <Link to="/author-login" className="inline-flex items-center gap-2 px-5 py-2 bg-brand-600 text-white text-sm font-bold rounded-lg hover:bg-brand-700 transition no-underline">
-                                                                    Submit to This Issue →
-                                                                </Link>
+                                                                <div className="flex flex-wrap justify-center gap-2">
+                                                                    <Link to="/author-login" className="inline-flex items-center gap-2 px-5 py-2 bg-brand-600 text-white text-sm font-bold rounded-lg hover:bg-brand-700 transition no-underline">
+                                                                        Submit to This Issue →
+                                                                    </Link>
+                                                                    <Link
+                                                                        to={`/issues/${activeVolume.volume}/${issue.number}`}
+                                                                        className="inline-flex items-center gap-2 px-5 py-2 bg-white border border-gray-200 text-gray-700 text-sm font-bold rounded-lg hover:bg-gray-50 transition no-underline"
+                                                                    >
+                                                                        View issue page →
+                                                                    </Link>
+                                                                </div>
                                                             </div>
                                                         ) : (
                                                             <div className="text-center py-8">
                                                                 <span className="text-4xl mb-3 block">🗓️</span>
                                                                 <p className="text-sm font-bold text-gray-900 mb-1">Not Yet Open for Submissions</p>
-                                                                <p className="text-xs text-gray-500">
+                                                                <p className="text-xs text-gray-500 mb-4">
                                                                     {issue.deadline ? `Expected submission deadline: ${issue.deadline}` : 'Submission timeline to be announced'}
                                                                 </p>
+                                                                <Link
+                                                                    to={`/issues/${activeVolume.volume}/${issue.number}`}
+                                                                    className="inline-flex items-center gap-2 px-5 py-2 bg-white border border-gray-200 text-gray-700 text-sm font-bold rounded-lg hover:bg-gray-50 transition no-underline"
+                                                                >
+                                                                    View issue page →
+                                                                </Link>
                                                             </div>
                                                         )}
                                                     </div>
@@ -513,8 +580,36 @@ const IssuesArchivesPage: React.FC = () => {
                     </div>
                 </section>
 
-                {/* ── Publication Timeline ────────────────── */}
-                <section id="publication-timeline" className="py-16 bg-white">
+                {/* ── 5. Special Issues ───────────────────── */}
+                <section className="py-14 bg-white">
+                    <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
+                        <div className="text-center mb-8">
+                            <span className="text-brand-600 text-sm font-bold uppercase tracking-wider">Special Issues</span>
+                            <h2 className="text-3xl font-extrabold text-gray-900 mt-2 tracking-tight">Thematic Collections</h2>
+                        </div>
+                        <div className="bg-gradient-to-br from-violet-50 via-white to-violet-50/50 rounded-2xl border-2 border-dashed border-violet-200 p-10 text-center">
+                            <span className="text-4xl mb-3 block">✨</span>
+                            <h3 className="text-lg font-bold text-gray-900 mb-2">No special issues yet</h3>
+                            <p className="text-sm text-gray-500 max-w-lg mx-auto mb-6">
+                                Special issues gather focused, thematic research from an active area of AI and computing. Guest-edited collections start here.
+                            </p>
+                            <Link
+                                to="/for-authors"
+                                className="inline-flex items-center gap-2 px-5 py-2.5 bg-violet-600 text-white text-sm font-bold rounded-lg hover:bg-violet-700 transition no-underline"
+                            >
+                                Propose a Special Issue →
+                            </Link>
+                            <div className="mt-6 flex flex-wrap justify-center gap-2 text-[11px] text-gray-400">
+                                <span className="px-2.5 py-1 bg-white border border-gray-100 rounded-full">Guest-edited</span>
+                                <span className="px-2.5 py-1 bg-white border border-gray-100 rounded-full">Thematic focus</span>
+                                <span className="px-2.5 py-1 bg-white border border-gray-100 rounded-full">Peer-reviewed</span>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                {/* ── 6. Publication Timeline ─────────────── */}
+                <section id="publication-timeline" className="py-16 bg-gray-50">
                     <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
                         <div className="grid lg:grid-cols-2 gap-12 items-center">
                             <div>
@@ -550,48 +645,33 @@ const IssuesArchivesPage: React.FC = () => {
                     </div>
                 </section>
 
-                {/* ── Issue Page Preview ──────────────────── */}
-                <section className="py-16 bg-gray-50">
+                {/* ── 7. Indexing & Abstracting strip ─────── */}
+                <section id="indexing" className="py-14 bg-white border-t border-gray-100">
                     <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
-                        <div className="text-center mb-10">
-                            <span className="text-brand-600 text-sm font-bold uppercase tracking-wider">What Each Issue Contains</span>
-                            <h2 className="text-3xl font-extrabold text-gray-900 mt-2 tracking-tight">Issue Page Structure</h2>
-                            <p className="text-gray-500 mt-3 max-w-xl mx-auto">
-                                Every published issue includes a rich table of contents with actionable metadata for each article.
+                        <div className="text-center mb-8">
+                            <span className="text-brand-600 text-sm font-bold uppercase tracking-wider">Indexing &amp; Abstracting</span>
+                            <h2 className="text-3xl font-extrabold text-gray-900 mt-2 tracking-tight">Where IJACR is Indexed</h2>
+                            <p className="text-sm text-gray-500 mt-3 max-w-xl mx-auto">
+                                Every article is registered with a Crossref DOI and discoverable through major academic databases.
                             </p>
                         </div>
-                        <div className="bg-white rounded-2xl border border-gray-100 shadow-lg overflow-hidden">
-                            {/* Mock issue header */}
-                            <div className="bg-gradient-to-r from-brand-600 to-brand-800 px-8 py-6 text-white">
-                                <p className="text-sm font-semibold text-brand-200">International Journal of AI & Computing Research</p>
-                                <h3 className="text-xl font-extrabold mt-1">Volume 1, Issue 1 — March 2026</h3>
-                                <p className="text-sm text-brand-200 mt-1">ISSN: XXXX-XXXX · Inaugural Issue · 8 Articles</p>
-                            </div>
-                            <div className="px-8 py-6 space-y-4">
-                                {[
-                                    { type: 'EDITORIAL', title: 'Welcome to IJACR', author: 'Dr. Sarah Mitchell', meta: 'DOI | PDF' },
-                                    { type: 'ORIGINAL ARTICLES', title: 'Transformer-Based Architectures for Multi-Modal Learning…', author: 'J. Chen, A. Kumar, M. Rodriguez', meta: 'DOI | Abstract | PDF | Citations: 2 | Downloads: 145' },
-                                    { type: '', title: 'Federated Learning with Differential Privacy Guarantees…', author: 'S. Patel, L. Wang, R. Müller', meta: 'DOI | Abstract | PDF | Citations: 1 | Downloads: 98' },
-                                    { type: 'REVIEW ARTICLE', title: 'State of Explainable AI: A 2026 Survey', author: 'Fei-Fei Li, Yoshua Bengio', meta: 'DOI | Abstract | PDF | Citations: 5 | Downloads: 312' },
-                                    { type: 'SHORT COMMUNICATION', title: 'A Note on Reproducibility in Reinforcement Learning', author: 'David Silver', meta: 'DOI | Abstract | PDF' },
-                                ].map((item, idx) => (
-                                    <div key={idx} className={`${item.type ? 'pt-3' : ''}`}>
-                                        {item.type && <p className="text-[11px] font-bold text-brand-600 uppercase tracking-wider mb-2">{item.type}</p>}
-                                        <h4 className="text-sm font-bold text-gray-900">{item.title}</h4>
-                                        <p className="text-xs text-gray-500 mt-0.5">{item.author}</p>
-                                        <p className="text-[11px] text-gray-400 mt-1">{item.meta}</p>
-                                    </div>
-                                ))}
-                            </div>
-                            <div className="px-8 py-4 bg-gray-50 border-t border-gray-100 flex flex-wrap gap-3">
-                                <span className="text-xs text-brand-600 bg-brand-50 px-3 py-1.5 rounded-lg font-semibold">📥 Download full issue (PDF)</span>
-                                <span className="text-xs text-gray-500 bg-gray-100 px-3 py-1.5 rounded-lg font-semibold">📋 Export citations — RIS | BibTeX</span>
-                            </div>
+                        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+                            {indexingServices.map((svc) => (
+                                <div
+                                    key={svc.name}
+                                    className={`rounded-xl border p-4 text-center ${svc.tint}`}
+                                >
+                                    <p className="text-sm font-extrabold">{svc.name}</p>
+                                    <p className="text-[10px] mt-1 opacity-80 font-medium uppercase tracking-wider">
+                                        {svc.label}
+                                    </p>
+                                </div>
+                            ))}
                         </div>
                     </div>
                 </section>
 
-                {/* ── Archiving & Preservation ────────────── */}
+                {/* ── 8. Archiving & Preservation ─────────── */}
                 <section id="archiving" className="relative py-20 overflow-hidden">
                     <div className="absolute inset-0">
                         <img src={IMG.preservation} alt="" className="w-full h-full object-cover" loading="lazy" />
@@ -616,11 +696,52 @@ const IssuesArchivesPage: React.FC = () => {
                     </div>
                 </section>
 
-                {/* ── For Readers & Librarians ────────────── */}
+                {/* ── 9. Archive Policy ───────────────────── */}
+                <section className="py-14 bg-gray-50 border-t border-gray-100">
+                    <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
+                        <div className="bg-white rounded-2xl border border-gray-100 p-8 shadow-sm">
+                            <div className="flex items-start gap-4 mb-6">
+                                <div className="w-11 h-11 rounded-xl bg-brand-100 flex items-center justify-center flex-shrink-0">
+                                    <span className="text-xl">📜</span>
+                                </div>
+                                <div>
+                                    <h2 className="text-xl font-extrabold text-gray-900">Archive Policy</h2>
+                                    <p className="text-sm text-gray-500 mt-1">
+                                        Our commitments to open access, licensing, and long-term preservation.
+                                    </p>
+                                </div>
+                            </div>
+                            <div className="grid sm:grid-cols-3 gap-4">
+                                <div className="p-5 rounded-xl border border-gray-100 bg-emerald-50/50">
+                                    <p className="text-[11px] font-bold text-emerald-700 uppercase tracking-wider">Open Access</p>
+                                    <p className="text-sm font-bold text-gray-900 mt-1.5">Free to read, share, and reuse</p>
+                                    <p className="text-xs text-gray-500 mt-2 leading-relaxed">
+                                        Every article is freely available without subscription or paywall from the moment of publication.
+                                    </p>
+                                </div>
+                                <div className="p-5 rounded-xl border border-gray-100 bg-sky-50/50">
+                                    <p className="text-[11px] font-bold text-sky-700 uppercase tracking-wider">License</p>
+                                    <p className="text-sm font-bold text-gray-900 mt-1.5">CC BY 4.0</p>
+                                    <p className="text-xs text-gray-500 mt-2 leading-relaxed">
+                                        Articles are published under Creative Commons Attribution 4.0 — reuse permitted with credit to the authors.
+                                    </p>
+                                </div>
+                                <div className="p-5 rounded-xl border border-gray-100 bg-violet-50/50">
+                                    <p className="text-[11px] font-bold text-violet-700 uppercase tracking-wider">Preservation</p>
+                                    <p className="text-sm font-bold text-gray-900 mt-1.5">CLOCKSS &amp; Portico</p>
+                                    <p className="text-xs text-gray-500 mt-2 leading-relaxed">
+                                        Content is deposited into LOCKSS-based dark archives and Portico for guaranteed long-term preservation.
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                {/* ── 10. For Readers & Librarians ────────── */}
                 <section className="py-16 bg-white">
                     <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
                         <div className="grid sm:grid-cols-2 gap-8">
-                            {/* For Readers */}
                             <div className="bg-gray-50 rounded-2xl border border-gray-100 p-6">
                                 <div className="flex items-center gap-3 mb-5">
                                     <div className="w-10 h-10 rounded-lg bg-brand-100 flex items-center justify-center">
@@ -640,7 +761,6 @@ const IssuesArchivesPage: React.FC = () => {
                                 </div>
                             </div>
 
-                            {/* For Librarians */}
                             <div className="bg-brand-50 rounded-2xl border border-brand-100 p-6">
                                 <div className="flex items-center gap-3 mb-5">
                                     <div className="w-10 h-10 rounded-lg bg-brand-200 flex items-center justify-center">
@@ -676,7 +796,7 @@ const IssuesArchivesPage: React.FC = () => {
                     </div>
                 </section>
 
-                {/* ── RSS / Alerts ────────────────────────── */}
+                {/* ── 11. RSS / Alerts ────────────────────── */}
                 <section className="py-12 bg-gray-50 border-t border-gray-100">
                     <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
                         <div className="bg-white rounded-2xl border border-gray-100 p-8 flex flex-col sm:flex-row items-center gap-6 shadow-sm">
@@ -701,7 +821,7 @@ const IssuesArchivesPage: React.FC = () => {
                     </div>
                 </section>
 
-                {/* ── CTA Banner ──────────────────────────── */}
+                {/* ── 12. CTA Banner ──────────────────────── */}
                 <section className="py-16 bg-brand-600">
                     <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
                         <h2 className="text-3xl font-extrabold text-white tracking-tight">Contribute to IJACR</h2>

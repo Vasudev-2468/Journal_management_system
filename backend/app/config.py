@@ -16,6 +16,15 @@ class Settings(BaseSettings):
     # AI (Anthropic / Claude)
     ANTHROPIC_API_KEY: str = ""
 
+    # Embeddings (Voyage AI — optional). When empty, embeddings are skipped
+    # and reviewer matching falls back to keyword-overlap scoring.
+    VOYAGE_API_KEY: str = ""
+
+    # OpenAI (optional). Not wired into any code path yet — provided as a
+    # stub so an OpenAI-backed classifier or embedding call can be added later
+    # without changing config.py.
+    OPENAI_API_KEY: str = ""
+
     # Email (SendGrid)
     SENDGRID_API_KEY: str = ""
     SENDGRID_FROM_EMAIL: str = ""

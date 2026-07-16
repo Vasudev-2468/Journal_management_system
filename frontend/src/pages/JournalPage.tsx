@@ -1,14 +1,15 @@
 import React, { useEffect, useState } from 'react';
 import { fetchJournals as getJournals } from '../api/journals';
+import { Journal } from '../types';
 import JournalCard from '../components/journals/JournalCard';
 
 const JournalPage: React.FC = () => {
-    const [journals, setJournals] = useState([]);
+    const [journals, setJournals] = useState<Journal[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
-        const fetchJournals = async () => {
+        const loadJournals = async () => {
             try {
                 const data = await getJournals();
                 setJournals(data);
@@ -19,7 +20,7 @@ const JournalPage: React.FC = () => {
             }
         };
 
-        fetchJournals();
+        loadJournals();
     }, []);
 
     if (loading) {
