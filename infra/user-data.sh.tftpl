@@ -1,0 +1,123 @@
+#!/bin/bash
+# cloud-init user-data for JGAIR EC2. Runs once on first boot.
+# All output goes to /var/log/user-data.log for post-mortem debugging.
+set -euxo pipefail
+exec > >(tee -a /var/log/user-data.log) 2>&1
+
+echo "[user-data] $(date -Is) starting first-boot provisioning"
+
+# ── System packages + Docker ──────────────────────────────
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -y
+apt-get upgrade -y
+apt-get install -y ca-certificates curl gnupg git
+
+curl -fsSL https://get.docker.com | sh
+usermod -aG docker ubuntu
+systemctl enable --now docker
+
+# ── Clone the app repo ────────────────────────────────────
+APP_DIR="/home/ubuntu/Journal_management_system"
+if [ ! -d "$APP_DIR" ]; then
+  sudo -u ubuntu git clone "${github_repo_url}" "$APP_DIR"
+fi
+cd "$APP_DIR"
+
+# ── Write production backend/.env ─────────────────────────
+cat > "$APP_DIR/backend/.env" <<'ENVEOF'
+DATABASE_URL=postgresql://journaladmin:${postgres_password}@db:5432/journaldb
+SECRET_KEY=${secret_key}
+ALGORITHM=HS256
+JWT_EXPIRE_DAYS=14
+
+ALLOW_ORIGINS=https://${domain}
+FRONTEND_URL=https://${domain}
+
+AWS_S3_BUCKET_NAME=${aws_s3_bucket_name}
+AWS_REGION=${aws_region}
+
+OPENAI_API_KEY=${openai_api_key}
+ANTHROPIC_API_KEY=${anthropic_api_key}
+
+SENDGRID_API_KEY=${sendgrid_api_key}
+SENDGRID_FROM_EMAIL=${sendgrid_from_email}
+
+SIMILARITY_THRESHOLD=0.60
+ENVEOF
+chown ubuntu:ubuntu "$APP_DIR/backend/.env"
+chmod 600 "$APP_DIR/backend/.env"
+
+# ── Write Caddyfile for HTTPS termination ─────────────────
+cat > "$APP_DIR/Caddyfile" <<'CADDYEOF'
+${domain} {
+    reverse_proxy frontend:3000
+}
+
+${api_domain} {
+    reverse_proxy backend:8000
+}
+CADDYEOF
+chown ubuntu:ubuntu "$APP_DIR/Caddyfile"
+
+# ── Compose override: add Caddy, drop direct port exposure ─
+cat > "$APP_DIR/docker-compose.override.yml" <<'OVERRIDEEOF'
+services:
+  db:
+    environment:
+      POSTGRES_PASSWORD: ${postgres_password}
+
+  backend:
+    ports: []
+    environment:
+      DATABASE_URL: postgresql://journaladmin:${postgres_password}@db:5432/journaldb
+
+  frontend:
+    ports: []
+    build:
+      args:
+        REACT_APP_API_URL: https://${api_domain}
+
+  caddy:
+    image: caddy:2
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - backend_network
+      - frontend_network
+    depends_on:
+      - backend
+      - frontend
+
+volumes:
+  caddy_data:
+  caddy_config:
+OVERRIDEEOF
+chown ubuntu:ubuntu "$APP_DIR/docker-compose.override.yml"
+
+# ── Bring the stack up ────────────────────────────────────
+cd "$APP_DIR"
+sudo -u ubuntu docker compose pull || true
+sudo -u ubuntu docker compose up -d --build
+
+# ── 2 GB swap (helps on t3.micro; cheap insurance on t3.small too) ─
+if [ ! -f /swapfile ]; then
+  fallocate -l 2G /swapfile
+  chmod 600 /swapfile
+  mkswap /swapfile
+  swapon /swapfile
+  echo '/swapfile none swap sw 0 0' >> /etc/fstab
+fi
+
+# ── Nightly Postgres backup cron ──────────────────────────
+cat > /etc/cron.d/jgair-backup <<CRONEOF
+0 3 * * * ubuntu cd $APP_DIR && docker compose exec -T db pg_dump -U journaladmin journaldb | gzip | aws s3 cp - s3://${aws_s3_bucket_name}/backups/jgair-\$(date +\%F).sql.gz >> /var/log/jgair-backup.log 2>&1
+CRONEOF
+chmod 644 /etc/cron.d/jgair-backup
+
+echo "[user-data] $(date -Is) provisioning complete"
