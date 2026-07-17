@@ -32,7 +32,7 @@ _WRAPPER_TOP = """\
             background:#ffffff;color:#1a1a1a;line-height:1.6;">
   <div style="border-bottom:3px solid #1e40af;padding-bottom:12px;margin-bottom:24px;">
     <span style="font-size:20px;font-weight:700;color:#1e40af;">
-      Academic Journal System
+      JGAIR — Journal of Generative and Applied Intelligence Research
     </span>
   </div>
 """
@@ -40,7 +40,7 @@ _WRAPPER_TOP = """\
 _WRAPPER_BOTTOM = """\
   <div style="margin-top:32px;padding-top:16px;border-top:1px solid #e5e7eb;
               font-size:12px;color:#6b7280;">
-    This is an automated message from the Academic Journal Management System.
+    This is an automated message from the JGAIR Editorial System.
     Please do not reply directly to this email.
   </div>
 </div>

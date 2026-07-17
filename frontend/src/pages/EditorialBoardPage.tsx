@@ -47,7 +47,7 @@ const editorInChief: BoardMember = {
     affiliation: 'Department of Computer Science, Stanford University',
     country: 'USA',
     expertise: ['Machine Learning', 'Neural Architecture Search', 'AI Systems'],
-    email: 'editor@ijacr-journal.org',
+    email: 'editor@jgair-journal.org',
     orcid: '0000-0001-2345-6789',
     scholar: 'https://scholar.google.com',
     photo: IMG.eic,
@@ -62,7 +62,7 @@ const associateEditors: BoardMember[] = [
         affiliation: 'Faculty of Engineering, ETH Zurich',
         country: 'Switzerland',
         expertise: ['Computer Vision', '3D Reconstruction', 'Medical Imaging'],
-        email: 'santos@ijacr-journal.org',
+        email: 'santos@jgair-journal.org',
         orcid: '0000-0002-3456-7890',
         photo: IMG.photos[0],
         bio: 'Pioneer in medical image analysis using deep learning. 120+ publications, recipient of the ECCV Best Paper Award 2023.',
@@ -74,7 +74,7 @@ const associateEditors: BoardMember[] = [
         affiliation: 'School of AI, Tsinghua University',
         country: 'China',
         expertise: ['NLP', 'Large Language Models', 'Dialogue Systems'],
-        email: 'zhang@ijacr-journal.org',
+        email: 'zhang@jgair-journal.org',
         orcid: '0000-0003-4567-8901',
         photo: IMG.photos[1],
         bio: 'Expert in transformer architectures and multilingual NLP. Core contributor to open-source LLM projects. ACL Fellow.',
@@ -86,7 +86,7 @@ const associateEditors: BoardMember[] = [
         affiliation: 'Department of Data Science, University of Oxford',
         country: 'UK',
         expertise: ['Reinforcement Learning', 'Robotics', 'Autonomous Agents'],
-        email: 'mitchell@ijacr-journal.org',
+        email: 'mitchell@jgair-journal.org',
         orcid: '0000-0004-5678-9012',
         photo: IMG.photos[2],
         bio: 'Focuses on safe RL for real-world deployment. Advisor to UK AI Safety Institute. 80+ peer-reviewed articles.',
@@ -98,7 +98,7 @@ const associateEditors: BoardMember[] = [
         affiliation: 'Graduate School of Informatics, University of Tokyo',
         country: 'Japan',
         expertise: ['Edge AI', 'IoT Intelligence', 'Embedded ML'],
-        email: 'tanaka@ijacr-journal.org',
+        email: 'tanaka@jgair-journal.org',
         orcid: '0000-0005-6789-0123',
         photo: IMG.photos[3],
         bio: 'Specialises in on-device inference and TinyML. Holds 15 patents. IEEE Senior Member and JST CREST PI.',
@@ -225,7 +225,7 @@ const CVRequestModal: React.FC<{
                         </div>
                         {status === 'error' && (
                             <p className="text-sm text-red-600 bg-red-50 rounded-lg p-3">
-                                Something went wrong. Please try again or email editorial@ijacr-journal.org directly.
+                                Something went wrong. Please try again or email editorial@jgair-journal.org directly.
                             </p>
                         )}
                         <div className="flex gap-3 pt-2">
@@ -476,8 +476,8 @@ const EditorialBoardPage: React.FC = () => {
                                 </div>
                                 <p className="text-sm font-semibold text-gray-900">Emily Chen</p>
                                 <p className="text-xs text-gray-500 mt-0.5">Academic Press International</p>
-                                <a href="mailto:managing-editor@ijacr-journal.org" className="text-xs text-brand-600 hover:text-brand-700 font-semibold no-underline mt-2 inline-block">
-                                    managing-editor@ijacr-journal.org
+                                <a href="mailto:managing-editor@jgair-journal.org" className="text-xs text-brand-600 hover:text-brand-700 font-semibold no-underline mt-2 inline-block">
+                                    managing-editor@jgair-journal.org
                                 </a>
                             </div>
 
@@ -497,8 +497,8 @@ const EditorialBoardPage: React.FC = () => {
                                 <p className="text-sm text-brand-800">
                                     For editorial inquiries, reviewer concerns, or submission questions:
                                 </p>
-                                <a href="mailto:editorial@ijacr-journal.org" className="text-sm text-brand-700 hover:text-brand-800 font-bold no-underline mt-2 inline-block">
-                                    editorial@ijacr-journal.org
+                                <a href="mailto:editorial@jgair-journal.org" className="text-sm text-brand-700 hover:text-brand-800 font-bold no-underline mt-2 inline-block">
+                                    editorial@jgair-journal.org
                                 </a>
                             </div>
                         </div>
@@ -513,7 +513,7 @@ const EditorialBoardPage: React.FC = () => {
                             We welcome applications from researchers with strong publication records. Send your CV and a brief statement of interest to our editorial office.
                         </p>
                         <div className="mt-8 flex flex-wrap justify-center gap-4">
-                            <a href="mailto:editorial@ijacr-journal.org?subject=Editorial Board Application" className="inline-flex items-center gap-2 px-8 py-3.5 bg-white text-brand-900 font-bold rounded-xl hover:bg-gray-100 transition shadow-lg no-underline text-[15px]">
+                            <a href="mailto:editorial@jgair-journal.org?subject=Editorial Board Application" className="inline-flex items-center gap-2 px-8 py-3.5 bg-white text-brand-900 font-bold rounded-xl hover:bg-gray-100 transition shadow-lg no-underline text-[15px]">
                                 Apply Now
                             </a>
                             <a href="/for-reviewers" className="inline-flex items-center gap-2 px-8 py-3.5 border-2 border-white/40 text-white font-bold rounded-xl hover:bg-white/10 transition no-underline text-[15px]">

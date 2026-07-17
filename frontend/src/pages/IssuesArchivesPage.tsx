@@ -119,7 +119,7 @@ const IssuesArchivesPage: React.FC = () => {
                     <div className="inline-block mb-5"><JournalLogo variant="compact" dark /></div>
                     <h1 className="text-4xl sm:text-5xl font-extrabold text-white tracking-tight drop-shadow-lg">Issues &amp; Archives</h1>
                     <p className="mt-4 text-lg text-brand-200 max-w-2xl mx-auto leading-relaxed font-light">
-                        Browse published volumes, forthcoming issues, and the complete archive of IJACR — free and open access for all.
+                        Browse published volumes, forthcoming issues, and the complete archive of JGAIR — free and open access for all.
                     </p>
                     <div className="mt-8 flex flex-wrap justify-center gap-3">
                         <span className="inline-flex items-center gap-2 px-5 py-2.5 bg-white/10 backdrop-blur-sm border border-white/20 text-white rounded-xl text-sm font-semibold">
@@ -144,7 +144,7 @@ const IssuesArchivesPage: React.FC = () => {
                             <div className="text-center mb-8">
                                 <span className="text-brand-600 text-sm font-bold uppercase tracking-wider">Current Issue</span>
                                 <h2 className="text-3xl font-extrabold text-gray-900 mt-2 tracking-tight">
-                                    Latest from IJACR
+                                    Latest from JGAIR
                                 </h2>
                             </div>
                             <div className="bg-gradient-to-br from-brand-50 via-white to-brand-50/50 rounded-3xl border border-brand-100 shadow-xl overflow-hidden">
@@ -152,7 +152,7 @@ const IssuesArchivesPage: React.FC = () => {
                                     {/* Cover */}
                                     <div className="lg:col-span-2 bg-gradient-to-br from-brand-600 to-brand-900 p-10 flex items-center justify-center">
                                         <div className="aspect-[3/4] w-full max-w-[220px] rounded-xl bg-gradient-to-br from-brand-500 to-brand-800 border-4 border-white/15 shadow-2xl flex flex-col items-center justify-center p-6">
-                                            <span className="text-brand-100 text-[10px] font-bold uppercase tracking-widest">IJACR</span>
+                                            <span className="text-brand-100 text-[10px] font-bold uppercase tracking-widest">JGAIR</span>
                                             <p className="mt-3 text-brand-100 text-xs font-semibold">Volume {current.volume.volume}</p>
                                             <p className="text-white text-5xl font-extrabold my-2">{current.issue.number}</p>
                                             <p className="text-brand-100 text-xs font-semibold">{current.issue.month} {current.volume.year}</p>
@@ -617,7 +617,7 @@ const IssuesArchivesPage: React.FC = () => {
                                 <h2 className="text-3xl font-extrabold text-gray-900 mt-2 tracking-tight">Publication Timeline</h2>
                                 <div className="w-12 h-1 bg-brand-600 rounded mt-3 mb-6" />
                                 <p className="text-sm text-gray-600 leading-relaxed mb-6">
-                                    IJACR publishes four issues per year (March, June, September, December). Our archive is organized by volume and issue for easy navigation.
+                                    JGAIR publishes four issues per year (March, June, September, December). Our archive is organized by volume and issue for easy navigation.
                                 </p>
 
                                 <div className="relative pl-8">
@@ -650,7 +650,7 @@ const IssuesArchivesPage: React.FC = () => {
                     <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
                         <div className="text-center mb-8">
                             <span className="text-brand-600 text-sm font-bold uppercase tracking-wider">Indexing &amp; Abstracting</span>
-                            <h2 className="text-3xl font-extrabold text-gray-900 mt-2 tracking-tight">Where IJACR is Indexed</h2>
+                            <h2 className="text-3xl font-extrabold text-gray-900 mt-2 tracking-tight">Where JGAIR is Indexed</h2>
                             <p className="text-sm text-gray-500 mt-3 max-w-xl mx-auto">
                                 Every article is registered with a Crossref DOI and discoverable through major academic databases.
                             </p>
@@ -681,7 +681,7 @@ const IssuesArchivesPage: React.FC = () => {
                         <div className="text-center mb-10">
                             <h2 className="text-3xl font-extrabold text-white tracking-tight">Archiving &amp; Preservation</h2>
                             <p className="text-brand-200 mt-3 max-w-2xl mx-auto">
-                                To ensure long-term access, IJACR participates in leading digital preservation programs. All articles are assigned a Crossref DOI and indexed in major databases.
+                                To ensure long-term access, JGAIR participates in leading digital preservation programs. All articles are assigned a Crossref DOI and indexed in major databases.
                             </p>
                         </div>
                         <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -788,7 +788,7 @@ const IssuesArchivesPage: React.FC = () => {
                                 <div className="mt-5 p-4 bg-white/60 rounded-xl border border-brand-100">
                                     <p className="text-xs text-brand-700">
                                         <strong>Contact:</strong> For KBART records, usage reports, or institutional inquiries, email{' '}
-                                        <a href="mailto:librarian@ijacr-journal.org" className="text-brand-600 underline font-semibold">librarian@ijacr-journal.org</a>
+                                        <a href="mailto:librarian@jgair-journal.org" className="text-brand-600 underline font-semibold">librarian@jgair-journal.org</a>
                                     </p>
                                 </div>
                             </div>
@@ -824,7 +824,7 @@ const IssuesArchivesPage: React.FC = () => {
                 {/* ── 12. CTA Banner ──────────────────────── */}
                 <section className="py-16 bg-brand-600">
                     <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-                        <h2 className="text-3xl font-extrabold text-white tracking-tight">Contribute to IJACR</h2>
+                        <h2 className="text-3xl font-extrabold text-white tracking-tight">Contribute to JGAIR</h2>
                         <p className="text-brand-200 text-lg mt-3 max-w-2xl mx-auto">
                             Publish your AI &amp; computing research in a peer-reviewed, open-access journal with global reach.
                         </p>

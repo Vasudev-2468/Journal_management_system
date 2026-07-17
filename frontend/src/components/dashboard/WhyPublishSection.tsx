@@ -57,7 +57,7 @@ const WhyPublishSection: React.FC = () => {
             <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
                 <div className="text-center mb-12">
                     <h2 className="text-3xl font-extrabold text-white tracking-tight">
-                        Why Publish With IJACR?
+                        Why Publish With JGAIR?
                     </h2>
                     <p className="text-brand-200 text-base mt-3 max-w-2xl mx-auto">
                         Join thousands of researchers worldwide who trust our AI-powered platform for high-quality, impactful publishing

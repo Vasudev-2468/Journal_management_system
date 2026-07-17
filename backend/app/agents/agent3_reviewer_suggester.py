@@ -24,6 +24,7 @@ from app.config import settings
 from app.models.reviewer import Reviewer
 from app.models.review import Review
 from app.models.submission import Submission, SubmissionStatus
+from app.services.ai_agent import rerank_reviewer_candidates
 
 logger = logging.getLogger(__name__)
 
@@ -140,18 +141,66 @@ class ReviewerSuggesterAgent:
         except Exception as exc:
             logger.warning("OpenAlex search failed: %s", exc)
 
-        # Deduplicate by email
+        # Deduplicate by email. OpenAlex entries have no email, so we
+        # dedupe those by (name, affiliation) instead so we don't collapse
+        # multiple distinct people into one.
         seen_emails = set()
+        seen_nameaffs = set()
         unique = []
         for s in suggestions:
-            email = s["email"].lower()
-            if email not in seen_emails and email not in exclude:
+            email = (s.get("email") or "").lower()
+            if email:
+                if email in seen_emails or email in exclude:
+                    continue
                 seen_emails.add(email)
-                unique.append(s)
+            else:
+                key = ((s.get("name") or "").lower(), (s.get("affiliation") or "").lower())
+                if key in seen_nameaffs:
+                    continue
+                seen_nameaffs.add(key)
+            unique.append(s)
 
-        # Sort by match score descending
-        unique.sort(key=lambda x: x.get("match_score", 0), reverse=True)
-        return unique[:10]  # Return top 10
+        # LLM reranker: reorder by topical fit and attach a per-candidate
+        # reason the editor can read. rerank_reviewer_candidates() returns []
+        # when the API key is missing or the call fails — in that case we
+        # keep the original heuristic ordering.
+        self._apply_llm_rerank(submission, unique)
+
+        # Sort by rerank score when present, otherwise fall back to the
+        # heuristic match_score.
+        unique.sort(
+            key=lambda x: (x.get("rerank_score") if x.get("rerank_score") is not None else x.get("match_score", 0)),
+            reverse=True,
+        )
+        return unique[:10]
+
+    def _apply_llm_rerank(self, submission: Submission, candidates: List[dict]) -> None:
+        """Mutate *candidates* in place, adding rerank_score / rerank_reason."""
+        if not candidates:
+            return
+        try:
+            ranked = rerank_reviewer_candidates(
+                submission_meta={
+                    "title": submission.paper_title,
+                    "abstract": submission.abstract,
+                    "keywords": list(submission.keywords or []),
+                    "classified_field": submission.classified_field or "",
+                },
+                candidates=candidates,
+            )
+        except Exception:
+            logger.exception("Agent 3: rerank_reviewer_candidates raised unexpectedly")
+            return
+
+        if not ranked:
+            return
+
+        for entry in ranked:
+            idx = entry.get("index")
+            if not isinstance(idx, int) or idx < 0 or idx >= len(candidates):
+                continue
+            candidates[idx]["rerank_score"] = round(float(entry.get("score", 0.0)), 3)
+            candidates[idx]["rerank_reason"] = entry.get("reason", "")
 
     def _search_internal_reviewers(self, search_terms: List[str], exclude_emails: set) -> List[dict]:
         """Search internal reviewer database by expertise tags."""

@@ -9,6 +9,8 @@ Runs automated checks on the submitted paper:
   - Author names & affiliations present
   - ORCID presence
   - Plagiarism score placeholder
+  - Semantic checks (LLM): abstract↔title alignment, keyword coverage,
+    abstract structure (background/method/result)
 
 Generates a structured report and sends it to the Consult Party.
 Communicates with Agent 3 via orchestrator.
@@ -24,6 +26,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models.submission import Submission, SubmissionStatus
+from app.services.ai_agent import semantic_format_check
 from app.services.email_service import _send_and_log, _wrap, _btn
 
 logger = logging.getLogger(__name__)
@@ -177,15 +180,33 @@ class FormatValidationAgent:
             "detail": "Plagiarism screening queued (result pending)",
         })
 
-        # Determine overall status
-        statuses = [c["status"] for c in checks]
-        if "fail" in statuses:
+        # Checks 8–10: Semantic checks via LLM.
+        # semantic_format_check() never raises — it returns a "skipped" shape
+        # when the API key is missing or the call fails.
+        try:
+            semantic = semantic_format_check(
+                title=submission.paper_title or "",
+                abstract=submission.abstract or "",
+                keywords=list(submission.keywords or []),
+            )
+        except Exception:
+            logger.exception("Agent 2: semantic_format_check raised unexpectedly")
+            semantic = None
+
+        for name, detail in self._semantic_rows(semantic):
+            checks.append({"name": name, "status": detail["status"], "detail": detail["detail"]})
+
+        # Determine overall status. "skipped" is neutral — never worsens
+        # or improves the overall verdict.
+        graded = [c["status"] for c in checks if c["status"] != "skipped"]
+        if "fail" in graded:
             overall = "fail"
-        elif "warning" in statuses:
+        elif "warning" in graded:
             overall = "warning"
         else:
             overall = "pass"
 
+        statuses = [c["status"] for c in checks]
         return {
             "checks": checks,
             "overall": overall,
@@ -193,16 +214,60 @@ class FormatValidationAgent:
             "passed": sum(1 for s in statuses if s == "pass"),
             "warnings": sum(1 for s in statuses if s == "warning"),
             "failures": sum(1 for s in statuses if s == "fail"),
+            "skipped": sum(1 for s in statuses if s == "skipped"),
+            "semantic": semantic,
         }
+
+    @staticmethod
+    def _semantic_rows(semantic: Optional[dict]):
+        """Flatten the semantic_format_check result into (name, {status, detail}) rows."""
+        if not semantic:
+            neutral = {"status": "skipped", "detail": "Semantic check unavailable"}
+            yield ("Abstract vs Title (AI)", neutral)
+            yield ("Keyword Coverage (AI)", neutral)
+            yield ("Abstract Structure (AI)", neutral)
+            return
+
+        alignment = semantic.get("abstract_title_alignment") or {}
+        yield ("Abstract vs Title (AI)", {
+            "status": alignment.get("status", "skipped"),
+            "detail": alignment.get("detail") or "No detail returned",
+        })
+
+        coverage = semantic.get("keyword_coverage") or {}
+        unsupported = coverage.get("unsupported_keywords") or []
+        cov_detail = coverage.get("detail") or "No detail returned"
+        if unsupported:
+            cov_detail = f"{cov_detail} Unsupported: {', '.join(unsupported)}."
+        yield ("Keyword Coverage (AI)", {
+            "status": coverage.get("status", "skipped"),
+            "detail": cov_detail,
+        })
+
+        structure = semantic.get("abstract_structure") or {}
+        missing = structure.get("missing_elements") or []
+        struct_detail = structure.get("detail") or "No detail returned"
+        if missing:
+            struct_detail = f"{struct_detail} Missing: {', '.join(missing)}."
+        yield ("Abstract Structure (AI)", {
+            "status": structure.get("status", "skipped"),
+            "detail": struct_detail,
+        })
 
     def _send_report_to_consult_party(self, submission: Submission, report: dict, consult_email: str):
         paper_id = submission.paper_id_code
         checks_html = ""
-        icon_map = {"pass": "✅", "warning": "⚠️", "fail": "❌"}
+        icon_map = {"pass": "✅", "warning": "⚠️", "fail": "❌", "skipped": "⏭️"}
+        color_map = {
+            "pass": "#059669",
+            "warning": "#d97706",
+            "fail": "#dc2626",
+            "skipped": "#6b7280",
+        }
 
         for check in report["checks"]:
             icon = icon_map.get(check["status"], "❓")
-            color = {"pass": "#059669", "warning": "#d97706", "fail": "#dc2626"}.get(check["status"], "#6b7280")
+            color = color_map.get(check["status"], "#6b7280")
             checks_html += f"""
             <tr>
               <td style="padding:8px 12px;border:1px solid #e5e7eb;">{icon}</td>

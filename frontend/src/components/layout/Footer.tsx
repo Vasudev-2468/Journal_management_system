@@ -90,7 +90,7 @@ const Footer: React.FC = () => {
             <div className="border-t border-gray-800">
                 <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex flex-col sm:flex-row items-center justify-between gap-2">
                     <p className="text-xs text-gray-500">
-                        &copy; {new Date().getFullYear()} Academic Journal Management System. All rights reserved.
+                        &copy; {new Date().getFullYear()} JGAIR — Journal of Generative and Applied Intelligence Research. All rights reserved.
                     </p>
                     <div className="flex items-center gap-4 text-xs text-gray-500">
                         <span className="hover:text-gray-300 cursor-pointer transition">Privacy Policy</span>

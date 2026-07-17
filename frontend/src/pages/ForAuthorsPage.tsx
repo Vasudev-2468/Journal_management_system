@@ -69,7 +69,7 @@ const workflow = [
 
 /* ── FAQs ───────────────────────────────────────────────── */
 const faqs = [
-    { q: 'Is there an article processing charge (APC)?', a: 'No. IJACR is completely free to publish. There are no submission fees, review fees, or publication charges.' },
+    { q: 'Is there an article processing charge (APC)?', a: 'No. JGAIR is completely free to publish. There are no submission fees, review fees, or publication charges.' },
     { q: 'How long does the review process take?', a: 'Average time to first decision is ~10 days. From submission to publication, the typical timeline is 20–30 days.' },
     { q: 'Can I submit a preprint?', a: 'Yes. We accept manuscripts previously posted on recognized preprint servers (arXiv, SSRN). Please disclose this during submission.' },
     { q: 'What file formats are accepted?', a: 'Submit as PDF initially. Upon acceptance, we request source files (.docx or .tex). Download our official Word template from this page.' },
@@ -116,8 +116,8 @@ const ForAuthorsPage: React.FC = () => {
                     </p>
                     <div className="mt-8 flex flex-wrap justify-center gap-4">
                         <a
-                            href="/IJACR_Manuscript_Template.docx"
-                            download="IJACR_Manuscript_Template.docx"
+                            href="/JGAIR_Manuscript_Template.docx"
+                            download="JGAIR_Manuscript_Template.docx"
                             className="inline-flex items-center gap-2 px-7 py-3.5 bg-white text-brand-900 font-bold rounded-xl hover:bg-gray-100 transition shadow-lg no-underline text-[15px]"
                         >
                             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -248,23 +248,39 @@ const ForAuthorsPage: React.FC = () => {
                             </svg>
                             Official Template
                         </div>
-                        <h2 className="text-3xl font-extrabold text-white tracking-tight">Download the Manuscript Template</h2>
+                        <h2 className="text-3xl font-extrabold text-white tracking-tight">Download the Manuscript Templates</h2>
                         <p className="mt-4 text-lg text-gray-200 leading-relaxed max-w-2xl mx-auto">
-                            Use our pre-formatted Word template with all required styles, margins, fonts, and section headings already configured.
-                            Submit with confidence — your paper will be perfectly formatted from the start.
+                            Pick your preferred format — Word or LaTeX. Both templates ship with the required styles, margins, fonts,
+                            and section headings already configured, so your paper is perfectly formatted from the start.
                         </p>
                         <div className="mt-8 flex flex-wrap justify-center gap-4">
                             <a
-                                href="/IJACR_Manuscript_Template.docx"
-                                download="IJACR_Manuscript_Template.docx"
+                                href="/JGAIR_Manuscript_Template.docx"
+                                download="JGAIR_Manuscript_Template.docx"
                                 className="inline-flex items-center gap-3 px-8 py-4 bg-white text-brand-900 font-bold rounded-xl hover:bg-gray-100 transition shadow-xl no-underline text-[15px] group"
                             >
                                 <div className="w-10 h-10 rounded-lg bg-blue-100 flex items-center justify-center flex-shrink-0">
                                     <span className="text-blue-600 font-extrabold text-lg">W</span>
                                 </div>
                                 <div className="text-left">
-                                    <span className="block">IJACR_Manuscript_Template.docx</span>
+                                    <span className="block">JGAIR_Manuscript_Template.docx</span>
                                     <span className="block text-xs text-gray-500 font-normal">Microsoft Word • ~603 KB • One-click download</span>
+                                </div>
+                                <svg className="w-5 h-5 text-brand-600 group-hover:translate-y-0.5 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                                </svg>
+                            </a>
+                            <a
+                                href="/Template.zip"
+                                download="JGAIR_LaTeX_Template.zip"
+                                className="inline-flex items-center gap-3 px-8 py-4 bg-white text-brand-900 font-bold rounded-xl hover:bg-gray-100 transition shadow-xl no-underline text-[15px] group"
+                            >
+                                <div className="w-10 h-10 rounded-lg bg-emerald-100 flex items-center justify-center flex-shrink-0">
+                                    <span className="text-emerald-700 font-extrabold text-sm">TeX</span>
+                                </div>
+                                <div className="text-left">
+                                    <span className="block">JGAIR_LaTeX_Template.zip</span>
+                                    <span className="block text-xs text-gray-500 font-normal">LaTeX source • ~1 MB • .tex + .cls + bibliography</span>
                                 </div>
                                 <svg className="w-5 h-5 text-brand-600 group-hover:translate-y-0.5 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                                     <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
@@ -365,7 +381,7 @@ const ForAuthorsPage: React.FC = () => {
                                         <h2 className="text-xl font-extrabold text-red-900">Publication Ethics</h2>
                                     </div>
                                     <p className="text-sm text-red-800 leading-relaxed">
-                                        IJACR adheres to <strong>COPE guidelines</strong>. Authors must ensure their work is original, properly cited, and ethically compliant.
+                                        JGAIR adheres to <strong>COPE guidelines</strong>. Authors must ensure their work is original, properly cited, and ethically compliant.
                                     </p>
                                     <ul className="mt-4 space-y-2 text-sm text-red-800">
                                         {[
@@ -466,8 +482,8 @@ const ForAuthorsPage: React.FC = () => {
                                 Submit Your Paper
                             </Link>
                             <a
-                                href="/IJACR_Manuscript_Template.docx"
-                                download="IJACR_Manuscript_Template.docx"
+                                href="/JGAIR_Manuscript_Template.docx"
+                                download="JGAIR_Manuscript_Template.docx"
                                 className="inline-flex items-center gap-2 px-8 py-3.5 border-2 border-white/40 text-white font-bold rounded-xl hover:bg-white/10 transition no-underline text-[15px]"
                             >
                                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>

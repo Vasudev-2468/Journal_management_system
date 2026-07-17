@@ -14,8 +14,8 @@ const newsItems = [
     {
         id: 2,
         date: 'Apr 10, 2026',
-        title: 'IJACR Now Indexed in Scopus and Web of Science',
-        excerpt: 'We are pleased to announce that IJACR has been accepted for indexing in Scopus (CiteScore 3.8) and the Web of Science Emerging Sources Citation Index (ESCI).',
+        title: 'JGAIR Now Indexed in Scopus and Web of Science',
+        excerpt: 'We are pleased to announce that JGAIR has been accepted for indexing in Scopus (CiteScore 3.8) and the Web of Science Emerging Sources Citation Index (ESCI).',
         tag: 'Indexing',
         tagColor: 'bg-emerald-100 text-emerald-700',
         image: 'https://images.unsplash.com/photo-1524995997946-a1c2e315a42f?w=400&h=250&fit=crop&q=80', // Library books

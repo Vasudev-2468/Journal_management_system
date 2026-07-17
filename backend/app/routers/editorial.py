@@ -110,7 +110,7 @@ def request_cv_access(payload: CVAccessRequest, db: Session = Depends(get_db)):
     _send_and_log(payload.member_email, subject, body, "cv_access_request")
 
     # Also notify the editorial office
-    _send_and_log("editorial@ijacr-journal.org", subject, body, "cv_access_request_copy")
+    _send_and_log("editorial@jgair-journal.org", subject, body, "cv_access_request_copy")
 
     return {"message": "CV access request submitted. The editor will review your request."}
 
@@ -153,10 +153,10 @@ def approve_cv_request(token: str, db: Session = Depends(get_db)):
            <strong>{cv_req.requester_email}</strong>.</p>
 
         <p>If you have any questions, contact us at
-           <a href="mailto:editorial@ijacr-journal.org"
-              style="color:#1e40af;">editorial@ijacr-journal.org</a>.</p>
+           <a href="mailto:editorial@jgair-journal.org"
+              style="color:#1e40af;">editorial@jgair-journal.org</a>.</p>
 
-        <p>Best regards,<br><strong>IJACR Editorial Team</strong></p>
+        <p>Best regards,<br><strong>JGAIR Editorial Team</strong></p>
     """)
     _send_and_log(cv_req.requester_email, subject, body, "cv_access_approved")
 
@@ -196,10 +196,10 @@ def reject_cv_request(token: str, db: Session = Depends(get_db)):
            CV of <strong>{cv_req.member_name}</strong> was not approved at this time.</p>
 
         <p>If you have questions, please contact
-           <a href="mailto:editorial@ijacr-journal.org"
-              style="color:#1e40af;">editorial@ijacr-journal.org</a>.</p>
+           <a href="mailto:editorial@jgair-journal.org"
+              style="color:#1e40af;">editorial@jgair-journal.org</a>.</p>
 
-        <p>Best regards,<br><strong>IJACR Editorial Team</strong></p>
+        <p>Best regards,<br><strong>JGAIR Editorial Team</strong></p>
     """)
     _send_and_log(cv_req.requester_email, subject, body, "cv_access_rejected")
 
@@ -215,7 +215,7 @@ def reject_cv_request(token: str, db: Session = Depends(get_db)):
 def _result_page(title: str, message: str, color: str) -> str:
     return f"""<!DOCTYPE html>
 <html>
-<head><meta charset="utf-8"><title>{title} — IJACR</title>
+<head><meta charset="utf-8"><title>{title} — JGAIR</title>
 <style>
   body {{ font-family: 'Segoe UI', Roboto, sans-serif; background: #f9fafb;
          display: flex; align-items: center; justify-content: center;

@@ -10,15 +10,18 @@ Provides endpoints for:
 
 import logging
 import uuid
+from datetime import datetime, timezone
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, EmailStr, Field
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.services.editor_auth import require_editor_mfa
 from app.models.submission import Submission, SubmissionStatus
+from app.models.reviewer import Reviewer
 from app.tasks import (
     run_agent_intake_pipeline,
     run_agent_reviewer_suggestion,
@@ -240,3 +243,215 @@ def editor_assign_reviewers(
         "reviewer_count": len(body.reviewer_ids),
         "stages": "4 (Link Generation) + 5 (Notifications)",
     }
+
+
+# ── Analytics ────────────────────────────────────────────
+
+class AnalyticsStatCard(BaseModel):
+    key: str
+    label: str
+    value: str
+    hint: Optional[str] = None
+
+
+class AnalyticsMonthlyBucket(BaseModel):
+    month: str      # "2026-03"
+    label: str      # "Mar 2026"
+    count: int
+
+
+class AnalyticsFunnelStage(BaseModel):
+    key: str
+    label: str
+    count: int
+
+
+class AnalyticsOverview(BaseModel):
+    range: str
+    generated_at: str
+    stat_cards: List[AnalyticsStatCard]
+    submissions_over_time: List[AnalyticsMonthlyBucket]
+    status_funnel: List[AnalyticsFunnelStage]
+
+
+_MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                 "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+
+def _add_months(dt: datetime, months: int) -> datetime:
+    """Add *months* to *dt* landing on the first of the month."""
+    total = (dt.year * 12 + (dt.month - 1)) + months
+    return datetime(total // 12, (total % 12) + 1, 1)
+
+
+# Statuses that count as "actively under review" (post-triage, awaiting a decision).
+_UNDER_REVIEW_STATUSES = (
+    SubmissionStatus.under_review,
+    SubmissionStatus.pending_assignment,
+)
+
+# Statuses that count as "a decision has been rendered".
+# Note: revision_requested is a decision even though the paper may come back.
+_DECIDED_STATUSES = (
+    SubmissionStatus.accepted,
+    SubmissionStatus.rejected,
+    SubmissionStatus.revision_requested,
+    SubmissionStatus.returned_to_author,
+)
+
+# Terminal statuses used to compute acceptance rate.
+_TERMINAL_STATUSES = (SubmissionStatus.accepted, SubmissionStatus.rejected)
+
+
+@router.get("/analytics/overview", response_model=AnalyticsOverview)
+def get_analytics_overview(
+    # NOTE: alias="range" keeps the public URL contract stable while the
+    # local parameter avoids shadowing the built-in range() used below.
+    date_range: str = Query("this_year", alias="range", pattern="^(this_year|all_time)$"),
+    db: Session = Depends(get_db),
+    user=Depends(require_editor_mfa),
+):
+    """
+    Editor analytics: stat cards, submissions-over-time, and status funnel.
+
+    ``range=this_year`` restricts submissions_over_time and the range-scoped
+    stat cards to Jan 1 of the current year onward. Snapshot metrics like
+    "active reviewers" ignore the range because they're a current-state view.
+    """
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    if date_range == "this_year":
+        range_start = datetime(now.year, 1, 1)
+    else:
+        range_start = None  # all time
+
+    # ── Stat card computations ────────────────────────────
+    subs_q = db.query(Submission)
+    if range_start is not None:
+        subs_q = subs_q.filter(Submission.submitted_at >= range_start)
+
+    total_submissions = subs_q.count()
+
+    under_review = subs_q.filter(Submission.status.in_(_UNDER_REVIEW_STATUSES)).count()
+
+    accepted = subs_q.filter(Submission.status == SubmissionStatus.accepted).count()
+    rejected = subs_q.filter(Submission.status == SubmissionStatus.rejected).count()
+    total_terminal = accepted + rejected
+    acceptance_pct = (accepted / total_terminal * 100.0) if total_terminal else None
+
+    # Avg days to first decision: submitted_at → updated_at on any decided row.
+    # updated_at is a reasonable proxy for the decision timestamp because the
+    # last DB mutation on a decided row is typically the status change itself.
+    decided_deltas = (
+        subs_q
+        .filter(Submission.status.in_(_DECIDED_STATUSES))
+        .with_entities(
+            func.avg(
+                func.extract("epoch", Submission.updated_at - Submission.submitted_at)
+            ).label("avg_seconds")
+        )
+        .scalar()
+    )
+    avg_days = (float(decided_deltas) / 86400.0) if decided_deltas else None
+
+    # Reviewers is a snapshot metric — always current, not range-scoped.
+    active_reviewers = db.query(Reviewer).filter(Reviewer.is_active.is_(True)).count()
+
+    stat_cards = [
+        AnalyticsStatCard(
+            key="total_submissions",
+            label="Total Submissions",
+            value=str(total_submissions),
+            hint="This year" if date_range == "this_year" else "All time",
+        ),
+        AnalyticsStatCard(
+            key="under_review",
+            label="Under Review",
+            value=str(under_review),
+            hint="Awaiting decision",
+        ),
+        AnalyticsStatCard(
+            key="acceptance_rate",
+            label="Acceptance Rate",
+            value=(f"{acceptance_pct:.1f}%" if acceptance_pct is not None else "—"),
+            hint=f"{accepted}/{total_terminal} decided" if total_terminal else "No decisions yet",
+        ),
+        AnalyticsStatCard(
+            key="avg_first_decision_days",
+            label="Avg. days to first decision",
+            value=(f"{avg_days:.1f}" if avg_days is not None else "—"),
+            hint="Submitted → decision",
+        ),
+        AnalyticsStatCard(
+            key="published_articles",
+            label="Accepted Articles",
+            value=str(accepted),
+            hint="This year" if date_range == "this_year" else "All time",
+        ),
+        AnalyticsStatCard(
+            key="active_reviewers",
+            label="Active Reviewers",
+            value=str(active_reviewers),
+            hint="Snapshot",
+        ),
+    ]
+
+    # ── Submissions over time (12-bucket window) ─────────
+    current_month_start = datetime(now.year, now.month, 1)
+    if date_range == "this_year":
+        first_month = datetime(now.year, 1, 1)
+        month_count = now.month  # only through current month
+    else:
+        first_month = _add_months(current_month_start, -11)
+        month_count = 12
+
+    # Pre-seed buckets with zeros so the chart never has gaps.
+    buckets: dict[str, int] = {}
+    labels: dict[str, str] = {}
+    cursor = first_month
+    for _ in range(month_count):
+        key = cursor.strftime("%Y-%m")
+        buckets[key] = 0
+        labels[key] = f"{_MONTH_LABELS[cursor.month - 1]} {cursor.year}"
+        cursor = _add_months(cursor, 1)
+
+    rows = (
+        db.query(
+            func.to_char(func.date_trunc("month", Submission.submitted_at), "YYYY-MM").label("m"),
+            func.count().label("c"),
+        )
+        .filter(Submission.submitted_at >= first_month)
+        .group_by("m")
+        .all()
+    )
+    for r in rows:
+        if r.m in buckets:
+            buckets[r.m] = int(r.c)
+
+    submissions_over_time = [
+        AnalyticsMonthlyBucket(month=k, label=labels[k], count=v)
+        for k, v in buckets.items()
+    ]
+
+    # ── Status funnel ────────────────────────────────────
+    def _count_in(statuses: tuple) -> int:
+        return subs_q.filter(Submission.status.in_(statuses)).count()
+
+    status_funnel = [
+        AnalyticsFunnelStage(key="submitted", label="Submitted", count=total_submissions),
+        AnalyticsFunnelStage(key="under_review", label="Under Review", count=under_review),
+        AnalyticsFunnelStage(
+            key="revision_requested",
+            label="Revision Requested",
+            count=_count_in((SubmissionStatus.revision_requested, SubmissionStatus.returned_to_author)),
+        ),
+        AnalyticsFunnelStage(key="accepted", label="Accepted", count=accepted),
+        AnalyticsFunnelStage(key="rejected", label="Rejected", count=rejected),
+    ]
+
+    return AnalyticsOverview(
+        range=date_range,
+        generated_at=now.isoformat(),
+        stat_cards=stat_cards,
+        submissions_over_time=submissions_over_time,
+        status_funnel=status_funnel,
+    )

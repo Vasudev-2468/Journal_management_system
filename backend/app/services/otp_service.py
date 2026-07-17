@@ -201,7 +201,7 @@ def _send_otp_email(user: User, otp: str) -> bool:
     </div>
 
     <p style="font-size:12px;color:#9ca3af;">
-      This is an automated security message from the Academic Journal Editor Portal.
+      This is an automated security message from the JGAIR Editor Portal.
     </p>
     """)
     return _send_and_log(user.email, subject, body, "editor_mfa_otp_email")

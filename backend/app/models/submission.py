@@ -54,7 +54,7 @@ class Submission(Base):
     consult_party_decision = Column(String(50))  # "approve" or "reject"
     consult_party_comments = Column(Text)
     suggested_reviewers_data = Column(JSON)    # [{name, email, orcid, affiliation, expertise, match_score}]
-    paper_id_code = Column(String(50), unique=True, index=True)  # e.g. JNL-2026-0001
+    paper_id_code = Column(String(50), unique=True, index=True)  # e.g. JGAIR-2026-0001
 
     def __repr__(self):
         return f"<Submission(id={self.id}, title='{self.paper_title}', status={self.status})>"

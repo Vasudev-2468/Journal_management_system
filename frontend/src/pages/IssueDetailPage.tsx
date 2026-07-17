@@ -135,7 +135,7 @@ const IssueDetailPage: React.FC = () => {
                         <div className="lg:col-span-1">
                             <div className="aspect-[3/4] max-w-xs mx-auto rounded-2xl overflow-hidden shadow-2xl bg-gradient-to-br from-brand-500 to-brand-800 border-4 border-white/10 flex flex-col items-center justify-center p-6">
                                 <span className="text-brand-100 text-xs font-bold uppercase tracking-widest">
-                                    IJACR
+                                    JGAIR
                                 </span>
                                 <div className="mt-3 text-center">
                                     <p className="text-brand-100 text-sm font-semibold">Volume {volume.volume}</p>
@@ -176,7 +176,7 @@ const IssueDetailPage: React.FC = () => {
                                     📄 {issue.articleCount} article{issue.articleCount === 1 ? '' : 's'}
                                 </span>
                                 <span className="inline-flex items-center gap-2 px-3 py-1.5 bg-white/10 border border-white/20 rounded-lg font-semibold">
-                                    🔗 DOI 10.xxxxx/ijacr.{volume.year}.{String(issue.number).padStart(2, '0')}
+                                    🔗 DOI 10.xxxxx/jgair.{volume.year}.{String(issue.number).padStart(2, '0')}
                                 </span>
                                 <span className="inline-flex items-center gap-2 px-3 py-1.5 bg-white/10 border border-white/20 rounded-lg font-semibold">
                                     🔓 Open Access · CC BY 4.0

@@ -39,7 +39,7 @@ class AgentOrchestrator:
         self.pipeline_context = {}
 
     def generate_paper_id(self, submission: Submission) -> str:
-        """Generate a human-readable paper ID like JNL-2026-0001."""
+        """Generate a human-readable paper ID like JGAIR-2026-0001."""
         if submission.paper_id_code:
             return submission.paper_id_code
 
@@ -48,10 +48,10 @@ class AgentOrchestrator:
         count = (
             self.db.query(Submission)
             .filter(Submission.paper_id_code.isnot(None))
-            .filter(Submission.paper_id_code.like(f"JNL-{year}-%"))
+            .filter(Submission.paper_id_code.like(f"JGAIR-{year}-%"))
             .count()
         )
-        paper_id = f"JNL-{year}-{count + 1:04d}"
+        paper_id = f"JGAIR-{year}-{count + 1:04d}"
         submission.paper_id_code = paper_id
         self.db.commit()
         return paper_id

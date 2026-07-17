@@ -49,3 +49,8 @@ export const submitConsultPartyDecision = (submissionId, data) =>
 
 export const editorAssignReviewers = (submissionId, data) =>
   client.post(`/editor-portal/assign-reviewers/${submissionId}`, data).then((r) => r.data);
+
+// ── Analytics ───────────────────────────────────────────
+
+export const fetchAnalyticsOverview = (range = 'this_year') =>
+  client.get('/editor-portal/analytics/overview', { params: { range } }).then((r) => r.data);

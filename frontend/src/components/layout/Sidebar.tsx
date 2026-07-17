@@ -3,7 +3,7 @@ import React from 'react';
 const Sidebar: React.FC = () => {
     return (
         <div className="w-64 h-full bg-gray-800 text-white">
-            <h2 className="text-2xl font-bold p-4">Academic Journal</h2>
+            <h2 className="text-2xl font-bold p-4">JGAIR</h2>
             <nav className="mt-4">
                 <ul>
                     <li className="p-2 hover:bg-gray-700">

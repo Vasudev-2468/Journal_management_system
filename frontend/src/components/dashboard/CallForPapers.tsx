@@ -45,7 +45,7 @@ const CallForPapers: React.FC = () => {
                     Aim &amp; Scope
                 </h3>
                 <p className="text-sm text-gray-600 leading-relaxed">
-                    The Academic Journal System publishes high-quality, peer-reviewed research
+                    JGAIR publishes high-quality, peer-reviewed research
                     covering theoretical foundations, applied methodologies, and emerging
                     innovations in artificial intelligence, machine learning, and data science.
                     We welcome full-length papers, comprehensive reviews, short communications,

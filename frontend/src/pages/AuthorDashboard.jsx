@@ -77,9 +77,9 @@ function StatCard({ icon, label, value, color = 'green' }) {
 
 /* ─── Notification Bell ─────────────────────────────── */
 const NOTIFS = [
-  { id: 1, icon: '📋', text: 'Paper JNL-2026-045 moved to peer review', time: '2 days ago', unread: true },
-  { id: 2, icon: '📬', text: 'Decision letter available for JNL-2026-045', time: '5 days ago', unread: true },
-  { id: 3, icon: '✅', text: 'Initial check passed for JNL-2026-032', time: 'Apr 10', unread: false },
+  { id: 1, icon: '📋', text: 'Paper JGAIR-2026-045 moved to peer review', time: '2 days ago', unread: true },
+  { id: 2, icon: '📬', text: 'Decision letter available for JGAIR-2026-045', time: '5 days ago', unread: true },
+  { id: 3, icon: '✅', text: 'Initial check passed for JGAIR-2026-032', time: 'Apr 10', unread: false },
 ];
 
 const CSS = `
@@ -190,7 +190,7 @@ export default function AuthorDashboard() {
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/>
                   </svg>
                 </div>
-                <span className="font-bold text-gray-900 text-sm hidden sm:block">Journal of AI Research</span>
+                <span className="font-bold text-gray-900 text-sm hidden sm:block">Journal of Generative and Applied Intelligence Research</span>
               </Link>
               <span className="text-gray-300 hidden sm:block">|</span>
               <span className="text-sm font-semibold text-green-700 hidden sm:block">My Submissions</span>

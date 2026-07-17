@@ -163,6 +163,59 @@ def _extract_title(pdf_path: str) -> Optional[str]:
         return None
 
 
+# Common PDF ligatures + non-breaking space → their plain equivalents.
+_PDF_TEXT_TRANSLATIONS = str.maketrans({
+    "ﬀ": "ff", "ﬁ": "fi", "ﬂ": "fl",
+    "ﬃ": "ffi", "ﬄ": "ffl",
+    " ": " ", " ": " ", " ": " ",
+})
+
+_HYPHEN_WRAP_RE = re.compile(r"([A-Za-z])-\s*\n\s*([a-z])")
+
+
+def _normalize_abstract_text(text: str) -> str:
+    """
+    Reflow PDF-extracted abstract text into clean, paragraph-shaped prose.
+
+    PDF text extractors preserve the physical layout of the page: every soft
+    line-wrap becomes a literal newline, and hyphenated words break across
+    lines. Left as-is that produces the ragged textarea rendering the editor
+    sees.
+
+    This function:
+      1. Replaces common ligatures and thin/non-breaking spaces.
+      2. Joins hyphenated line-wraps ("progres-\\nsive" → "progressive").
+      3. Collapses single newlines to spaces while preserving double newlines
+         as paragraph breaks.
+      4. Squeezes runs of internal whitespace.
+
+    Not fixed here: stranded subscripts (e.g. "MoS" and "2" separated by
+    intervening text). The PDF extractor reorders spans by physical position,
+    so a subscript character can end up several lines away from its base.
+    Recovering that would require bounding-box analysis in the extractor
+    itself, not string cleanup.
+    """
+    if not text:
+        return text
+
+    text = text.translate(_PDF_TEXT_TRANSLATIONS)
+
+    # ── Join hyphenated line-wraps ────────────────────────
+    text = _HYPHEN_WRAP_RE.sub(r"\1\2", text)
+
+    # ── Reflow: preserve paragraph breaks, drop soft wraps ─
+    _PARA = "\x00PARA\x00"
+    text = re.sub(r"\n{2,}", _PARA, text)
+    text = re.sub(r"\s*\n\s*", " ", text)
+    text = text.replace(_PARA, "\n\n")
+
+    # ── Whitespace squeeze ────────────────────────────────
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r" *\n *", "\n", text)
+
+    return text.strip()
+
+
 def _extract_abstract(full_text: str) -> Optional[str]:
     match_start = ABSTRACT_START_RE.search(full_text)
     if not match_start:
@@ -170,7 +223,8 @@ def _extract_abstract(full_text: str) -> Optional[str]:
     after_header = full_text[match_start.end():]
     match_end = ABSTRACT_END_RE.search(after_header)
     abstract = after_header[: match_end.start()] if match_end else after_header[:3000]
-    return abstract.strip() or None
+    abstract = _normalize_abstract_text(abstract)
+    return abstract or None
 
 
 def extract_keywords_from_text(full_text: str) -> list[str]:

@@ -19,7 +19,7 @@ const HERO_VIDEO = 'https://videos.pexels.com/video-files/8199364/8199364-hd_192
 
 /* ── Timeline data ────────────────────────────────────── */
 const timeline = [
-    { year: '2013', event: 'IJACR founded by Academic Press International' },
+    { year: '2013', event: 'JGAIR founded by Academic Press International' },
     { year: '2015', event: 'First 100 articles published; CrossRef DOI integrated' },
     { year: '2018', event: 'Indexed in Google Scholar & DOAJ' },
     { year: '2021', event: 'Achieved Scopus indexing with CiteScore 2.4' },
@@ -107,12 +107,12 @@ const AboutPage: React.FC = () => {
                                 <div className="w-12 h-1 bg-brand-600 rounded mt-3 mb-6" />
                                 <div className="space-y-4 text-[15px] text-gray-600 leading-relaxed">
                                     <p>
-                                        The <strong className="text-gray-900">International Journal of AI &amp; Computing Research (IJACR)</strong> is 
+                                        The <strong className="text-gray-900">Journal of Generative and Applied Intelligence Research (JGAIR)</strong> is
                                         an international, peer-reviewed, open-access journal that publishes original research articles, comprehensive reviews, 
                                         short communications, and technical notes across all areas of artificial intelligence, machine learning, and computational sciences.
                                     </p>
                                     <p>
-                                        Focusing on both theoretical foundations and practical engineering approaches, IJACR provides a premier forum for researchers, 
+                                        Focusing on both theoretical foundations and practical engineering approaches, JGAIR provides a premier forum for researchers, 
                                         engineers, and practitioners to share advances in intelligent systems. The journal uniquely integrates AI-powered editorial 
                                         workflows — including automated plagiarism detection, intelligent reviewer matching, and AI-assisted quality assessment — to 
                                         deliver faster, fairer, and more transparent peer review.
@@ -148,7 +148,7 @@ const AboutPage: React.FC = () => {
                                 <h2 className="text-3xl font-extrabold text-gray-900 mt-2 tracking-tight">History &amp; Publisher</h2>
                                 <div className="w-12 h-1 bg-brand-600 rounded mt-3 mb-6" />
                                 <p className="text-[15px] text-gray-600 leading-relaxed mb-6">
-                                    Founded in 2013 by <strong className="text-gray-900">Academic Press International</strong>, IJACR has grown from a small 
+                                    Founded in 2013 by <strong className="text-gray-900">Academic Press International</strong>, JGAIR has grown from a small 
                                     regional publication into a globally recognized, Scopus-indexed journal serving the AI research community across 50+ countries.
                                 </p>
                                 {/* Timeline */}
@@ -181,7 +181,7 @@ const AboutPage: React.FC = () => {
                         </div>
                         <h2 className="text-3xl font-extrabold text-white tracking-tight">Open Access Statement</h2>
                         <p className="mt-6 text-lg text-gray-200 leading-relaxed max-w-3xl mx-auto">
-                            IJACR is a fully open-access journal. All articles are published under the <strong className="text-white">Creative Commons Attribution 4.0 
+                            JGAIR is a fully open-access journal. All articles are published under the <strong className="text-white">Creative Commons Attribution 4.0 
                             International License (CC BY 4.0)</strong>, allowing unrestricted use, distribution, and reproduction in any medium, provided the original 
                             work is properly cited.
                         </p>
@@ -293,7 +293,7 @@ const AboutPage: React.FC = () => {
                                         <h2 className="text-xl font-extrabold text-red-900">Plagiarism Policy</h2>
                                     </div>
                                     <p className="text-sm text-red-800 leading-relaxed">
-                                        IJACR maintains a <strong>zero-tolerance policy</strong> towards plagiarism. All submitted manuscripts are screened using 
+                                        JGAIR maintains a <strong>zero-tolerance policy</strong> towards plagiarism. All submitted manuscripts are screened using 
                                         AI-powered plagiarism detection tools. Manuscripts with a similarity index exceeding <strong>15%</strong> (excluding 
                                         references and quotations) will be returned to authors for revision.
                                     </p>
@@ -317,7 +317,7 @@ const AboutPage: React.FC = () => {
                                         <h2 className="text-xl font-extrabold text-brand-900">Publication Ethics</h2>
                                     </div>
                                     <p className="text-sm text-brand-800 leading-relaxed">
-                                        IJACR adheres to the guidelines established by the <strong>Committee on Publication Ethics (COPE)</strong>. Authors must 
+                                        JGAIR adheres to the guidelines established by the <strong>Committee on Publication Ethics (COPE)</strong>. Authors must 
                                         ensure their work is original, properly cited, and complies with ethical standards.
                                     </p>
                                     <ul className="mt-4 space-y-2 text-sm text-brand-800">
@@ -349,7 +349,7 @@ const AboutPage: React.FC = () => {
                             <span className="text-brand-600 text-sm font-bold uppercase tracking-wider">Global Visibility</span>
                             <h2 className="text-3xl font-extrabold text-gray-900 mt-2 tracking-tight">Indexing &amp; Archiving</h2>
                             <p className="text-gray-500 mt-3 max-w-xl mx-auto">
-                                IJACR is indexed in leading international databases, ensuring maximum discoverability and citation tracking for your research.
+                                JGAIR is indexed in leading international databases, ensuring maximum discoverability and citation tracking for your research.
                             </p>
                         </div>
                         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">

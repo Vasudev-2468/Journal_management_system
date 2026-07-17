@@ -1,5 +1,6 @@
 import logging
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -17,7 +18,7 @@ from app.utils.helpers import hash_password
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
-    title="Academic Journal Management System",
+    title="JGAIR — Journal of Generative and Applied Intelligence Research",
     version="1.0.0",
 )
 
@@ -38,7 +39,7 @@ app.add_middleware(
 def run_migrations():
     try:
         result = subprocess.run(
-            ["alembic", "upgrade", "head"],
+            [sys.executable, "-m", "alembic", "upgrade", "head"],
             capture_output=True,
             text=True,
             timeout=60,
@@ -83,7 +84,7 @@ def health_check():
 
 @app.get("/")
 def read_root():
-    return {"message": "Welcome to the Academic Journal Management System API"}
+    return {"message": "Welcome to the JGAIR — Journal of Generative and Applied Intelligence Research API"}
 
 
 # ── Routers ──────────────────────────────────────────────

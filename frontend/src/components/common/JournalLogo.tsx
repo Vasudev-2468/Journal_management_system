@@ -7,7 +7,7 @@ interface JournalLogoProps {
 }
 
 /**
- * Professional IJACR logo – renders a custom SVG mark combining
+ * Professional JGAIR logo – renders a custom SVG mark combining
  * an open-book motif with a neural-network / circuit node, plus
  * the journal name in a clean typographic lockup.
  */
@@ -68,7 +68,7 @@ const JournalLogo: React.FC<JournalLogoProps> = ({ variant = 'full', className =
             <span className={`inline-flex items-center gap-2.5 ${className}`}>
                 {LogoMark}
                 <span style={{ color: text1 }} className="font-bold text-lg tracking-tight leading-none select-none">
-                    IJACR
+                    JGAIR
                 </span>
             </span>
         );
@@ -80,10 +80,10 @@ const JournalLogo: React.FC<JournalLogoProps> = ({ variant = 'full', className =
             {LogoMark}
             <span className="flex flex-col select-none">
                 <span style={{ color: text1 }} className="font-extrabold text-[17px] tracking-tight leading-tight">
-                    IJACR
+                    JGAIR
                 </span>
                 <span style={{ color: text2 }} className="text-[10px] font-medium tracking-wide leading-tight">
-                    AI &amp; Computing Research
+                    Generative &amp; Applied Intelligence
                 </span>
             </span>
         </span>

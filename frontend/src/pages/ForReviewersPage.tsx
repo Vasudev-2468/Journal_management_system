@@ -118,7 +118,7 @@ const ForReviewersPage: React.FC = () => {
                         Guidelines, expectations, and best practices for peer reviewers — helping you deliver constructive, fair, and impactful reviews.
                     </p>
                     <div className="mt-8 flex flex-wrap justify-center gap-4">
-                        <a href="mailto:editorial@ijacr-journal.org?subject=Reviewer Application" className="inline-flex items-center gap-2 px-7 py-3.5 bg-white text-brand-900 font-bold rounded-xl hover:bg-gray-100 transition shadow-lg no-underline text-[15px]">
+                        <a href="mailto:editorial@jgair-journal.org?subject=Reviewer Application" className="inline-flex items-center gap-2 px-7 py-3.5 bg-white text-brand-900 font-bold rounded-xl hover:bg-gray-100 transition shadow-lg no-underline text-[15px]">
                             Become a Reviewer
                         </a>
                         <Link to="/editorial-board" className="inline-flex items-center gap-2 px-7 py-3.5 border-2 border-white/40 text-white font-bold rounded-xl hover:bg-white/10 transition no-underline text-[15px]">
@@ -139,7 +139,7 @@ const ForReviewersPage: React.FC = () => {
                                 <h2 className="text-3xl font-extrabold text-gray-900 mt-2 tracking-tight">Purpose of Peer Review</h2>
                                 <div className="w-12 h-1 bg-brand-600 rounded mt-3 mb-6" />
                                 <p className="text-[15px] text-gray-600 leading-relaxed mb-6">
-                                    At IJACR, peer review serves three core goals. We practice <strong className="text-gray-900">double-blind peer review</strong> — 
+                                    At JGAIR, peer review serves three core goals. We practice <strong className="text-gray-900">double-blind peer review</strong> — 
                                     reviewers do not know author identities, and authors do not know reviewer identities — ensuring impartial evaluation based solely on scientific merit.
                                 </p>
                                 <div className="space-y-3">
@@ -347,7 +347,7 @@ const ForReviewersPage: React.FC = () => {
                             <h2 className="text-3xl font-extrabold text-white tracking-tight">Ethical Guidelines for Reviewers</h2>
                             <p className="text-red-200 mt-3 max-w-2xl mx-auto">
                                 Violations of reviewer ethics are taken seriously. If you suspect plagiarism, data fabrication, or dual submission, 
-                                report immediately to <strong className="text-white">editor@ijacr-journal.org</strong>.
+                                report immediately to <strong className="text-white">editor@jgair-journal.org</strong>.
                             </p>
                         </div>
                         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -461,7 +461,7 @@ const ForReviewersPage: React.FC = () => {
                             Join our global network of expert reviewers. Your expertise helps advance AI &amp; computing research worldwide.
                         </p>
                         <div className="mt-8 flex flex-wrap justify-center gap-4">
-                            <a href="mailto:editorial@ijacr-journal.org?subject=Reviewer Application" className="inline-flex items-center gap-2 px-8 py-3.5 bg-white text-brand-900 font-bold rounded-xl hover:bg-gray-100 transition shadow-lg no-underline text-[15px]">
+                            <a href="mailto:editorial@jgair-journal.org?subject=Reviewer Application" className="inline-flex items-center gap-2 px-8 py-3.5 bg-white text-brand-900 font-bold rounded-xl hover:bg-gray-100 transition shadow-lg no-underline text-[15px]">
                                 Apply as Reviewer
                             </a>
                             <Link to="/for-authors" className="inline-flex items-center gap-2 px-8 py-3.5 border-2 border-white/40 text-white font-bold rounded-xl hover:bg-white/10 transition no-underline text-[15px]">

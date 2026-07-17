@@ -10,6 +10,7 @@ import {
   getSuggestedReviewers,
   triggerAgentPipeline,
   editorAssignReviewers,
+  fetchAnalyticsOverview,
 } from '../api/editor';
 
 /* ═══════════════════════════════════════════════════════════
@@ -184,7 +185,7 @@ export default function EditorDashboard() {
           )}
           {activePanel === 'reviewers' && <PlaceholderPanel title="Reviewers" />}
           {activePanel === 'notifications' && <PlaceholderPanel title="Notifications Log" />}
-          {activePanel === 'analytics' && <PlaceholderPanel title="Analytics" />}
+          {activePanel === 'analytics' && <AnalyticsPanel />}
         </div>
       </main>
 
@@ -1019,6 +1020,243 @@ function PlaceholderPanel({ title }) {
       <div className="bg-white rounded-xl border border-gray-200 p-12 text-center text-gray-400">
         {title} panel — coming soon.
       </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Analytics Panel
+   Editorial analytics: stat cards, submissions-over-time,
+   and status funnel. Data comes from
+   GET /editor-portal/analytics/overview?range=this_year|all_time
+   ═══════════════════════════════════════════════════════════ */
+
+const FUNNEL_COLORS = {
+  submitted: 'bg-blue-500',
+  under_review: 'bg-indigo-500',
+  revision_requested: 'bg-amber-500',
+  accepted: 'bg-emerald-500',
+  rejected: 'bg-rose-500',
+};
+
+function AnalyticsPanel() {
+  const [range, setRange] = useState('this_year');
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    fetchAnalyticsOverview(range)
+      .then((d) => { if (!cancelled) setData(d); })
+      .catch((e) => { if (!cancelled) setError(e?.response?.data?.detail || 'Failed to load analytics'); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [range]);
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h2 className="text-2xl font-bold text-gray-900">Analytics</h2>
+          <p className="text-sm text-gray-500 mt-1">
+            Editorial pipeline health at a glance.
+          </p>
+        </div>
+        <div className="inline-flex rounded-lg border border-gray-200 bg-white p-1 text-sm">
+          {[
+            { key: 'this_year', label: 'This year' },
+            { key: 'all_time', label: 'All time' },
+          ].map((opt) => (
+            <button
+              key={opt.key}
+              type="button"
+              onClick={() => setRange(opt.key)}
+              className={`px-3 py-1 rounded-md transition font-medium ${
+                range === opt.key
+                  ? 'bg-brand-600 text-white shadow'
+                  : 'text-gray-600 hover:text-gray-900'
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {error && (
+        <div className="mb-6 rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
+          {error}
+        </div>
+      )}
+
+      {/* Stat cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4 mb-8">
+        {loading || !data
+          ? Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-24" />)
+          : data.stat_cards.map((s) => (
+              <div
+                key={s.key}
+                className="bg-white rounded-xl shadow-sm border border-gray-200 p-5"
+              >
+                <p className="text-xs uppercase tracking-wide text-gray-500 font-semibold">
+                  {s.label}
+                </p>
+                <p className="text-3xl font-bold mt-2 text-gray-900">{s.value}</p>
+                {s.hint && (
+                  <p className="text-xs text-gray-400 mt-1">{s.hint}</p>
+                )}
+              </div>
+            ))}
+      </div>
+
+      {/* Submissions over time */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-8">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-lg font-bold text-gray-900">Submissions Over Time</h3>
+          <span className="text-xs text-gray-400">
+            {range === 'this_year' ? 'Jan → current month' : 'Rolling 12 months'}
+          </span>
+        </div>
+        {loading || !data ? (
+          <Skeleton className="h-56 w-full" />
+        ) : (
+          <SubmissionsBarChart buckets={data.submissions_over_time} />
+        )}
+      </div>
+
+      {/* Status funnel */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-lg font-bold text-gray-900">Pipeline Snapshot</h3>
+          <span className="text-xs text-gray-400">Count at each stage</span>
+        </div>
+        {loading || !data ? (
+          <SkeletonRows rows={5} />
+        ) : (
+          <StatusFunnel stages={data.status_funnel} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SubmissionsBarChart({ buckets }) {
+  const width = 800;
+  const height = 240;
+  const padLeft = 40;
+  const padRight = 12;
+  const padTop = 16;
+  const padBottom = 42;
+  const chartW = width - padLeft - padRight;
+  const chartH = height - padTop - padBottom;
+
+  const maxCount = Math.max(1, ...buckets.map((b) => b.count));
+  // Round the axis up to a friendly integer.
+  const axisMax = Math.max(5, Math.ceil(maxCount / 5) * 5);
+  const gridLines = 4;
+
+  if (buckets.length === 0) {
+    return (
+      <div className="h-48 flex items-center justify-center text-sm text-gray-400">
+        No submissions in this range yet.
+      </div>
+    );
+  }
+
+  const barGap = 6;
+  const barSlot = chartW / buckets.length;
+  const barW = Math.max(4, barSlot - barGap);
+
+  return (
+    <div className="w-full overflow-x-auto">
+      <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-56" role="img" aria-label="Submissions over time">
+        {/* Y grid + labels */}
+        {Array.from({ length: gridLines + 1 }).map((_, i) => {
+          const y = padTop + (chartH * i) / gridLines;
+          const value = Math.round(axisMax - (axisMax * i) / gridLines);
+          return (
+            <g key={i}>
+              <line
+                x1={padLeft} x2={width - padRight} y1={y} y2={y}
+                stroke="#e5e7eb" strokeWidth="1"
+              />
+              <text
+                x={padLeft - 6} y={y + 4}
+                textAnchor="end" fontSize="11" fill="#9ca3af"
+              >
+                {value}
+              </text>
+            </g>
+          );
+        })}
+
+        {/* Bars */}
+        {buckets.map((b, i) => {
+          const h = (b.count / axisMax) * chartH;
+          const x = padLeft + i * barSlot + barGap / 2;
+          const y = padTop + chartH - h;
+          return (
+            <g key={b.month}>
+              <rect
+                x={x} y={y} width={barW} height={h}
+                fill="#4f46e5" rx="3"
+              >
+                <title>{`${b.label}: ${b.count} submission${b.count === 1 ? '' : 's'}`}</title>
+              </rect>
+              <text
+                x={x + barW / 2} y={padTop + chartH + 16}
+                textAnchor="middle" fontSize="10" fill="#6b7280"
+                transform={
+                  buckets.length > 8
+                    ? `rotate(-40 ${x + barW / 2} ${padTop + chartH + 16})`
+                    : undefined
+                }
+              >
+                {b.label.split(' ')[0]}
+              </text>
+              {b.count > 0 && (
+                <text
+                  x={x + barW / 2} y={y - 4}
+                  textAnchor="middle" fontSize="10" fill="#374151" fontWeight="600"
+                >
+                  {b.count}
+                </text>
+              )}
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
+function StatusFunnel({ stages }) {
+  const maxCount = Math.max(1, ...stages.map((s) => s.count));
+  return (
+    <div className="space-y-3">
+      {stages.map((s) => {
+        const pct = (s.count / maxCount) * 100;
+        const color = FUNNEL_COLORS[s.key] || 'bg-gray-400';
+        return (
+          <div key={s.key} className="flex items-center gap-4">
+            <div className="w-40 shrink-0 text-sm font-medium text-gray-700">
+              {s.label}
+            </div>
+            <div className="flex-1 bg-gray-100 rounded-full h-6 overflow-hidden relative">
+              <div
+                className={`h-full ${color} rounded-full transition-all duration-300`}
+                style={{ width: `${Math.max(pct, s.count > 0 ? 2 : 0)}%` }}
+              />
+              <span className="absolute inset-0 flex items-center px-3 text-xs font-semibold text-gray-800">
+                {s.count}
+              </span>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

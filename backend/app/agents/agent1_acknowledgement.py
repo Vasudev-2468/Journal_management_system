@@ -228,6 +228,6 @@ class AcknowledgementAgent:
             f"3️⃣ Editorial decision\n\n"
             f"Track your submission at:\n"
             f"{settings.FRONTEND_URL}/submission/{submission.id}\n\n"
-            f"— Academic Journal Editorial Team"
+            f"— JGAIR Editorial Team"
         )
         wa_send_and_log(author_user.whatsapp_number, body, "agent1_author_whatsapp_acknowledgement")
