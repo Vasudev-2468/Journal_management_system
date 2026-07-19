@@ -23,15 +23,23 @@ if [ ! -d "$APP_DIR" ]; then
 fi
 cd "$APP_DIR"
 
+# ── Compute the CORS origin for the frontend ──────────────
+# Terraform substitutes this before the shell ever sees it.
+%{ if deploy_frontend_on_ec2 ~}
+FRONTEND_ORIGIN="https://${domain}"
+%{ else ~}
+FRONTEND_ORIGIN="${frontend_public_url}"
+%{ endif ~}
+
 # ── Write production backend/.env ─────────────────────────
-cat > "$APP_DIR/backend/.env" <<'ENVEOF'
+cat > "$APP_DIR/backend/.env" <<ENVEOF
 DATABASE_URL=postgresql://journaladmin:${postgres_password}@db:5432/journaldb
 SECRET_KEY=${secret_key}
 ALGORITHM=HS256
 JWT_EXPIRE_DAYS=14
 
-ALLOW_ORIGINS=https://${domain}
-FRONTEND_URL=https://${domain}
+ALLOW_ORIGINS=$FRONTEND_ORIGIN
+FRONTEND_URL=$FRONTEND_ORIGIN
 
 AWS_S3_BUCKET_NAME=${aws_s3_bucket_name}
 AWS_REGION=${aws_region}
@@ -48,7 +56,8 @@ chown ubuntu:ubuntu "$APP_DIR/backend/.env"
 chmod 600 "$APP_DIR/backend/.env"
 
 # ── Write Caddyfile for HTTPS termination ─────────────────
-cat > "$APP_DIR/Caddyfile" <<'CADDYEOF'
+%{ if deploy_frontend_on_ec2 ~}
+cat > "$APP_DIR/Caddyfile" <<CADDYEOF
 ${domain} {
     reverse_proxy frontend:3000
 }
@@ -57,10 +66,18 @@ ${api_domain} {
     reverse_proxy backend:8000
 }
 CADDYEOF
+%{ else ~}
+cat > "$APP_DIR/Caddyfile" <<CADDYEOF
+${api_domain} {
+    reverse_proxy backend:8000
+}
+CADDYEOF
+%{ endif ~}
 chown ubuntu:ubuntu "$APP_DIR/Caddyfile"
 
 # ── Compose override: add Caddy, drop direct port exposure ─
-cat > "$APP_DIR/docker-compose.override.yml" <<'OVERRIDEEOF'
+%{ if deploy_frontend_on_ec2 ~}
+cat > "$APP_DIR/docker-compose.override.yml" <<OVERRIDEEOF
 services:
   db:
     environment:
@@ -98,6 +115,45 @@ volumes:
   caddy_data:
   caddy_config:
 OVERRIDEEOF
+%{ else ~}
+# Frontend is hosted on Amplify — skip the frontend service entirely and only
+# proxy the API through Caddy. Saves ~200 MB RAM and one build step on the EC2.
+cat > "$APP_DIR/docker-compose.override.yml" <<OVERRIDEEOF
+services:
+  db:
+    environment:
+      POSTGRES_PASSWORD: ${postgres_password}
+
+  backend:
+    ports: []
+    environment:
+      DATABASE_URL: postgresql://journaladmin:${postgres_password}@db:5432/journaldb
+
+  # Neutralise the frontend service: docker-compose still parses the base file,
+  # but this override makes the frontend a no-op container we never start.
+  frontend:
+    profiles: ["disabled"]
+
+  caddy:
+    image: caddy:2
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - backend_network
+    depends_on:
+      - backend
+
+volumes:
+  caddy_data:
+  caddy_config:
+OVERRIDEEOF
+%{ endif ~}
 chown ubuntu:ubuntu "$APP_DIR/docker-compose.override.yml"
 
 # ── Bring the stack up ────────────────────────────────────

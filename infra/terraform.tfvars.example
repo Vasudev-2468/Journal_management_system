@@ -2,10 +2,10 @@
 # terraform.tfvars is gitignored — never commit real secrets.
 
 # ── Basics ────────────────────────────────────────────────
-region        = "us-east-1"
-project       = "jgair"
-environment   = "prod"
-instance_type = "t3.small"          # t3.micro if free tier + you added swap
+region              = "us-east-1"
+project             = "jgair"
+environment         = "prod"
+instance_type       = "t3.small"          # t3.micro if free tier + you added swap
 root_volume_size_gb = 30
 
 # ── SSH access ────────────────────────────────────────────
@@ -22,10 +22,26 @@ s3_bucket_name = "jgair-manuscripts-prod-<random-suffix>"
 # ── App repo ──────────────────────────────────────────────
 github_repo_url = "https://github.com/Vasudev-2468/Journal_management_system.git"
 
-# ── DNS ───────────────────────────────────────────────────
-# Point A records for these at the elastic_ip output AFTER apply.
-domain     = "jgair.example.com"
+# ── Architecture: where does the frontend live? ───────────
+# false (default) → frontend on AWS Amplify (uses amplify.yml at repo root).
+#                   EC2 only runs the API. Set `frontend_public_url` below.
+# true            → frontend runs on the EC2 next to the backend. Set `domain`
+#                   below and skip Amplify.
+deploy_frontend_on_ec2 = false
+
+# ── DNS / URLs ────────────────────────────────────────────
+# ALWAYS required: the API's public hostname. Point an A record at the
+# elastic_ip output AFTER apply.
 api_domain = "api.jgair.example.com"
+
+# Required ONLY when deploy_frontend_on_ec2 = true (leave empty otherwise).
+domain = ""
+
+# Required ONLY when deploy_frontend_on_ec2 = false (Amplify path).
+# Set this to your Amplify default URL (https://main.d1abcxyz.amplifyapp.com)
+# or the custom domain you attached in Amplify. Include the scheme, no
+# trailing slash.
+frontend_public_url = "https://main.REPLACE_ME.amplifyapp.com"
 
 # ── Secrets — generate real values before apply ───────────
 # postgres_password: any strong string
