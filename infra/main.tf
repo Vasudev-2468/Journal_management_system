@@ -88,13 +88,62 @@ variable "github_repo_url" {
 }
 
 variable "domain" {
-  description = "Public domain the frontend will serve at (e.g. jgair.example.com)"
+  description = <<EOT
+Public domain the frontend will serve at when deploy_frontend_on_ec2 = true.
+Ignored when the frontend is hosted on Amplify — set frontend_public_url instead.
+EOT
   type        = string
+  default     = ""
 }
 
 variable "api_domain" {
   description = "Public domain the backend/API will serve at (e.g. api.jgair.example.com)"
   type        = string
+}
+
+variable "deploy_frontend_on_ec2" {
+  description = <<EOT
+When true, the EC2 runs the frontend container and Caddy serves it on `domain`.
+When false, the frontend is expected to be hosted externally (AWS Amplify) —
+Caddy on the EC2 only serves the API on `api_domain`, and CORS is opened to
+`frontend_public_url` instead. Defaults to false to match the amplify.yml
+in the repo root.
+EOT
+  type        = bool
+  default     = false
+}
+
+variable "frontend_public_url" {
+  description = <<EOT
+Full origin (with scheme, no trailing slash) of the externally-hosted frontend.
+Used to set ALLOW_ORIGINS and FRONTEND_URL in the backend's .env when
+deploy_frontend_on_ec2 = false. Example: "https://main.d1abcxyz.amplifyapp.com"
+or your Amplify custom domain.
+EOT
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.frontend_public_url == "" || can(regex("^https?://", var.frontend_public_url))
+    error_message = "frontend_public_url must include a scheme (http:// or https://) if set."
+  }
+}
+
+# Cross-variable check: the frontend has to live somewhere.
+resource "null_resource" "validate_frontend_target" {
+  lifecycle {
+    precondition {
+      condition = (
+        (var.deploy_frontend_on_ec2 && var.domain != "") ||
+        (!var.deploy_frontend_on_ec2 && var.frontend_public_url != "")
+      )
+      error_message = <<EOT
+Frontend host is ambiguous. Set exactly one:
+  - deploy_frontend_on_ec2 = true  → then `domain` must be set
+  - deploy_frontend_on_ec2 = false → then `frontend_public_url` must be set
+EOT
+    }
+  }
 }
 
 # ── Application secrets ───────────────────────────────────
@@ -307,17 +356,19 @@ resource "aws_instance" "app" {
   }
 
   user_data = templatefile("${path.module}/user-data.sh.tftpl", {
-    github_repo_url     = var.github_repo_url
-    domain              = var.domain
-    api_domain          = var.api_domain
-    postgres_password   = var.postgres_password
-    secret_key          = var.secret_key
-    openai_api_key      = var.openai_api_key
-    anthropic_api_key   = var.anthropic_api_key
-    sendgrid_api_key    = var.sendgrid_api_key
-    sendgrid_from_email = var.sendgrid_from_email
-    aws_s3_bucket_name  = var.s3_bucket_name
-    aws_region          = var.region
+    github_repo_url        = var.github_repo_url
+    domain                 = var.domain
+    api_domain             = var.api_domain
+    deploy_frontend_on_ec2 = var.deploy_frontend_on_ec2
+    frontend_public_url    = var.frontend_public_url
+    postgres_password      = var.postgres_password
+    secret_key             = var.secret_key
+    openai_api_key         = var.openai_api_key
+    anthropic_api_key      = var.anthropic_api_key
+    sendgrid_api_key       = var.sendgrid_api_key
+    sendgrid_from_email    = var.sendgrid_from_email
+    aws_s3_bucket_name     = var.s3_bucket_name
+    aws_region             = var.region
   })
 
   # Redeploy the instance if user-data changes.
