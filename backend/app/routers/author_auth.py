@@ -1,37 +1,58 @@
 """
-Author Auth Router — Two-step authentication (Email OTP + WhatsApp OTP).
+Author Auth Router — two-step (email) or three-step (email + WhatsApp) MFA.
 
 Flow:
-  1. POST /author-auth/login        → Credentials → temp JWT (no MFA)
-  2. POST /author-auth/send-otp     → Send OTP to email or whatsapp
-  3. POST /author-auth/verify-otp   → Verify OTP for a specific channel
-     - After email OTP verified → must do whatsapp OTP
-     - After both verified → issues full author_mfa_verified JWT
-  4. GET  /author-auth/me           → Current author profile
-  5. PATCH /author-auth/profile     → Update author profile details
+  1. POST /author-auth/login       → email + password → server sends an
+                                     email OTP, returns a short-lived
+                                     pre-auth token (10 min).
+  2. POST /author-auth/verify-otp  → OTP + pre-auth token →
+                                     - if the user has NO WhatsApp on file,
+                                       mints the full session token.
+                                     - if the user has a WhatsApp number,
+                                       fires the WhatsApp OTP and returns
+                                       `stage="whatsapp_needed"` with the
+                                       same pre-auth token.
+  3. POST /author-auth/verify-otp  → WhatsApp OTP + pre-auth token →
+                                     mints the full session token.
+  4. POST /author-auth/resend-otp  → resend the current-stage OTP.
+  5. GET  /author-auth/me          → current profile (full session required).
+  6. PATCH /author-auth/profile    → update details (full session required).
+  7. POST /author-auth/profile/picture → upload avatar (full session required).
+
+The prior implementation minted an `author_mfa="fully_verified"` token
+directly on password login and left every OTP endpoint unreachable — MFA
+was disabled in practice. This restores the promise of two-factor auth.
+
+Any request that carries the pre-auth token to a full-session endpoint is
+rejected with 403 + `X-Author-MFA-Required: true` so the frontend can
+redirect back to the login page.
 """
 
 import logging
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from pydantic import BaseModel, EmailStr
+from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile, status
+from jose import JWTError, jwt
+from pydantic import BaseModel, ConfigDict, EmailStr
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.database import get_db
 from app.models.user import User, UserRole
+from app.schemas.user import AuthorProfileUpdate
 from app.services.auth_service import authenticate_user, create_access_token
 from app.services.otp_service import create_and_send_otp, verify_otp
-from app.schemas.user import AuthorProfileUpdate
-from app.config import settings
-from jose import JWTError, jwt
+from app.services import totp_service
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-MFA_SESSION_HOURS = 24  # How long the fully-verified token lasts
+MFA_SESSION_HOURS = 24               # Full session token lifetime.
+PRE_AUTH_TOKEN_LIFETIME = timedelta(minutes=10)
+_PRE_AUTH_SCOPE = "author_pre_auth"  # Bounded scope for step-1/2 tokens.
+_SESSION_SCOPE = "session"           # Full session token scope.
 
 
 # ── Schemas ──────────────────────────────────────────────
@@ -41,13 +62,52 @@ class AuthorLoginRequest(BaseModel):
     password: str
 
 
-class SendOTPRequest(BaseModel):
-    channel: str  # "email" or "whatsapp"
+class AuthorLoginResponse(BaseModel):
+    mfa_required: bool = True
+    pre_auth_token: str
+    stage: str = "email"           # Which OTP the user must enter next.
+    channel: str = "email"
+    masked_destination: str
+    expires_in_seconds: int
+    has_whatsapp: bool
+    # Only populated when EDITOR_DEV_MODE (rename pending) is on AND the
+    # channel provider is not configured. Never in production.
+    dev_otp: Optional[str] = None
 
 
 class VerifyOTPRequest(BaseModel):
     otp: str
-    channel: str  # "email" or "whatsapp"
+
+
+class VerifyOtpResponse(BaseModel):
+    """Union-shaped step response. `stage` tells the frontend what to render
+    next:
+      - "totp_enrolment_needed" — first-time TOTP setup (payload has qr_svg,
+        secret, otpauth_uri).
+      - "totp_needed" — user is enrolled; ask for the current 6-digit code.
+      - "whatsapp_needed" — WhatsApp OTP dispatched, ask for it.
+      - "complete" — access_token issued.
+    """
+    stage: str
+    email_verified: bool = False
+    whatsapp_verified: bool = False
+    totp_verified: bool = False
+    # Populated on completion.
+    access_token: Optional[str] = None
+    token_type: Optional[str] = None
+    # Populated for whatsapp_needed.
+    channel: Optional[str] = None
+    masked_destination: Optional[str] = None
+    expires_in_seconds: Optional[int] = None
+    dev_otp: Optional[str] = None
+    # Populated for totp_enrolment_needed.
+    totp_secret: Optional[str] = None           # base32 — the user's device stores this
+    totp_otpauth_uri: Optional[str] = None      # full otpauth:// URI
+    totp_qr_data_uri: Optional[str] = None      # inline SVG as data URI
+
+
+class TotpCodeRequest(BaseModel):
+    code: str
 
 
 class AuthorUserResponse(BaseModel):
@@ -69,222 +129,327 @@ class AuthorUserResponse(BaseModel):
     mfa_email_verified: bool = False
     mfa_whatsapp_verified: bool = False
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 
-# ── Helpers ──────────────────────────────────────────────
+# ── Token helpers ────────────────────────────────────────
 
-def _get_author_from_token(
-    token: str,
-    db: Session,
-    require_full_mfa: bool = False,
-) -> User:
-    """Decode JWT and return the author user. Optionally require full MFA."""
-    try:
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
-        email = payload.get("sub")
-        if not email:
-            raise HTTPException(status_code=401, detail="Invalid token")
-    except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
-
-    user = db.query(User).filter(User.email == email).first()
-    if not user:
-        raise HTTPException(status_code=401, detail="User not found")
-
-    if require_full_mfa:
-        mfa_status = payload.get("author_mfa", "")
-        if mfa_status != "fully_verified":
-            raise HTTPException(
-                status_code=403,
-                detail="Two-step verification required. Please verify both email and WhatsApp.",
-                headers={"X-Author-MFA-Required": "true"},
-            )
-
-    return user
+def _mint_pre_auth_token(email: str, totp_ok: bool = False) -> str:
+    # totp_ok is set once the user verifies TOTP within this login run.
+    # Because JWTs are stateless and TOTP codes rotate every 30 s, we track
+    # "cleared TOTP this session" on the pre-auth JWT itself rather than
+    # persisting it. The token TTL (10 min) upper-bounds the risk.
+    data = {"sub": email, "scope": _PRE_AUTH_SCOPE, "role": "author"}
+    if totp_ok:
+        data["totp_ok"] = True
+    return create_access_token(data=data, expires_delta=PRE_AUTH_TOKEN_LIFETIME)
 
 
-def _extract_token(authorization: str) -> str:
-    """Extract Bearer token from Authorization header."""
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing authorization token")
-    return authorization[7:]
-
-
-# ── 1. Login (credentials only → temp token) ────────────
-
-@router.post("/login")
-def author_login(body: AuthorLoginRequest, db: Session = Depends(get_db)):
-    """
-    Authenticate with email + password.
-    MFA (email/WhatsApp OTP) is temporarily disabled — issues fully-verified token directly.
-    """
-    user = authenticate_user(db, body.email, body.password)
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid email or password")
-
-    if not user.is_active:
-        raise HTTPException(status_code=403, detail="Account is deactivated")
-
-    # MFA disabled: issue fully-verified token immediately
-    token = create_access_token(
+def _mint_session_token(user: User) -> str:
+    return create_access_token(
         data={
             "sub": user.email,
-            "role": user.role.value,
+            "scope": _SESSION_SCOPE,
+            "role": user.role.value if user.role else "author",
             "author_mfa": "fully_verified",
         },
         expires_delta=timedelta(hours=MFA_SESSION_HOURS),
     )
 
-    return {
-        "access_token": token,
-        "token_type": "bearer",
-        "mfa_required": False,
-        "user": {
-            "email": user.email,
-            "full_name": user.full_name,
-            "has_whatsapp": bool(user.whatsapp_number),
-        },
-    }
 
-
-# ── 2. Send OTP ─────────────────────────────────────────
-
-@router.post("/send-otp")
-def author_send_otp(
-    body: SendOTPRequest,
-    authorization: str = Depends(lambda request: request.headers.get("Authorization")),
-    db: Session = Depends(get_db),
-):
-    """
-    Send OTP to the specified channel (email or whatsapp).
-    Requires the temp token from step 1.
-    """
-    token = _extract_token(authorization)
-    user = _get_author_from_token(token, db)
-
-    if body.channel not in ("email", "whatsapp"):
-        raise HTTPException(status_code=400, detail="Channel must be 'email' or 'whatsapp'")
-
-    if body.channel == "whatsapp" and not user.whatsapp_number:
+def _decode(authorization: Optional[str]) -> dict:
+    """Extract the Bearer token from the Authorization header and decode."""
+    if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(
-            status_code=400,
-            detail="No WhatsApp number on file. Please update your profile first.",
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing or malformed Authorization header",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    token = authorization.split(" ", 1)[1].strip()
+    try:
+        return jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+    except JWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
         )
 
-    # Check if email must be verified first
-    if body.channel == "whatsapp" and not user.mfa_email_verified_at:
+
+def _load_author(db: Session, email: str) -> User:
+    user = db.query(User).filter(User.email == email).first()
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Account not found")
+    return user
+
+
+def _require_pre_auth_or_session(
+    authorization: Optional[str], db: Session
+) -> tuple[User, dict]:
+    """Accept either the pre-auth or the full session token — used by OTP
+    endpoints, which the user visits DURING login."""
+    payload = _decode(authorization)
+    scope = payload.get("scope")
+    if scope not in (_PRE_AUTH_SCOPE, _SESSION_SCOPE):
+        raise HTTPException(status_code=401, detail="Wrong token scope")
+    email = payload.get("sub")
+    if not email:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    return _load_author(db, email), payload
+
+
+def _require_full_session(
+    authorization: Optional[str], db: Session
+) -> User:
+    """Reject pre-auth tokens. Every profile / picture / me route uses this."""
+    payload = _decode(authorization)
+    scope = payload.get("scope")
+    if scope != _SESSION_SCOPE:
         raise HTTPException(
-            status_code=400,
-            detail="Please verify your email first before WhatsApp verification.",
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Two-step verification required.",
+            headers={"X-Author-MFA-Required": "true"},
+        )
+    if payload.get("author_mfa") != "fully_verified":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Two-step verification required.",
+            headers={"X-Author-MFA-Required": "true"},
+        )
+    email = payload.get("sub")
+    if not email:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    return _load_author(db, email)
+
+
+def _reset_mfa_state(user: User) -> None:
+    """Wipe stale per-channel verification stamps at the start of a fresh
+    login so a user who verified email hours ago still has to re-verify.
+    We intentionally DO NOT clear totp_enrolled_at — the enrolment survives
+    across sessions."""
+    user.mfa_email_verified_at = None
+    user.mfa_whatsapp_verified_at = None
+
+
+def _dev_otp_of(result: dict) -> Optional[str]:
+    """Only expose dev OTPs when the operator explicitly opted in."""
+    return result.get("dev_otp") if settings.EDITOR_DEV_MODE else None
+
+
+# ── 1. Login → send email OTP, return pre-auth token ─────
+
+@router.post("/login", response_model=AuthorLoginResponse)
+def author_login(body: AuthorLoginRequest, db: Session = Depends(get_db)):
+    user = authenticate_user(db, body.email, body.password)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="Account is deactivated")
+
+    # Start from a clean slate — force a fresh email OTP verification even
+    # if this user completed one yesterday.
+    _reset_mfa_state(user)
+    db.commit()
+
+    result = create_and_send_otp(db, user, channel="email")
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=500,
+            detail=result.get("error") or "Could not send verification code",
         )
 
-    result = create_and_send_otp(db, user, channel=body.channel)
-
-    if not result["success"]:
-        raise HTTPException(status_code=429, detail=result.get("error", "Failed to send OTP"))
-
-    return {
-        "message": f"Verification code sent via {body.channel}",
-        "channel": result.get("channel"),
-        "expires_in_seconds": result.get("expires_in_seconds"),
-        "masked_destination": result.get("masked_destination"),
-        "dev_otp": result.get("dev_otp"),  # Only present in dev mode
-    }
+    return AuthorLoginResponse(
+        pre_auth_token=_mint_pre_auth_token(user.email),
+        stage="email",
+        channel=result.get("channel", "email"),
+        masked_destination=result.get("masked_destination", ""),
+        expires_in_seconds=result.get("expires_in_seconds", 300),
+        has_whatsapp=bool(user.whatsapp_number),
+        dev_otp=_dev_otp_of(result),
+    )
 
 
-# ── 3. Verify OTP ───────────────────────────────────────
+# ── 2. Verify OTP → progress to WhatsApp or mint session ─
 
-@router.post("/verify-otp")
+@router.post("/verify-otp", response_model=VerifyOtpResponse)
 def author_verify_otp(
     body: VerifyOTPRequest,
-    authorization: str = Depends(lambda request: request.headers.get("Authorization")),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
     db: Session = Depends(get_db),
 ):
-    """
-    Verify the OTP for a specific channel.
-    After both email and whatsapp are verified, issues a fully-verified JWT.
-    """
-    token = _extract_token(authorization)
-    user = _get_author_from_token(token, db)
+    user, payload = _require_pre_auth_or_session(authorization, db)
+    totp_ok = bool(payload.get("totp_ok"))
 
-    if body.channel not in ("email", "whatsapp"):
-        raise HTTPException(status_code=400, detail="Channel must be 'email' or 'whatsapp'")
-
-    # Must verify email before whatsapp
-    if body.channel == "whatsapp" and not user.mfa_email_verified_at:
+    # Determine which OTP the user is submitting right now based on the
+    # stages already cleared.
+    if user.mfa_email_verified_at is None:
+        channel = "email"
+    elif not totp_ok:
+        # TOTP hasn't cleared yet — reject and return the next-stage hint.
         raise HTTPException(
-            status_code=400,
-            detail="Please verify your email first.",
+            status_code=409,
+            detail="Authenticator code required. Call /author-auth/verify-totp.",
         )
+    elif bool(user.whatsapp_number) and user.mfa_whatsapp_verified_at is None:
+        channel = "whatsapp"
+    else:
+        return _finish_mfa(user, db, totp_ok=totp_ok)
 
     result = verify_otp(db, user, body.otp)
-
-    if not result["success"]:
+    if not result.get("success"):
         status_code = 423 if result.get("locked") else 400
-        raise HTTPException(status_code=status_code, detail=result["error"])
+        raise HTTPException(status_code=status_code, detail=result.get("error") or "OTP verification failed")
 
-    # Mark channel as verified
     now = datetime.utcnow()
-    if body.channel == "email":
+    if channel == "email":
         user.mfa_email_verified_at = now
-    elif body.channel == "whatsapp":
+    else:
         user.mfa_whatsapp_verified_at = now
     db.commit()
 
-    # Check if both channels are now verified
-    email_done = user.mfa_email_verified_at is not None
-    whatsapp_done = user.mfa_whatsapp_verified_at is not None
-    fully_verified = email_done and whatsapp_done
+    # Next stage — after email OTP, TOTP is required (enrolment or verify).
+    if channel == "email":
+        if not totp_service.is_enrolled(user):
+            secret = totp_service.start_enrolment(db, user)
+            uri = totp_service.provisioning_uri(secret, user.email)
+            return VerifyOtpResponse(
+                stage="totp_enrolment_needed",
+                email_verified=True,
+                totp_secret=secret,
+                totp_otpauth_uri=uri,
+                totp_qr_data_uri=totp_service.qr_code_data_uri(uri),
+            )
+        return VerifyOtpResponse(
+            stage="totp_needed",
+            email_verified=True,
+        )
 
-    response = {
-        "success": True,
-        "channel_verified": body.channel,
-        "email_verified": email_done,
-        "whatsapp_verified": whatsapp_done,
-        "fully_verified": fully_verified,
+    # channel == "whatsapp" — check whether the user is fully done.
+    return _finish_mfa(user, db, totp_ok=totp_ok)
+
+
+@router.post("/verify-totp", response_model=VerifyOtpResponse)
+def author_verify_totp(
+    body: TotpCodeRequest,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    """Verify a TOTP code, either as first-time enrolment confirmation or
+    as an already-enrolled user's login-time proof. Returns a NEW pre-auth
+    token with `totp_ok=true` embedded, plus the next-stage hint."""
+    user, payload = _require_pre_auth_or_session(authorization, db)
+
+    # TOTP must be gated behind email verification (users can't skip it).
+    if user.mfa_email_verified_at is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Email verification required before authenticator code.",
+        )
+
+    if totp_service.is_enrolled(user):
+        ok = totp_service.verify(db, user, body.code)
+    else:
+        # First-time enrolment confirmation. `start_enrolment` must have run
+        # (during the /verify-otp email step) — else there's no secret to
+        # verify against and we bounce back to that stage.
+        if not user.totp_secret:
+            raise HTTPException(
+                status_code=409,
+                detail="TOTP enrolment has not been started. Complete email verification first.",
+            )
+        ok = totp_service.confirm_enrolment(db, user, body.code)
+
+    if not ok:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid authenticator code. Check your device clock and try again.",
+        )
+
+    # Mint a new pre-auth token that carries totp_ok=true so the caller can
+    # progress to WhatsApp (if enrolled) or finish.
+    new_token = _mint_pre_auth_token(user.email, totp_ok=True)
+
+    if bool(user.whatsapp_number) and user.mfa_whatsapp_verified_at is None:
+        wa = create_and_send_otp(db, user, channel="whatsapp")
+        if not wa.get("success"):
+            raise HTTPException(
+                status_code=500,
+                detail=wa.get("error") or "Could not send WhatsApp verification code",
+            )
+        return VerifyOtpResponse(
+            stage="whatsapp_needed",
+            email_verified=True,
+            totp_verified=True,
+            access_token=new_token,           # New pre-auth carrying totp_ok=true.
+            token_type="pre_auth",
+            channel=wa.get("channel", "whatsapp"),
+            masked_destination=wa.get("masked_destination", ""),
+            expires_in_seconds=wa.get("expires_in_seconds", 300),
+            dev_otp=_dev_otp_of(wa),
+        )
+
+    return _finish_mfa(user, db, totp_ok=True)
+
+
+def _finish_mfa(user: User, db: Session, *, totp_ok: bool) -> VerifyOtpResponse:
+    """Mint the full session token. `totp_ok` must be True — the caller
+    already gated on this."""
+    if not totp_ok:
+        # Defence-in-depth: never mint a session unless TOTP was verified
+        # this login run.
+        raise HTTPException(
+            status_code=409,
+            detail="Authenticator verification required.",
+        )
+    user.mfa_last_verified_at = datetime.utcnow()
+    db.commit()
+    return VerifyOtpResponse(
+        stage="complete",
+        email_verified=True,
+        totp_verified=True,
+        whatsapp_verified=user.mfa_whatsapp_verified_at is not None,
+        access_token=_mint_session_token(user),
+        token_type="bearer",
+    )
+
+
+# ── 3. Resend current OTP ────────────────────────────────
+
+@router.post("/resend-otp")
+def author_resend_otp(
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    user, _payload = _require_pre_auth_or_session(authorization, db)
+
+    if user.mfa_email_verified_at is None:
+        channel = "email"
+    elif bool(user.whatsapp_number) and user.mfa_whatsapp_verified_at is None:
+        channel = "whatsapp"
+    else:
+        raise HTTPException(status_code=400, detail="Nothing to verify — MFA already complete.")
+
+    result = create_and_send_otp(db, user, channel=channel)
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=500,
+            detail=result.get("error") or "Could not send verification code",
+        )
+    return {
+        "channel": result.get("channel", channel),
+        "masked_destination": result.get("masked_destination", ""),
+        "expires_in_seconds": result.get("expires_in_seconds", 300),
+        "dev_otp": _dev_otp_of(result),
     }
 
-    if fully_verified:
-        # Issue the fully-verified token
-        user.mfa_last_verified_at = now
-        db.commit()
 
-        full_token = create_access_token(
-            data={
-                "sub": user.email,
-                "role": user.role.value,
-                "author_mfa": "fully_verified",
-            },
-            expires_delta=timedelta(hours=MFA_SESSION_HOURS),
-        )
-        response["access_token"] = full_token
-        response["token_type"] = "bearer"
-        response["message"] = "Two-step verification complete. You can now submit papers."
-    else:
-        steps_remaining = []
-        if not email_done:
-            steps_remaining.append("email")
-        if not whatsapp_done:
-            steps_remaining.append("whatsapp")
-        response["steps_remaining"] = steps_remaining
-        response["message"] = f"{body.channel.title()} verified. Please verify {steps_remaining[0]} next."
-
-    return response
-
-
-# ── 4. Get current author ────────────────────────────────
+# ── 4. Get current author (full session only) ────────────
 
 @router.get("/me", response_model=AuthorUserResponse)
 def get_author_profile(
-    authorization: str = Depends(lambda request: request.headers.get("Authorization")),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
     db: Session = Depends(get_db),
 ):
-    """Get current author profile."""
-    token = _extract_token(authorization)
-    user = _get_author_from_token(token, db)
-
+    user = _require_full_session(authorization, db)
     return AuthorUserResponse(
         id=user.id,
         username=user.username,
@@ -306,17 +471,15 @@ def get_author_profile(
     )
 
 
-# ── 5. Update author profile ────────────────────────────
+# ── 5. Update author profile (full session only) ─────────
 
 @router.patch("/profile")
 def update_author_profile(
     body: AuthorProfileUpdate,
-    authorization: str = Depends(lambda request: request.headers.get("Authorization")),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
     db: Session = Depends(get_db),
 ):
-    """Update author profile details (name, institution, ORCID, etc.)."""
-    token = _extract_token(authorization)
-    user = _get_author_from_token(token, db)
+    user = _require_full_session(authorization, db)
 
     if body.full_name is not None:
         user.full_name = body.full_name
@@ -324,7 +487,6 @@ def update_author_profile(
         user.first_name = body.first_name
     if body.last_name is not None:
         user.last_name = body.last_name
-        # Auto-update full_name from first+last when both are provided
         if user.first_name and user.last_name:
             user.full_name = f"{user.first_name} {user.last_name}"
     if body.institution is not None:
@@ -336,6 +498,8 @@ def update_author_profile(
     if body.research_areas is not None:
         user.research_areas = body.research_areas
     if body.whatsapp_number is not None:
+        # Changing the WhatsApp number invalidates the previous verification —
+        # the next login pass must re-verify it.
         user.whatsapp_number = body.whatsapp_number
         user.mfa_whatsapp_verified_at = None
     if body.country is not None:
@@ -345,7 +509,6 @@ def update_author_profile(
 
     db.commit()
     db.refresh(user)
-
     return {"message": "Profile updated successfully", "user": AuthorUserResponse(
         id=user.id, username=user.username, email=user.email,
         full_name=user.full_name, first_name=user.first_name, last_name=user.last_name,
@@ -358,15 +521,14 @@ def update_author_profile(
     )}
 
 
-# ── 6. Upload profile picture ────────────────────────────
+# ── 6. Upload profile picture (full session only) ────────
 
 @router.post("/profile/picture")
 async def upload_profile_picture(
     picture: UploadFile = File(...),
-    authorization: str = Depends(lambda request: request.headers.get("Authorization")),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
     db: Session = Depends(get_db),
 ):
-    """Upload a profile picture. Saves to S3 (or local fallback)."""
     from app.services.storage_service import upload_bytes
 
     ALLOWED = {"image/jpeg", "image/png", "image/webp"}
@@ -377,14 +539,11 @@ async def upload_profile_picture(
     if len(content) > 5 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="Image exceeds 5 MB limit.")
 
-    token = _extract_token(authorization)
-    user = _get_author_from_token(token, db)
-
+    user = _require_full_session(authorization, db)
     ext = picture.filename.rsplit(".", 1)[-1].lower() if "." in (picture.filename or "") else "jpg"
     key = f"authors/{user.id}/profile.{ext}"
     url = upload_bytes(content, key, content_type=picture.content_type)
 
     user.profile_picture_url = url
     db.commit()
-
     return {"message": "Profile picture updated.", "url": url}

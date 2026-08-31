@@ -1,24 +1,33 @@
-FastAPI
-SQLAlchemy
-psycopg2-binary
-pydantic
-pydantic-settings
-uvicorn
-alembic
-python-dotenv
-bcrypt
-pytest
-pytest-asyncio
-httpx
-mypy
-black
-flake8
-boto3
-python-jose[cryptography]
-python-multipart
-email-validator
-sendgrid
-pdfplumber
-PyMuPDF
-openai
-twilio
+# Runtime dependencies — pinned to major/minor with a compatible upper
+# bound so a background Pydantic 3 / SQLAlchemy 3 release doesn't silently
+# rebuild against an incompatible major on the next deploy.
+# Dev-only tools (mypy, black, flake8, pytest, httpx test client) live in
+# requirements-dev.txt so the production image stays lean.
+
+fastapi>=0.115,<0.140
+uvicorn[standard]>=0.30,<1.0
+pydantic>=2.7,<3.0
+pydantic-settings>=2.4,<3.0
+sqlalchemy>=2.0,<2.1
+alembic>=1.13,<2.0
+psycopg2-binary>=2.9,<3.0
+
+python-jose[cryptography]>=3.3,<4.0
+bcrypt>=4.1,<5.0
+python-multipart>=0.0.9,<1.0
+email-validator>=2.1,<3.0
+python-dotenv>=1.0,<2.0
+httpx>=0.27,<1.0            # used directly by agent3_reviewer_suggester (not just via TestClient)
+
+# TOTP (authenticator-app 2FA) — enrol on first login post-upgrade.
+pyotp>=2.9,<3.0
+segno>=1.6,<2.0             # pure-Python QR generator (no Pillow dep)
+
+boto3>=1.34,<2.0
+sendgrid>=6.11,<7.0
+twilio>=9.0,<10.0
+
+pdfplumber>=0.11,<1.0
+PyMuPDF>=1.24,<2.0
+
+openai>=1.30,<2.0

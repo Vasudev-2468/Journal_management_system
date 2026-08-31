@@ -4,6 +4,12 @@ import { useDropzone } from 'react-dropzone';
 import { useNavigate } from 'react-router-dom';
 import client from '../api/client';
 import { getAuthorToken, getAuthorProfile } from '../api/authorAuth';
+import FileDropzone from '../components/common/FileDropzone';
+
+// Kinds the supplementary-files step exposes in the per-row dropdown.
+// Restricted to non-manuscript kinds so authors don't accidentally
+// submit two "manuscript" files during the initial-submission flow.
+const SUPPLEMENTARY_KINDS = ['figure', 'supplementary', 'dataset'];
 
 const JOURNAL_SCOPE_CATEGORIES = [
   'Artificial Intelligence — Machine Learning',
@@ -332,6 +338,12 @@ export default function SubmitPaper() {
   const [autoFilled, setAutoFilled] = useState({ title: false, abstract: false, keywords: false, authors: false });
   const [extractedAuthorCount, setExtractedAuthorCount] = useState(0);
 
+  // Supplementary uploads (figures, datasets, extra files) — optional.
+  // The manuscript PDF is still the required deliverable and goes through
+  // /submissions/submit; these ride along as a JSON blob until the backend
+  // grows a first-class field for them.
+  const [supplementaryFiles, setSupplementaryFiles] = useState([]);
+
   // Auth
   const [authorProfile, setAuthorProfile] = useState(null);
   const [authChecking, setAuthChecking] = useState(true);
@@ -481,6 +493,16 @@ export default function SubmitPaper() {
       fd.append('authors_json', JSON.stringify(data.authors));
       fd.append('pdf_file', pdfFile);
 
+      // Supplementary files ride along as a JSON blob. The current
+      // /submissions/submit endpoint ignores unknown form fields, so this
+      // is a no-op backend-side until the field is added. Logged in the
+      // meantime so QA can confirm the collected list looks right.
+      if (supplementaryFiles.length > 0) {
+        fd.append('supplementary_files', JSON.stringify(supplementaryFiles));
+        // eslint-disable-next-line no-console
+        console.info('[SubmitPaper] supplementary files ready:', supplementaryFiles);
+      }
+
       const token = getAuthorToken();
       const res = await client.post('/submissions/submit', fd, {
         headers: { 'Content-Type': 'multipart/form-data', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
@@ -605,6 +627,22 @@ export default function SubmitPaper() {
                     <h2 className="text-xl font-bold text-gray-900">Upload Your Manuscript</h2>
                     <p className="text-sm text-gray-500 mt-1">
                       Drop your PDF — our AI IDP engine automatically extracts the title, abstract, keywords, and all authors.
+                    </p>
+                  </div>
+
+                  {/* JG-103 — surface the two headline commitments up-front
+                      so authors don't hit an APC surprise later. Prose lives
+                      in the /open-access and /copyright policy pages; this
+                      is the reader-facing summary linked to them. */}
+                  <div className="rounded-lg border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+                    <p className="font-semibold">Free to publish · Authors retain copyright</p>
+                    <p className="mt-1 text-blue-800">
+                      There are no article processing charges. Accepted articles are published under{' '}
+                      <a href="/copyright" className="underline font-medium hover:no-underline">CC BY 4.0</a>{' '}
+                      — you keep the copyright. See our{' '}
+                      <a href="/open-access" className="underline hover:no-underline">Open Access statement</a>{' '}
+                      and{' '}
+                      <a href="/publication-ethics" className="underline hover:no-underline">Publication Ethics</a>.
                     </p>
                   </div>
 
@@ -734,6 +772,28 @@ export default function SubmitPaper() {
                         <p className="text-xs text-gray-500 text-center font-medium">AI extracts {item.text}</p>
                       </div>
                     ))}
+                  </div>
+
+                  {/* Supplementary files — optional. Authors can skip this
+                      section entirely; the section is presentational and
+                      never blocks step 1 → step 2 navigation. */}
+                  <div className="pt-2 border-t border-gray-100">
+                    <div className="flex items-center justify-between mb-2">
+                      <div>
+                        <h3 className="text-base font-bold text-gray-900">Supplementary files <span className="text-xs font-medium text-gray-400">(optional)</span></h3>
+                        <p className="text-xs text-gray-500 mt-0.5">Figures, datasets, or extra materials that go with your manuscript.</p>
+                      </div>
+                      {supplementaryFiles.length > 0 && (
+                        <span className="text-[11px] font-semibold text-green-700">
+                          {supplementaryFiles.length} attached
+                        </span>
+                      )}
+                    </div>
+                    <FileDropzone
+                      kinds={SUPPLEMENTARY_KINDS}
+                      onUploaded={setSupplementaryFiles}
+                      maxSizeMB={25}
+                    />
                   </div>
                 </div>
               )}

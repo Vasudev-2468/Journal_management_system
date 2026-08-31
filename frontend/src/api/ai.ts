@@ -1,48 +1,91 @@
-import axios from 'axios';
+import client from './client';
 
-// TODO: Set the base URL for the API
-const API_BASE_URL = 'http://localhost:8000/api'; // Update with your backend URL
+export interface AISummary {
+    summary: string;
+}
 
-// Function to get AI analysis results
-export const getAIAnalysis = async (data: any) => {
-    try {
-        const response = await axios.post(`${API_BASE_URL}/ai/analysis`, data);
-        return response.data;
-    } catch (error) {
-        console.error('Error fetching AI analysis:', error);
-        throw error; // TODO: Handle error appropriately
-    }
+export interface PlagiarismMatch {
+    article_id: number;
+    title: string;
+    similarity: number;
+}
+
+export interface PlagiarismResult {
+    score: number;
+    matches: PlagiarismMatch[];
+}
+
+export interface RelatedArticle {
+    article_id: number;
+    title: string;
+    similarity: number;
+}
+
+export interface RecommendationsResult {
+    article_id: number;
+    related: RelatedArticle[];
+}
+
+export interface AIAnalysis {
+    id: number;
+    article_id: number;
+    summary: string;
+    plagiarism_score: number;
+    recommendations: string | null;
+}
+
+export const getAIStatus = async (): Promise<{ status: string }> => {
+    const response = await client.get('/ai/status');
+    return response.data;
 };
 
-// Function to get AI-generated summaries
-export const getAISummary = async (articleId?: any) => {
-    try {
-        const response = await axios.get(`${API_BASE_URL}/ai/summary/${articleId}`);
+export const getAISummary = async (articleId?: number | string): Promise<AISummary> => {
+    if (articleId !== undefined && articleId !== null && articleId !== '') {
+        const response = await client.get(`/ai/summary/${articleId}`);
         return response.data;
-    } catch (error) {
-        console.error('Error fetching AI summary:', error);
-        throw error; // TODO: Handle error appropriately
     }
+    throw new Error('An article id (or a POST body of text) is required to summarize.');
 };
 
-// Function to check for plagiarism
-export const checkPlagiarism = async (articleText: any) => {
-    try {
-        const response = await axios.post(`${API_BASE_URL}/ai/plagiarism`, { text: articleText });
-        return response.data;
-    } catch (error) {
-        console.error('Error checking plagiarism:', error);
-        throw error; // TODO: Handle error appropriately
-    }
+export const summarizeText = async (
+    text: string,
+    maxSentences = 3,
+): Promise<AISummary> => {
+    const response = await client.post('/ai/summary', {
+        text,
+        max_sentences: maxSentences,
+    });
+    return response.data;
 };
 
-// Function to get recommendations based on AI analysis
-export const getAIRecommendations = async (articleId?: any) => {
-    try {
-        const response = await axios.get(`${API_BASE_URL}/ai/recommendations/${articleId}`);
-        return response.data;
-    } catch (error) {
-        console.error('Error fetching AI recommendations:', error);
-        throw error; // TODO: Handle error appropriately
-    }
+export const checkPlagiarism = async (
+    text: string,
+    corpusArticleIds?: number[],
+): Promise<PlagiarismResult> => {
+    const response = await client.post('/ai/plagiarism', {
+        text,
+        corpus_article_ids: corpusArticleIds,
+    });
+    return response.data;
+};
+
+export const getAIRecommendations = async (
+    articleId: number | string,
+): Promise<RecommendationsResult> => {
+    const response = await client.get(`/ai/recommendations/${articleId}`);
+    return response.data;
+};
+
+export const runAIAnalysis = async (
+    articleId: number | string,
+): Promise<AIAnalysis> => {
+    const response = await client.post(`/ai/analyze/${articleId}`);
+    return response.data;
+};
+
+export const getAIAnalysis = async (
+    analysisId: number | string,
+): Promise<AIAnalysis> => {
+    const response = await client.get(`/ai/analysis/${analysisId}`);
+    return response.data;
 };

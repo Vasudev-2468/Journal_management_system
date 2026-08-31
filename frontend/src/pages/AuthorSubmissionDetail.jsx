@@ -3,6 +3,9 @@ import { useNavigate, useParams, Link } from 'react-router-dom';
 import client from '../api/client';
 import { getAuthorProfile, getAuthorToken, authorLogout } from '../api/authorAuth';
 import { STATUS_META } from './AuthorDashboard';
+import ReviewerCommentsCard from '../components/authors/ReviewerCommentsCard';
+import DecisionLetterCard from '../components/authors/DecisionLetterCard';
+import SubmissionThread from '../components/authors/SubmissionThread';
 
 /* ─── Styles ─────────────────────────────────────────── */
 const CSS = `
@@ -293,6 +296,8 @@ export default function AuthorSubmissionDetail() {
       }
     }
     load();
+    // navigate is stable — safe to omit from deps; only the id should re-fetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [submissionId]);
 
   useEffect(() => {
@@ -332,7 +337,6 @@ export default function AuthorSubmissionDetail() {
   const authorName = profile?.full_name || 'Author';
 
   /* Reviewer count from DB; fill up to 3 visually */
-  const reviewerSlots = Math.max(sub.review_count, 3);
   const reviewers     = MOCK_REVIEWERS.slice(0, Math.max(sub.review_count, 1)).concat(
     sub.review_count < 3 ? [{ initials: '?', status: 'pending', label: 'Awaiting reviewer', ring: 'ring-gray-300', bg: 'bg-gray-300', comment: '"No reviewer assigned yet."' }] : []
   ).slice(0, 3);
@@ -373,6 +377,20 @@ export default function AuthorSubmissionDetail() {
         </nav>
 
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-5">
+
+          {/* ── Author-facing decision surfaces ─────────── */}
+          <DecisionLetterCard
+            submissionId={sub.id}
+            status={sub.status}
+            paperTitle={sub.paper_title}
+            authorName={profile?.full_name || 'Author'}
+            paperIdCode={sub.paper_id_code || null}
+          />
+          <ReviewerCommentsCard
+            submissionId={sub.id}
+            status={sub.status}
+          />
+          <SubmissionThread submissionId={sub.id} viewerRole="author" />
 
           {/* ── Hero card ─────────────────────────────── */}
           <div className="bg-gradient-to-r from-green-900 via-green-800 to-emerald-800 rounded-3xl p-6 sm:p-8 text-white">

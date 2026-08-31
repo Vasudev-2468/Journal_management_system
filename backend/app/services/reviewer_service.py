@@ -1,5 +1,4 @@
 import uuid
-import secrets
 from datetime import datetime, timedelta
 from typing import List, Optional
 
@@ -12,6 +11,7 @@ from app.config import settings
 from app.models.reviewer import Reviewer
 from app.models.review import Review, ReviewStatus
 from app.models.submission import Submission, SubmissionStatus
+from app.utils.link_tokens import create_review_link_token
 
 
 # ── Registration ─────────────────────────────────────────
@@ -137,10 +137,6 @@ def update_reviewer(
 
 # ── Assignment ───────────────────────────────────────────
 
-def _generate_review_link_token() -> str:
-    return secrets.token_urlsafe(48)
-
-
 def assign_reviewers(
     db: Session,
     submission_id: uuid.UUID,
@@ -163,10 +159,14 @@ def assign_reviewers(
                 f"({reviewer.max_assignments})."
             )
 
+        # Fix D1 — the router verifies these tokens as JWTs. See the twin
+        # fix in agents/agent4_link_generator.py for the rationale.
+        review_id = uuid.uuid4()
         review = Review(
+            id=review_id,
             submission_id=submission_id,
             reviewer_id=rid,
-            link_token=_generate_review_link_token(),
+            link_token=create_review_link_token(review_id),
             link_expires_at=datetime.utcnow() + timedelta(days=settings.JWT_EXPIRE_DAYS),
             status=ReviewStatus.pending,
         )

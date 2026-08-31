@@ -19,19 +19,10 @@ services:
     networks:
       - backend_network
 
-  redis:
-    image: redis:7
-    restart: always
-    ports:
-      - "6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 5s
-    networks:
-      - backend_network
+  # Redis was previously spun up here for Celery. The backend replaced Celery
+  # with an in-process InlineTask shim (see README) so Redis is no longer
+  # required. When background durability comes back (BACKLOG.md JG-409),
+  # restore a redis service and REDIS_URL here.
 
   adminer:
     image: adminer
@@ -55,11 +46,8 @@ services:
       - ./backend/.env
     environment:
       DATABASE_URL: postgresql://journaladmin:journalpass@db:5432/journaldb
-      REDIS_URL: redis://redis:6379/0
     depends_on:
       db:
-        condition: service_healthy
-      redis:
         condition: service_healthy
     networks:
       - backend_network

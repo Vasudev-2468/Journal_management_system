@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 
 from sqlalchemy.orm import Session
 
@@ -161,25 +161,59 @@ def record_decision(
     if submission is None:
         return None
 
+    # SubmissionStatus doesn't yet split minor/major revision — JG-407 is the
+    # right place to add that. For now, both collapse onto revision_requested
+    # for the state machine, but the DecisionRequest schema keeps them
+    # distinguishable so downstream notifications (agent5_notification,
+    # email_service) can render the correct label to the author.
     status_map = {
         "accepted": SubmissionStatus.accepted,
         "rejected": SubmissionStatus.rejected,
         "revision_requested": SubmissionStatus.revision_requested,
+        "minor_revision": SubmissionStatus.revision_requested,
+        "major_revision": SubmissionStatus.revision_requested,
     }
     submission.status = status_map[decision]
     db.commit()
     db.refresh(submission)
     return submission
 
-    def delete_review(self, review_id: int) -> bool:
-        # TODO: Implement logic to delete a review
-        db_review = self.get_review(review_id)
-        if db_review:
-            self.db.delete(db_review)
-            self.db.commit()
-            return True
-        return False
 
-    def get_all_reviews(self) -> list[Review]:
-        # TODO: Implement logic to retrieve all reviews
-        return self.db.query(Review).all()
+# ── Overdue review helpers (JG editor dashboard) ────────
+#
+# A review is "overdue" when its assignment window has expired but the
+# reviewer never submitted — i.e. status is still `pending` and
+# `link_expires_at` is in the past. Editors need both a count (for the
+# sidebar chip badge) and the concrete submission IDs (to filter the
+# submissions list to just the ones needing intervention).
+
+def count_overdue_reviews(db: Session) -> int:
+    """Return the number of Review rows that are pending past their expiry.
+
+    Kept in the service layer so router endpoints stay thin and can reuse
+    the same predicate wherever an overdue count is displayed.
+    """
+    now = datetime.utcnow()
+    return (
+        db.query(Review)
+        .filter(
+            Review.status == ReviewStatus.pending,
+            Review.link_expires_at < now,
+        )
+        .count()
+    )
+
+
+def submissions_with_overdue_reviews(db: Session) -> List[uuid.UUID]:
+    """Return distinct submission IDs whose reviews include at least one overdue row."""
+    now = datetime.utcnow()
+    rows = (
+        db.query(Review.submission_id)
+        .filter(
+            Review.status == ReviewStatus.pending,
+            Review.link_expires_at < now,
+        )
+        .distinct()
+        .all()
+    )
+    return [row[0] for row in rows if row[0] is not None]

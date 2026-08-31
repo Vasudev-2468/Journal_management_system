@@ -30,6 +30,9 @@ export const fetchSubmissionReviews = (submissionId) =>
 export const submitDecision = (submissionId, data) =>
   client.post(`/reviews/${submissionId}/decision`, data).then((r) => r.data);
 
+export const requestAdditionalReview = (submissionId) =>
+  client.post(`/reviews/${submissionId}/request-additional-review`).then((r) => r.data);
+
 // ── Editor Portal (Agent Pipeline) ──────────────────────
 
 export const triggerAgentPipeline = (submissionId, data) =>
@@ -54,3 +57,13 @@ export const editorAssignReviewers = (submissionId, data) =>
 
 export const fetchAnalyticsOverview = (range = 'this_year') =>
   client.get('/editor-portal/analytics/overview', { params: { range } }).then((r) => r.data);
+
+// ── Notification log (JG-304) ───────────────────────────
+
+export const fetchNotificationLog = (params = {}) =>
+  client.get('/editor-portal/notifications', { params }).then((r) => r.data);
+
+// ── Overdue reviews (editor dashboard chip) ─────────────
+
+export const fetchOverdueReviews = () =>
+  client.get('/editor-portal/overdue-reviews').then((r) => r.data);

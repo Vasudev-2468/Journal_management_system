@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { fetchReviews as getReviews } from '../api/reviews';
+import { fetchReviews } from '../api/reviews';
 import { Review } from '../types';
-import ReviewPanel from '../components/reviews/ReviewPanel';
+import Loading from '../components/common/Loading';
 
 const ReviewPage: React.FC = () => {
     const [reviews, setReviews] = useState<Review[]>([]);
@@ -9,37 +9,57 @@ const ReviewPage: React.FC = () => {
     const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
+        let cancelled = false;
         const loadReviews = async () => {
             try {
-                const data = await getReviews();
-                setReviews(data);
+                const data = await fetchReviews();
+                if (!cancelled) setReviews(data);
             } catch (err) {
-                setError('Failed to fetch reviews');
+                if (!cancelled) {
+                    const message =
+                        err instanceof Error ? err.message : 'Failed to fetch reviews.';
+                    setError(message);
+                }
             } finally {
-                setLoading(false);
+                if (!cancelled) setLoading(false);
             }
         };
-
         loadReviews();
+        return () => {
+            cancelled = true;
+        };
     }, []);
 
-    if (loading) {
-        return <div>Loading...</div>;
-    }
-
+    if (loading) return <Loading />;
     if (error) {
-        return <div>{error}</div>;
+        return (
+            <div role="alert" className="p-4 text-red-600">
+                {error}
+            </div>
+        );
     }
 
     return (
         <div className="p-4">
-            <h1 className="text-2xl font-bold mb-4">Reviews</h1>
-            {reviews.length > 0 ? (
-                reviews.map(review => (
-                    <ReviewPanel key={review.id} review={review} />
-                ))
+            <h1 className="text-2xl font-bold mb-4">Reader Reviews</h1>
+            {reviews.length === 0 ? (
+                <div className="text-gray-600 italic">No reviews available.</div>
             ) : (
-                <div>No reviews available.</div>
+                <ul className="divide-y divide-gray-200">
+                    {reviews.map((review) => (
+                        <li key={review.id} className="py-3">
+                            {review.title && (
+                                <p className="font-semibold">{review.title}</p>
+                            )}
+                            {typeof review.rating === 'number' && (
+                                <p className="text-sm text-yellow-600">
+                                    Rating: {review.rating}/5
+                                </p>
+                            )}
+                            <p className="mt-1">{review.content}</p>
+                        </li>
+                    ))}
+                </ul>
             )}
         </div>
     );

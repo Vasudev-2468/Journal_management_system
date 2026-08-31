@@ -201,7 +201,13 @@ class AcknowledgementAgent:
            when reviewer assignment is needed.</p>
         {_btn("Open Dashboard", f"{settings.FRONTEND_URL}/editor")}
         """)
-        _send_and_log(settings.SENDGRID_FROM_EMAIL, subject, body, "agent1_editor_cc_notification")
+        # D5 — was SENDGRID_FROM_EMAIL, i.e. the outgoing sender's address.
+        # Nothing ever reached the editor. Route to the configured editorial
+        # inbox; fall back to the sender address only if the inbox is unset
+        # so the CC path still works in a fresh checkout.
+        editor_cc = settings.EDITORIAL_INBOX_EMAIL or settings.SENDGRID_FROM_EMAIL
+        if editor_cc:
+            _send_and_log(editor_cc, subject, body, "agent1_editor_cc_notification")
 
     def _notify_author_whatsapp(self, submission: Submission, paper_id: str):
         """Send WhatsApp acknowledgement to author if they have a number on file."""

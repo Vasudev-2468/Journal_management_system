@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import {
   fetchSubmissions,
   overrideClassification,
@@ -11,7 +12,43 @@ import {
   triggerAgentPipeline,
   editorAssignReviewers,
   fetchAnalyticsOverview,
+  fetchNotificationLog,
+  fetchReviewers,
+  fetchOverdueReviews,
+  requestAdditionalReview,
 } from '../api/editor';
+import { useJournal } from '../context/JournalContext';
+import NotificationBell from '../components/editor/NotificationBell';
+
+// JG-101 — dismissible banner shown to editors while the journal has not yet
+// been ISSN-registered. Public site omits the ISSN line entirely in that state;
+// the editor gets a nudge with a direct link to the identity edit page.
+const IssnNotRegisteredBanner = () => {
+  const { journal } = useJournal();
+  const [dismissed, setDismissed] = useState(false);
+  if (dismissed || !journal || journal.issn_online) return null;
+  return (
+    <div className="mb-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 flex items-start gap-3">
+      <span className="text-amber-600 text-lg leading-none mt-0.5">⚠</span>
+      <div className="flex-1 text-sm">
+        <p className="font-semibold text-amber-900">ISSN not registered</p>
+        <p className="text-amber-800 mt-0.5">
+          The journal has no online ISSN on file. Indexers (Scholar, Index Copernicus, DOAJ) will not accept the journal until an ISSN is recorded.{' '}
+          <Link to="/editor/journal-identity" className="font-medium underline hover:no-underline">
+            Set it now
+          </Link>
+        </p>
+      </div>
+      <button
+        onClick={() => setDismissed(true)}
+        className="text-amber-700 hover:text-amber-900 text-sm font-medium px-2"
+        aria-label="Dismiss"
+      >
+        ✕
+      </button>
+    </div>
+  );
+};
 
 /* ═══════════════════════════════════════════════════════════
    Tiny sub-components
@@ -85,11 +122,30 @@ const SIDEBAR_ITEMS = [
   { key: 'analytics', label: 'Analytics', icon: '📈' },
 ];
 
+const SIDEBAR_LINKS = [
+  { to: '/editor/production', label: 'Production Queue', icon: '⚙️' },
+  { to: '/editor/issues', label: 'Volumes & Issues', icon: '📚' },
+  { to: '/editor/special-issues', label: 'Special Issues', icon: '✨' },
+  { to: '/editor/editorial-board', label: 'Editorial Board', icon: '🧑‍🎓' },
+  { to: '/editor/announcements', label: 'Announcements', icon: '📣' },
+  { to: '/editor/policies', label: 'Policy Pages', icon: '📜' },
+  { to: '/editor/contact-inbox', label: 'Contact Inbox', icon: '📬' },
+  { to: '/editor/journal-identity', label: 'Journal Identity', icon: '🏛️' },
+  { to: '/editor/email-templates', label: 'Email Templates', icon: '✉️' },
+  { to: '/editor/users', label: 'User Management', icon: '👤' },
+  { to: '/editor/audit-log', label: 'Audit Log', icon: '📋' },
+];
+
 export default function EditorDashboard() {
   const [activePanel, setActivePanel] = useState('overview');
   const [submissions, setSubmissions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [drawerSubmission, setDrawerSubmission] = useState(null);
+  // Overdue review IDs feed the "Overdue" filter chip in the submissions
+  // list. We keep the raw ID list AND the count so the chip badge stays
+  // accurate even before the submissions payload has arrived.
+  const [overdueIds, setOverdueIds] = useState([]);
+  const [overdueCount, setOverdueCount] = useState(0);
 
   // ── Data fetching ───────────────────────────────────────
 
@@ -105,9 +161,21 @@ export default function EditorDashboard() {
     }
   }, []);
 
+  const loadOverdue = useCallback(async () => {
+    try {
+      const data = await fetchOverdueReviews();
+      setOverdueIds(Array.isArray(data?.submission_ids) ? data.submission_ids : []);
+      setOverdueCount(typeof data?.count === 'number' ? data.count : 0);
+    } catch (e) {
+      // Non-fatal: chip simply reports zero if the endpoint hiccups.
+      console.error('Failed to load overdue reviews', e);
+    }
+  }, []);
+
   useEffect(() => {
     loadSubmissions();
-  }, [loadSubmissions]);
+    loadOverdue();
+  }, [loadSubmissions, loadOverdue]);
 
   // Derived data
   const pendingClassification = submissions.filter(
@@ -133,9 +201,13 @@ export default function EditorDashboard() {
     <div className="flex h-screen bg-gray-50">
       {/* Sidebar */}
       <aside className="w-64 bg-white border-r border-gray-200 flex flex-col">
-        <div className="px-6 py-5 border-b border-gray-200">
-          <h1 className="text-lg font-bold text-blue-800">Journal Editor</h1>
-          <p className="text-xs text-gray-500 mt-0.5">Dashboard</p>
+        <div className="px-6 py-5 border-b border-gray-200 flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h1 className="text-lg font-bold text-blue-800">Journal Editor</h1>
+            <p className="text-xs text-gray-500 mt-0.5">Dashboard</p>
+          </div>
+          {/* Floating notification bell — polls /editor-portal/notifications */}
+          <NotificationBell />
         </div>
         <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
           {SIDEBAR_ITEMS.map((item) => (
@@ -157,12 +229,28 @@ export default function EditorDashboard() {
               )}
             </button>
           ))}
+          <div className="pt-3 mt-3 border-t border-gray-100">
+            <p className="px-3 pb-2 text-[10px] font-bold uppercase tracking-wider text-gray-400">
+              Journal admin
+            </p>
+            {SIDEBAR_LINKS.map((item) => (
+              <Link
+                key={item.to}
+                to={item.to}
+                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-100 no-underline"
+              >
+                <span>{item.icon}</span>
+                <span className="flex-1 text-left">{item.label}</span>
+              </Link>
+            ))}
+          </div>
         </nav>
       </aside>
 
       {/* Main content */}
       <main className="flex-1 overflow-y-auto">
         <div className="max-w-7xl mx-auto px-6 py-8">
+          <IssnNotRegisteredBanner />
           {activePanel === 'overview' && (
             <OverviewPanel
               submissions={submissions}
@@ -181,10 +269,12 @@ export default function EditorDashboard() {
               title={activePanel === 'pending' ? 'Pending Actions' : 'All Submissions'}
               onOpenDrawer={setDrawerSubmission}
               onRefresh={loadSubmissions}
+              overdueIds={overdueIds}
+              overdueCount={overdueCount}
             />
           )}
-          {activePanel === 'reviewers' && <PlaceholderPanel title="Reviewers" />}
-          {activePanel === 'notifications' && <PlaceholderPanel title="Notifications Log" />}
+          {activePanel === 'reviewers' && <ReviewersPanel />}
+          {activePanel === 'notifications' && <NotificationsLogPanel />}
           {activePanel === 'analytics' && <AnalyticsPanel />}
         </div>
       </main>
@@ -194,7 +284,10 @@ export default function EditorDashboard() {
         <SubmissionDrawer
           submission={drawerSubmission}
           onClose={() => setDrawerSubmission(null)}
-          onRefresh={loadSubmissions}
+          onRefresh={() => {
+            loadSubmissions();
+            loadOverdue();
+          }}
         />
       )}
     </div>
@@ -281,20 +374,24 @@ function PendingActionCard({ submission, onRefresh }) {
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
   const [acting, setActing] = useState(false);
 
-  const loadSuggestions = async () => {
-    setLoadingSuggestions(true);
-    try {
-      const data = await suggestReviewers(submission.id);
-      setSuggestions(data);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLoadingSuggestions(false);
-    }
-  };
-
   useEffect(() => {
-    if (submission.status === 'pending_assignment') loadSuggestions();
+    let cancelled = false;
+    if (submission.status === 'pending_assignment') {
+      setLoadingSuggestions(true);
+      suggestReviewers(submission.id)
+        .then((data) => {
+          if (!cancelled) setSuggestions(data);
+        })
+        .catch((e) => {
+          if (!cancelled) console.error(e);
+        })
+        .finally(() => {
+          if (!cancelled) setLoadingSuggestions(false);
+        });
+    }
+    return () => {
+      cancelled = true;
+    };
   }, [submission.id, submission.status]);
 
   const handleApprove = async () => {
@@ -394,26 +491,84 @@ function PendingActionCard({ submission, onRefresh }) {
 /* ── Activity Feed ───────────────────────────────────────── */
 
 function ActivityFeed() {
-  // Placeholder — replace with real notification fetch
-  const items = [
-    { id: 1, text: 'New submission received', time: '2 min ago' },
-    { id: 2, text: 'Reviewer Dr. Chen completed review', time: '15 min ago' },
-    { id: 3, text: 'Classification override applied', time: '1 hr ago' },
-    { id: 4, text: 'Decision sent: Accepted', time: '2 hrs ago' },
-    { id: 5, text: 'New reviewer registered', time: '3 hrs ago' },
-    { id: 6, text: 'Deadline reminder sent (3 reviews)', time: '5 hrs ago' },
-    { id: 7, text: 'Submission escalated for manual review', time: '6 hrs ago' },
-    { id: 8, text: 'Reviewer invitation sent', time: '8 hrs ago' },
-    { id: 9, text: 'New submission received', time: '10 hrs ago' },
-    { id: 10, text: 'Decision sent: Major Revision', time: '12 hrs ago' },
-  ];
+  const [entries, setEntries] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchNotificationLog({ limit: 20 })
+      .then((data) => {
+        if (!cancelled) setEntries(data?.entries || []);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(err?.response?.data?.detail || err?.message || 'Failed to load activity.');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="bg-white rounded-xl border border-gray-200 px-6 py-10 text-center text-sm text-gray-500">
+        Loading activity…
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div
+        role="alert"
+        className="bg-white rounded-xl border border-red-200 px-6 py-6 text-sm text-red-600"
+      >
+        {error}
+      </div>
+    );
+  }
+
+  if (entries.length === 0) {
+    return (
+      <div className="bg-white rounded-xl border border-gray-200 px-6 py-10 text-center">
+        <p className="text-sm text-gray-500">No notifications yet.</p>
+      </div>
+    );
+  }
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 divide-y divide-gray-100">
-      {items.map((item) => (
-        <div key={item.id} className="px-4 py-3 hover:bg-gray-50 transition-colors">
-          <p className="text-sm text-gray-800">{item.text}</p>
-          <p className="text-xs text-gray-400 mt-0.5">{item.time}</p>
+      {entries.map((entry) => (
+        <div key={entry.id} className="px-4 py-3 text-sm">
+          <div className="flex items-center justify-between">
+            <span className="font-medium text-gray-800">{entry.trigger_event}</span>
+            <span
+              className={
+                entry.status === 'sent'
+                  ? 'text-xs px-2 py-0.5 rounded bg-green-100 text-green-700'
+                  : entry.status === 'failed'
+                  ? 'text-xs px-2 py-0.5 rounded bg-red-100 text-red-700'
+                  : 'text-xs px-2 py-0.5 rounded bg-gray-100 text-gray-700'
+              }
+            >
+              {entry.status}
+            </span>
+          </div>
+          <div className="text-xs text-gray-500 mt-1">
+            {entry.channel} · {entry.recipient || 'unknown recipient'}
+            {entry.sent_at ? ` · ${new Date(entry.sent_at).toLocaleString()}` : ''}
+          </div>
+          {entry.preview && (
+            <p className="mt-1 text-gray-600 line-clamp-2">{entry.preview}</p>
+          )}
+          {entry.error_message && (
+            <p className="mt-1 text-red-600 text-xs">Error: {entry.error_message}</p>
+          )}
         </div>
       ))}
     </div>
@@ -424,12 +579,25 @@ function ActivityFeed() {
    Submissions Panel (table)
    ═══════════════════════════════════════════════════════════ */
 
-function SubmissionsPanel({ submissions, loading, title, onOpenDrawer, onRefresh }) {
+function SubmissionsPanel({
+  submissions,
+  loading,
+  title,
+  onOpenDrawer,
+  onRefresh,
+  overdueIds = [],
+  overdueCount = 0,
+}) {
   const [filterStatus, setFilterStatus] = useState('');
   const [filterField, setFilterField] = useState('');
   const [search, setSearch] = useState('');
+  const [overdueOnly, setOverdueOnly] = useState(false);
+
+  // O(1) lookup against the overdue set the backend returned.
+  const overdueSet = React.useMemo(() => new Set(overdueIds || []), [overdueIds]);
 
   const filtered = submissions.filter((s) => {
+    if (overdueOnly && !overdueSet.has(s.id)) return false;
     if (filterStatus && s.status !== filterStatus) return false;
     if (filterField && s.classified_field !== filterField) return false;
     if (search) {
@@ -479,6 +647,23 @@ function SubmissionsPanel({ submissions, loading, title, onOpenDrawer, onRefresh
             <option key={f} value={f}>{f}</option>
           ))}
         </select>
+        {/*
+          "Overdue" chip filter — highlights submissions with any pending
+          review past its expiry. Amber-500 accent per design spec.
+        */}
+        <button
+          type="button"
+          onClick={() => setOverdueOnly((v) => !v)}
+          aria-pressed={overdueOnly}
+          title="Filter to submissions with expired pending reviews"
+          className={`px-3 py-2 rounded-lg text-sm font-semibold border transition-colors ${
+            overdueOnly
+              ? 'bg-amber-500 text-white border-amber-500 hover:bg-amber-600'
+              : 'bg-white text-amber-700 border-amber-300 hover:bg-amber-50'
+          }`}
+        >
+          Overdue ({overdueCount})
+        </button>
       </div>
 
       {/* Table */}
@@ -554,6 +739,10 @@ function SubmissionDrawer({ submission, onClose, onRefresh }) {
   const [decisionComments, setDecisionComments] = useState('');
   const [decidingAs, setDecidingAs] = useState(null);
   const [assigning, setAssigning] = useState(false);
+  const [requestingAdditional, setRequestingAdditional] = useState(false);
+  // Simple inline toast — a lightweight banner within the drawer so the
+  // action's outcome is visible without pulling in a new toast library.
+  const [additionalToast, setAdditionalToast] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -607,6 +796,31 @@ function SubmissionDrawer({ submission, onClose, onRefresh }) {
       console.error(e);
     } finally {
       setDecidingAs(null);
+    }
+  };
+
+  const handleRequestAdditionalReview = async () => {
+    setRequestingAdditional(true);
+    setAdditionalToast(null);
+    try {
+      const result = await requestAdditionalReview(submission.id);
+      setAdditionalToast({
+        kind: 'success',
+        text:
+          result?.message ||
+          'Submission reopened for one additional reviewer assignment.',
+      });
+      onRefresh();
+    } catch (e) {
+      setAdditionalToast({
+        kind: 'error',
+        text:
+          e?.response?.data?.detail ||
+          e?.message ||
+          'Could not request additional review.',
+      });
+    } finally {
+      setRequestingAdditional(false);
     }
   };
 
@@ -770,8 +984,8 @@ function SubmissionDrawer({ submission, onClose, onRefresh }) {
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               {[
                 { key: 'accepted', label: 'Accept', color: 'bg-green-600 hover:bg-green-700' },
-                { key: 'revision_requested', label: 'Minor Revision', color: 'bg-yellow-500 hover:bg-yellow-600' },
-                { key: 'revision_requested', label: 'Major Revision', color: 'bg-orange-500 hover:bg-orange-600' },
+                { key: 'minor_revision', label: 'Minor Revision', color: 'bg-yellow-500 hover:bg-yellow-600' },
+                { key: 'major_revision', label: 'Major Revision', color: 'bg-orange-500 hover:bg-orange-600' },
                 { key: 'rejected', label: 'Reject', color: 'bg-red-600 hover:bg-red-700' },
               ].map((d) => (
                 <button
@@ -783,6 +997,35 @@ function SubmissionDrawer({ submission, onClose, onRefresh }) {
                   {decidingAs === d.key ? '…' : d.label}
                 </button>
               ))}
+            </div>
+
+            {/*
+              Second-opinion escape hatch — reopens the submission for one
+              more reviewer assignment (POST /reviews/{id}/request-additional-review).
+              Kept below the decision buttons so it doesn't compete for
+              attention with accept/reject.
+            */}
+            <div className="mt-4 pt-4 border-t border-gray-100">
+              <button
+                type="button"
+                onClick={handleRequestAdditionalReview}
+                disabled={requestingAdditional || decidingAs !== null}
+                className="w-full sm:w-auto px-4 py-2 bg-white text-amber-700 border border-amber-300 hover:bg-amber-50 font-semibold rounded-lg text-sm disabled:opacity-50"
+              >
+                {requestingAdditional ? 'Requesting…' : 'Request additional review'}
+              </button>
+              {additionalToast && (
+                <div
+                  role="status"
+                  className={`mt-3 rounded-lg px-3 py-2 text-sm ${
+                    additionalToast.kind === 'success'
+                      ? 'bg-amber-50 text-amber-800 border border-amber-200'
+                      : 'bg-red-50 text-red-700 border border-red-200'
+                  }`}
+                >
+                  {additionalToast.text}
+                </div>
+              )}
             </div>
           </Section>
         </div>
@@ -1013,13 +1256,261 @@ function DetailRow({ label, children }) {
   );
 }
 
-function PlaceholderPanel({ title }) {
+/* ═══════════════════════════════════════════════════════════
+   Reviewers Panel
+   ═══════════════════════════════════════════════════════════ */
+
+function ReviewersPanel() {
+  const [reviewers, setReviewers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [search, setSearch] = useState('');
+  const [showInactive, setShowInactive] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    fetchReviewers(showInactive ? undefined : { is_active: true })
+      .then((data) => {
+        if (!cancelled) setReviewers(Array.isArray(data) ? data : []);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(
+            err?.response?.data?.detail || err?.message || 'Failed to load reviewers.',
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [showInactive]);
+
+  const filtered = reviewers.filter((r) => {
+    if (!search.trim()) return true;
+    const q = search.toLowerCase();
+    return (
+      r.name?.toLowerCase().includes(q) ||
+      r.email?.toLowerCase().includes(q) ||
+      r.institution?.toLowerCase().includes(q) ||
+      (r.expertise_tags || []).some((t) => t.toLowerCase().includes(q))
+    );
+  });
+
   return (
     <div>
-      <h2 className="text-2xl font-bold text-gray-900 mb-6">{title}</h2>
-      <div className="bg-white rounded-xl border border-gray-200 p-12 text-center text-gray-400">
-        {title} panel — coming soon.
+      <h2 className="text-2xl font-bold text-gray-900 mb-6">Reviewers</h2>
+      <div className="flex flex-wrap items-center gap-3 mb-4">
+        <input
+          type="search"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search name, email, institution, or expertise…"
+          className="flex-1 min-w-[240px] px-3 py-2 border border-gray-300 rounded-lg text-sm"
+          aria-label="Search reviewers"
+        />
+        <label className="flex items-center gap-2 text-sm text-gray-700">
+          <input
+            type="checkbox"
+            checked={showInactive}
+            onChange={(e) => setShowInactive(e.target.checked)}
+          />
+          Include inactive
+        </label>
       </div>
+
+      {loading ? (
+        <SkeletonRows rows={5} />
+      ) : error ? (
+        <div role="alert" className="bg-white rounded-xl border border-red-200 p-6 text-sm text-red-600">
+          {error}
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-500 text-sm">
+          {reviewers.length === 0
+            ? 'No reviewers registered yet.'
+            : 'No reviewers match your search.'}
+        </div>
+      ) : (
+        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+          <table className="min-w-full text-sm">
+            <thead className="bg-gray-50 text-left text-xs uppercase tracking-wider text-gray-500">
+              <tr>
+                <th className="px-4 py-3">Name</th>
+                <th className="px-4 py-3">Institution</th>
+                <th className="px-4 py-3">Expertise</th>
+                <th className="px-4 py-3">Load</th>
+                <th className="px-4 py-3">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {filtered.map((r) => (
+                <tr key={r.id} className="hover:bg-gray-50">
+                  <td className="px-4 py-3">
+                    <div className="font-medium text-gray-900">{r.name}</div>
+                    <div className="text-xs text-gray-500">{r.email}</div>
+                  </td>
+                  <td className="px-4 py-3 text-gray-700">{r.institution || '—'}</td>
+                  <td className="px-4 py-3">
+                    <div className="flex flex-wrap gap-1">
+                      {(r.expertise_tags || []).slice(0, 4).map((tag) => (
+                        <span
+                          key={tag}
+                          className="text-xs bg-blue-50 text-blue-700 px-2 py-0.5 rounded"
+                        >
+                          {tag}
+                        </span>
+                      ))}
+                      {(r.expertise_tags || []).length > 4 && (
+                        <span className="text-xs text-gray-500">
+                          +{r.expertise_tags.length - 4} more
+                        </span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-4 py-3 text-gray-700">
+                    {r.current_load}/{r.max_assignments}
+                  </td>
+                  <td className="px-4 py-3">
+                    <span
+                      className={
+                        r.is_active
+                          ? 'text-xs px-2 py-0.5 rounded bg-green-100 text-green-700'
+                          : 'text-xs px-2 py-0.5 rounded bg-gray-200 text-gray-600'
+                      }
+                    >
+                      {r.is_active ? 'active' : 'inactive'}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Notifications Log Panel
+   ═══════════════════════════════════════════════════════════ */
+
+function NotificationsLogPanel() {
+  const [entries, setEntries] = useState([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [channelFilter, setChannelFilter] = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    const params = { limit: 100 };
+    if (channelFilter) params.channel = channelFilter;
+    if (statusFilter) params.status = statusFilter;
+    fetchNotificationLog(params)
+      .then((data) => {
+        if (!cancelled) {
+          setEntries(data?.entries || []);
+          setTotal(data?.total || 0);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(
+            err?.response?.data?.detail || err?.message || 'Failed to load notifications.',
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [channelFilter, statusFilter]);
+
+  return (
+    <div>
+      <h2 className="text-2xl font-bold text-gray-900 mb-6">
+        Notifications Log
+        {total > 0 && (
+          <span className="ml-2 text-sm font-normal text-gray-500">
+            ({entries.length} of {total})
+          </span>
+        )}
+      </h2>
+      <div className="flex flex-wrap gap-3 mb-4">
+        <select
+          value={channelFilter}
+          onChange={(e) => setChannelFilter(e.target.value)}
+          className="px-3 py-2 border border-gray-300 rounded-lg text-sm"
+          aria-label="Filter by channel"
+        >
+          <option value="">All channels</option>
+          <option value="email">Email</option>
+          <option value="whatsapp">WhatsApp</option>
+        </select>
+        <select
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value)}
+          className="px-3 py-2 border border-gray-300 rounded-lg text-sm"
+          aria-label="Filter by status"
+        >
+          <option value="">All statuses</option>
+          <option value="pending">Pending</option>
+          <option value="sent">Sent</option>
+          <option value="failed">Failed</option>
+        </select>
+      </div>
+
+      {loading ? (
+        <SkeletonRows rows={6} />
+      ) : error ? (
+        <div role="alert" className="bg-white rounded-xl border border-red-200 p-6 text-sm text-red-600">
+          {error}
+        </div>
+      ) : entries.length === 0 ? (
+        <div className="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-500 text-sm">
+          No notifications match the current filters.
+        </div>
+      ) : (
+        <div className="bg-white rounded-xl border border-gray-200 divide-y divide-gray-100">
+          {entries.map((entry) => (
+            <div key={entry.id} className="px-4 py-3 text-sm">
+              <div className="flex items-center justify-between">
+                <span className="font-medium text-gray-800">{entry.trigger_event}</span>
+                <span
+                  className={
+                    entry.status === 'sent'
+                      ? 'text-xs px-2 py-0.5 rounded bg-green-100 text-green-700'
+                      : entry.status === 'failed'
+                      ? 'text-xs px-2 py-0.5 rounded bg-red-100 text-red-700'
+                      : 'text-xs px-2 py-0.5 rounded bg-gray-100 text-gray-700'
+                  }
+                >
+                  {entry.status}
+                </span>
+              </div>
+              <div className="text-xs text-gray-500 mt-1">
+                {entry.channel} · {entry.recipient || 'unknown recipient'}
+                {entry.sent_at ? ` · ${new Date(entry.sent_at).toLocaleString()}` : ''}
+              </div>
+              {entry.preview && (
+                <p className="mt-1 text-gray-600">{entry.preview}</p>
+              )}
+              {entry.error_message && (
+                <p className="mt-1 text-red-600 text-xs">Error: {entry.error_message}</p>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

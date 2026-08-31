@@ -91,8 +91,11 @@ class SubmissionReviewsResponse(BaseModel):
 # ── Editor: decision ─────────────────────────────────────
 
 class DecisionRequest(BaseModel):
+    # revision_requested is kept for backward-compat with any external caller;
+    # minor_revision / major_revision are the new, distinguishable values.
     decision: str = Field(
-        ..., pattern="^(accepted|rejected|revision_requested)$"
+        ...,
+        pattern="^(accepted|rejected|revision_requested|minor_revision|major_revision)$",
     )
     editor_comments: Optional[str] = None
 

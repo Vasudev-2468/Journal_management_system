@@ -2,6 +2,7 @@ from sqlalchemy import Column, Integer, String, ForeignKey
 from sqlalchemy.orm import relationship
 from app.database import Base
 
+
 class AIAnalysis(Base):
     __tablename__ = 'ai_analysis'
 
@@ -12,5 +13,3 @@ class AIAnalysis(Base):
     recommendations = Column(String, nullable=True)
 
     article = relationship("Article", back_populates="ai_analysis")
-
-# TODO: Implement methods for AI analysis processing and retrieval.

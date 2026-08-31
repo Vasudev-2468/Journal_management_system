@@ -20,7 +20,9 @@ ssh_ingress_cidr = "1.2.3.4/32"
 s3_bucket_name = "jgair-manuscripts-prod-<random-suffix>"
 
 # ── App repo ──────────────────────────────────────────────
-github_repo_url = "https://github.com/Vasudev-2468/Journal_management_system.git"
+# REQUIRED. Point this at YOUR fork; there is no default anymore, so
+# `terraform apply` without setting this fails at plan time.
+github_repo_url = "https://github.com/YOUR_USER/Journal_management_system.git"
 
 # ── DNS ───────────────────────────────────────────────────
 # Point A records for these at the elastic_ip output AFTER apply.

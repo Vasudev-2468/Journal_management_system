@@ -1,8 +1,23 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
 import JournalLogo from '../common/JournalLogo';
+import { useJournal } from '../../context/JournalContext';
 
 const Footer: React.FC = () => {
+    const { journal } = useJournal();
+    // Assemble the masthead line from identity fields. When issn_online is
+    // NULL (per JG-101, JGAIR is not yet ISSN-registered), the line is
+    // omitted entirely rather than printing an empty label.
+    const masthead = journal
+        ? [
+              journal.issn_online ? `ISSN ${journal.issn_online}` : null,
+              journal.frequency,
+          ]
+              .filter(Boolean)
+              .join('  |  ')
+        : '';
+    const journalName = journal?.title ?? 'JGAIR';
+
     return (
         <footer className="bg-gray-900 text-gray-300">
             {/* Main footer */}
@@ -16,9 +31,11 @@ const Footer: React.FC = () => {
                         <p className="text-sm text-gray-400 leading-relaxed">
                             An AI-powered academic journal management platform advancing scholarly publishing through intelligent peer review, automated analysis, and streamlined editorial workflows.
                         </p>
-                        <p className="text-xs text-gray-500 mt-3">
-                            ISSN 2348-8549&nbsp;&nbsp;|&nbsp;&nbsp;12 Issues per Year
-                        </p>
+                        {masthead && (
+                            <p className="text-xs text-gray-500 mt-3">
+                                {masthead}
+                            </p>
+                        )}
                     </div>
 
                     {/* Quick Links */}
@@ -52,8 +69,12 @@ const Footer: React.FC = () => {
                             {[
                                 { to: '/for-authors', label: 'Author Guidelines' },
                                 { to: '/author-login', label: 'Submit Paper' },
-                                { to: '/reviews', label: 'Track Reviews' },
-                                { to: '/login', label: 'Author Login' },
+                                { to: '/author-dashboard', label: 'My Submissions' },
+                                // R8 — was /login (generic form that mints a
+                                // plain 'token' key). /author-login mints
+                                // 'author_token' which the client interceptor
+                                // routes to /author-*/ endpoints.
+                                { to: '/author-login', label: 'Author Login' },
                             ].map((l) => (
                                 <li key={l.to}>
                                     <Link to={l.to} className="text-sm text-gray-400 hover:text-white transition no-underline">
@@ -73,7 +94,9 @@ const Footer: React.FC = () => {
                             {[
                                 { to: '/editor', label: 'Editor Dashboard' },
                                 { to: '/for-reviewers', label: 'Reviewer Guidelines' },
-                                { to: '/login', label: 'Editor Login' },
+                                // R8 — editors need the 2-step MFA flow at
+                                // /editor-login, not the generic /login form.
+                                { to: '/editor-login', label: 'Editor Login' },
                             ].map((l) => (
                                 <li key={l.to}>
                                     <Link to={l.to} className="text-sm text-gray-400 hover:text-white transition no-underline">
@@ -90,13 +113,12 @@ const Footer: React.FC = () => {
             <div className="border-t border-gray-800">
                 <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex flex-col sm:flex-row items-center justify-between gap-2">
                     <p className="text-xs text-gray-500">
-                        &copy; {new Date().getFullYear()} JGAIR — Journal of Generative and Applied Intelligence Research. All rights reserved.
+                        &copy; {new Date().getFullYear()} {journalName}. All rights reserved.
                     </p>
-                    <div className="flex items-center gap-4 text-xs text-gray-500">
-                        <span className="hover:text-gray-300 cursor-pointer transition">Privacy Policy</span>
-                        <span className="hover:text-gray-300 cursor-pointer transition">Terms of Service</span>
-                        <span className="hover:text-gray-300 cursor-pointer transition">Contact</span>
-                    </div>
+                    {/* JG-fix F10 — the previous inert Privacy / Terms /
+                        Contact spans looked clickable but did nothing. Policy
+                        pages arrive with JG-102/103/104/408; contact with
+                        JG-109. Nothing is rendered here until those exist. */}
                 </div>
             </div>
         </footer>

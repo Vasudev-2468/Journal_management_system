@@ -55,9 +55,11 @@ def request_cv_access(payload: CVAccessRequest, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(cv_req)
 
-    # Send authentication email to the editor
-    base = settings.FRONTEND_URL.rstrip("/")
-    api_base = f"http://localhost:8000"  # backend URL
+    # Send authentication email to the editor. The email links are GETs that
+    # land on a confirmation page — the destructive action is a POST from that
+    # page, not the click itself. Email scanners (Outlook Safe Links, corporate
+    # gateways) prefetch every URL and would otherwise auto-approve.
+    api_base = settings.PUBLIC_API_URL.rstrip("/")
     approve_url = f"{api_base}/editorial/cv-request/{token}/approve"
     reject_url = f"{api_base}/editorial/cv-request/{token}/reject"
 
@@ -109,15 +111,61 @@ def request_cv_access(payload: CVAccessRequest, db: Session = Depends(get_db)):
     # Send to the board member's email (so they control their own CV)
     _send_and_log(payload.member_email, subject, body, "cv_access_request")
 
-    # Also notify the editorial office
-    _send_and_log("editorial@jgair-journal.org", subject, body, "cv_access_request_copy")
+    # Also notify the editorial office (if configured).
+    if settings.EDITORIAL_INBOX_EMAIL:
+        _send_and_log(settings.EDITORIAL_INBOX_EMAIL, subject, body, "cv_access_request_copy")
 
     return {"message": "CV access request submitted. The editor will review your request."}
 
 
-# ── GET: approve ─────────────────────────────────────────
+# ── Approve/Reject ───────────────────────────────────────
+# The email links are GETs that render a confirmation page. The actual
+# decision is a POST from that page, so email-scanner prefetches (Outlook
+# Safe Links, corporate gateways) cannot auto-decide.
 
 @router.get("/cv-request/{token}/approve", response_class=HTMLResponse)
+def approve_cv_request_confirm(token: str, db: Session = Depends(get_db)):
+    cv_req = db.query(CVRequest).filter(CVRequest.approval_token == token).first()
+    if not cv_req:
+        raise HTTPException(status_code=404, detail="Request not found")
+    if cv_req.status != CVRequestStatus.pending:
+        return HTMLResponse(_result_page(
+            "Already Processed",
+            f"This CV request was already <strong>{cv_req.status.value}</strong>.",
+            "#d97706",
+        ))
+    return HTMLResponse(_confirm_page(
+        "Approve CV Access",
+        f"Confirm sending {cv_req.member_name}'s CV to {cv_req.requester_name} "
+        f"&lt;{cv_req.requester_email}&gt;.",
+        f"/editorial/cv-request/{token}/approve",
+        "Approve Access",
+        "#059669",
+    ))
+
+
+@router.get("/cv-request/{token}/reject", response_class=HTMLResponse)
+def reject_cv_request_confirm(token: str, db: Session = Depends(get_db)):
+    cv_req = db.query(CVRequest).filter(CVRequest.approval_token == token).first()
+    if not cv_req:
+        raise HTTPException(status_code=404, detail="Request not found")
+    if cv_req.status != CVRequestStatus.pending:
+        return HTMLResponse(_result_page(
+            "Already Processed",
+            f"This CV request was already <strong>{cv_req.status.value}</strong>.",
+            "#d97706",
+        ))
+    return HTMLResponse(_confirm_page(
+        "Reject CV Request",
+        f"Confirm rejecting the request from {cv_req.requester_name} "
+        f"&lt;{cv_req.requester_email}&gt;.",
+        f"/editorial/cv-request/{token}/reject",
+        "Reject Request",
+        "#dc2626",
+    ))
+
+
+@router.post("/cv-request/{token}/approve", response_class=HTMLResponse)
 def approve_cv_request(token: str, db: Session = Depends(get_db)):
     cv_req = db.query(CVRequest).filter(CVRequest.approval_token == token).first()
     if not cv_req:
@@ -153,8 +201,8 @@ def approve_cv_request(token: str, db: Session = Depends(get_db)):
            <strong>{cv_req.requester_email}</strong>.</p>
 
         <p>If you have any questions, contact us at
-           <a href="mailto:editorial@jgair-journal.org"
-              style="color:#1e40af;">editorial@jgair-journal.org</a>.</p>
+           <a href="mailto:{settings.EDITORIAL_INBOX_EMAIL or 'editorial@example.com'}"
+              style="color:#1e40af;">{settings.EDITORIAL_INBOX_EMAIL or 'editorial@example.com'}</a>.</p>
 
         <p>Best regards,<br><strong>JGAIR Editorial Team</strong></p>
     """)
@@ -168,9 +216,7 @@ def approve_cv_request(token: str, db: Session = Depends(get_db)):
     ))
 
 
-# ── GET: reject ──────────────────────────────────────────
-
-@router.get("/cv-request/{token}/reject", response_class=HTMLResponse)
+@router.post("/cv-request/{token}/reject", response_class=HTMLResponse)
 def reject_cv_request(token: str, db: Session = Depends(get_db)):
     cv_req = db.query(CVRequest).filter(CVRequest.approval_token == token).first()
     if not cv_req:
@@ -196,8 +242,8 @@ def reject_cv_request(token: str, db: Session = Depends(get_db)):
            CV of <strong>{cv_req.member_name}</strong> was not approved at this time.</p>
 
         <p>If you have questions, please contact
-           <a href="mailto:editorial@jgair-journal.org"
-              style="color:#1e40af;">editorial@jgair-journal.org</a>.</p>
+           <a href="mailto:{settings.EDITORIAL_INBOX_EMAIL or 'editorial@example.com'}"
+              style="color:#1e40af;">{settings.EDITORIAL_INBOX_EMAIL or 'editorial@example.com'}</a>.</p>
 
         <p>Best regards,<br><strong>JGAIR Editorial Team</strong></p>
     """)
@@ -210,7 +256,34 @@ def reject_cv_request(token: str, db: Session = Depends(get_db)):
     ))
 
 
-# ── HTML result page ─────────────────────────────────────
+# ── HTML confirmation + result pages ─────────────────────
+
+def _confirm_page(title: str, message: str, action_url: str, button_label: str, color: str) -> str:
+    return f"""<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>{title} — JGAIR</title>
+<style>
+  body {{ font-family: 'Segoe UI', Roboto, sans-serif; background: #f9fafb;
+         display: flex; align-items: center; justify-content: center;
+         min-height: 100vh; margin: 0; }}
+  .card {{ background: #fff; border-radius: 16px; box-shadow: 0 4px 24px rgba(0,0,0,.08);
+           max-width: 460px; padding: 40px; text-align: center; }}
+  h1 {{ font-size: 22px; color: #111; margin: 0 0 12px; }}
+  p {{ font-size: 14px; color: #6b7280; line-height: 1.6; }}
+  button {{ background: {color}; color: #fff; border: 0; border-radius: 8px;
+            padding: 12px 22px; font-size: 15px; font-weight: 600;
+            cursor: pointer; margin-top: 18px; }}
+</style></head>
+<body>
+  <div class="card">
+    <h1>{title}</h1>
+    <p>{message}</p>
+    <form method="POST" action="{action_url}">
+      <button type="submit">{button_label}</button>
+    </form>
+  </div>
+</body></html>"""
+
 
 def _result_page(title: str, message: str, color: str) -> str:
     return f"""<!DOCTYPE html>

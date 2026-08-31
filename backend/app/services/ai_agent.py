@@ -115,23 +115,52 @@ def _get_openai_client() -> OpenAI:
 
 # ── Retry helper ─────────────────────────────────────────
 
+# D7 — only these are transient. Bare Exception previously retried
+# AuthenticationError (bad key), BadRequestError (400, prompt too long),
+# and PermissionDeniedError — burning 3× billable requests and blocking
+# the caller thread ~7s on a systemic outage.
+try:
+    from openai import (
+        APIConnectionError,
+        APITimeoutError,
+        InternalServerError,
+        RateLimitError,
+    )
+    _RETRIABLE_ERRORS: tuple[type[BaseException], ...] = (
+        APIConnectionError,
+        APITimeoutError,
+        InternalServerError,
+        RateLimitError,
+    )
+except ImportError:  # pragma: no cover — openai always present in requirements
+    _RETRIABLE_ERRORS = (ConnectionError, TimeoutError)
+
+
 def _retry_with_backoff(fn, max_retries: int = MAX_RETRIES):
-    """Call *fn* up to *max_retries* times with exponential back-off."""
-    last_exc: Exception | None = None
+    """Call *fn* up to *max_retries* times with exponential back-off.
+
+    Only retries transient errors (network, 5xx, rate-limit). Permanent
+    errors (bad key, malformed prompt, denied permission) surface
+    immediately so the caller can fail fast instead of burning quota.
+    """
+    last_exc: BaseException | None = None
     for attempt in range(max_retries):
         try:
             return fn()
-        except Exception as exc:
+        except _RETRIABLE_ERRORS as exc:
             last_exc = exc
             wait = 2 ** attempt  # 1 s, 2 s, 4 s
             logger.warning(
-                "Attempt %d/%d failed (%s). Retrying in %ds…",
+                "Transient AI call failure (attempt %d/%d): %s. Retrying in %ds…",
                 attempt + 1,
                 max_retries,
                 exc,
                 wait,
             )
             time.sleep(wait)
+        except Exception:
+            # Permanent failure — do not retry.
+            raise
     raise last_exc  # type: ignore[misc]
 
 

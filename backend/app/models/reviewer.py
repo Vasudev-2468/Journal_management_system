@@ -22,6 +22,14 @@ class Reviewer(Base):
     is_active = Column(Boolean, nullable=False, default=True, index=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
+    # Persistent reviewer account (JG reviewer-auth): a reviewer can set a
+    # password from a signed invitation link and log in with email+password
+    # afterwards. All three columns are nullable — reviewers that were only
+    # ever invited by per-review token continue to work exactly as before.
+    password_hash = Column(String(255), nullable=True)
+    email_verified_at = Column(DateTime, nullable=True)
+    last_login_at = Column(DateTime, nullable=True)
+
     reviews = relationship("Review", back_populates="reviewer")
 
     def __repr__(self):

@@ -53,7 +53,12 @@ const ArticleDetail: React.FC<ArticleDetailProps> = ({ article: articleProp }) =
     return (
         <div className="p-4">
             <h1 className="text-2xl font-bold">{article.title}</h1>
-            {article.author && <p className="mt-2 text-gray-600">{article.author}</p>}
+            {/* R7 — prefer the router-populated `author_display`; fall back
+                to the legacy `author` string for compatibility with any
+                cached responses. */}
+            {(article.author_display || article.author) && (
+                <p className="mt-2 text-gray-600">{article.author_display || article.author}</p>
+            )}
             {article.abstract && (
                 <div className="mt-4">
                     <h2 className="text-xl font-semibold">Abstract</h2>
@@ -64,7 +69,6 @@ const ArticleDetail: React.FC<ArticleDetailProps> = ({ article: articleProp }) =
                 <h2 className="text-xl font-semibold">Content</h2>
                 <p>{article.content}</p>
             </div>
-            {/* TODO: Add functionality for comments and reviews */}
         </div>
     );
 };

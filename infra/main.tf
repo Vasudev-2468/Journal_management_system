@@ -82,9 +82,10 @@ variable "root_volume_size_gb" {
 }
 
 variable "github_repo_url" {
-  description = "HTTPS clone URL for the app repo"
+  description = "HTTPS clone URL for the app repo — required; forks must override this"
   type        = string
-  default     = "https://github.com/Vasudev-2468/Journal_management_system.git"
+  # No default — a fork/clone that forgets to set this would otherwise
+  # silently deploy the upstream Vasudev-2468 fork's main branch.
 }
 
 variable "domain" {

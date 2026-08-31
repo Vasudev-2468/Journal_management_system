@@ -1,30 +1,33 @@
-from pydantic import BaseModel
-from typing import Optional, List
+from pydantic import BaseModel, ConfigDict
+from typing import Optional
 
-# Schema for creating a new article
-class ArticleCreate(BaseModel):
+
+class ArticleBase(BaseModel):
     title: str
-    abstract: str
-    content: str
-    authors: List[str]  # List of author names
-    journal_id: int  # Foreign key to the journal
+    abstract: Optional[str] = None
+    content: Optional[str] = None
+    journal_id: int
 
-# Schema for reading an article
-class ArticleRead(ArticleCreate):
-    id: int  # Article ID
-    created_at: str  # Timestamp of creation
-    updated_at: str  # Timestamp of last update
 
-# Schema for updating an article
+class ArticleCreate(ArticleBase):
+    # author_id is the FK on the model; the router fills it from the current
+    # authenticated user rather than trusting the request body.
+    author_id: Optional[int] = None
+
+
 class ArticleUpdate(BaseModel):
     title: Optional[str] = None
     abstract: Optional[str] = None
     content: Optional[str] = None
-    authors: Optional[List[str]] = None
+    journal_id: Optional[int] = None
 
-# Schema for article response with additional fields
-class ArticleResponse(ArticleRead):
-    reviews_count: int  # Number of reviews for the article
-    ai_analysis: Optional[str] = None  # AI analysis results if available
 
-# TODO: Implement validation and additional fields as necessary
+class ArticleRead(ArticleBase):
+    id: int
+    author_id: Optional[int] = None
+    # R7 — a human-readable byline for the article page. Populated by the
+    # router from the joined User row; falls back to None when the record
+    # was created before author linking existed.
+    author_display: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)

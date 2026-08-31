@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import List, Optional
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
 # ── Request schemas ──────────────────────────────────────
@@ -43,8 +43,7 @@ class ReviewerListItem(BaseModel):
     max_assignments: int
     is_active: bool
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ReviewHistoryItem(BaseModel):
@@ -69,8 +68,7 @@ class ReviewerDetailResponse(BaseModel):
     created_at: datetime
     review_history: List[ReviewHistoryItem] = []
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ReviewerSuggestion(BaseModel):

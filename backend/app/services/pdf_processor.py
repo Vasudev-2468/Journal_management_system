@@ -20,6 +20,31 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 
+# D8 — cap the amount of work any single PDF can generate. The prior code
+# had no page limit and no timeout in the redaction path; a crafted PDF
+# with tens of thousands of pages (or pathological content streams) could
+# peg CPU/RAM in the InlineTask thread indefinitely. The 10 MB body cap in
+# routers/submissions.py does not bound *work* — a 10 MB PDF can encode
+# millions of pages via object reuse.
+MAX_PDF_PAGES = 200
+
+
+class PdfTooLargeError(Exception):
+    """Raised when a PDF exceeds the page-count cap and cannot be processed."""
+
+
+def _assert_page_count_ok(doc: fitz.Document, path_hint: str = "") -> None:
+    n = doc.page_count
+    if n > MAX_PDF_PAGES:
+        logger.warning(
+            "Refusing to process PDF with %d pages (cap=%d) — %s",
+            n, MAX_PDF_PAGES, path_hint,
+        )
+        raise PdfTooLargeError(
+            f"PDF has {n} pages, which exceeds the {MAX_PDF_PAGES}-page limit."
+        )
+
+
 # ── S3 helpers ───────────────────────────────────────────
 
 def _s3_client():
@@ -570,6 +595,7 @@ def _redact_pattern_all_pages(
     label: str,
     log: list[str],
 ) -> None:
+    _assert_page_count_ok(doc, path_hint="_redact_pattern_all_pages")
     for page_num, page in enumerate(doc):
         text_instances = page.get_text("text")
         for match in pattern.finditer(text_instances):

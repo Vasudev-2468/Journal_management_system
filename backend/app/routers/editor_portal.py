@@ -20,8 +20,13 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.services.editor_auth import require_editor_mfa
+from app.services.review_service import (
+    count_overdue_reviews,
+    submissions_with_overdue_reviews,
+)
 from app.models.submission import Submission, SubmissionStatus
 from app.models.reviewer import Reviewer
+from app.models.notification import Notification
 from app.tasks import (
     run_agent_intake_pipeline,
     run_agent_reviewer_suggestion,
@@ -454,4 +459,90 @@ def get_analytics_overview(
         stat_cards=stat_cards,
         submissions_over_time=submissions_over_time,
         status_funnel=status_funnel,
+    )
+
+
+# ── Notification log (JG-304) ───────────────────────────
+
+class NotificationLogEntry(BaseModel):
+    id: uuid.UUID
+    channel: str
+    trigger_event: str
+    recipient: Optional[str] = None
+    status: str
+    sent_at: Optional[datetime] = None
+    error_message: Optional[str] = None
+    preview: Optional[str] = None
+
+
+class NotificationLogResponse(BaseModel):
+    total: int
+    entries: List[NotificationLogEntry]
+
+
+@router.get("/notifications", response_model=NotificationLogResponse)
+def list_notifications(
+    limit: int = Query(50, ge=1, le=200),
+    channel: Optional[str] = Query(None, pattern="^(email|whatsapp)$"),
+    status_filter: Optional[str] = Query(
+        None, alias="status", pattern="^(pending|sent|failed)$"
+    ),
+    db: Session = Depends(get_db),
+    _editor=Depends(require_editor_mfa),
+):
+    """Return the most recent notification-log entries for the editor dashboard.
+
+    Newest first. Fills the ActivityFeed panel — see JG-304 in the frontend
+    dashboard component.
+    """
+    q = db.query(Notification)
+    if channel:
+        q = q.filter(Notification.channel == channel)
+    if status_filter:
+        q = q.filter(Notification.status == status_filter)
+
+    total = q.count()
+    rows = (
+        q.order_by(Notification.sent_at.desc().nullslast(), Notification.id.desc())
+        .limit(limit)
+        .all()
+    )
+
+    entries = [
+        NotificationLogEntry(
+            id=row.id,
+            channel=row.channel.value if row.channel else "email",
+            trigger_event=row.trigger_event,
+            recipient=row.recipient_email or row.recipient_whatsapp,
+            status=row.status.value if row.status else "pending",
+            sent_at=row.sent_at,
+            error_message=row.error_message,
+            preview=(row.message_body or "")[:180] or None,
+        )
+        for row in rows
+    ]
+    return NotificationLogResponse(total=total, entries=entries)
+
+
+# ── Overdue reviews (editor dashboard chip) ──────────────
+#
+# Feeds the "Overdue" filter chip in the editor's submissions list. The
+# chip shows a live count via `count` and, when active, restricts the
+# submissions table client-side to `submission_ids`.
+
+class OverdueReviewsResponse(BaseModel):
+    count: int
+    submission_ids: List[uuid.UUID]
+
+
+@router.get("/overdue-reviews", response_model=OverdueReviewsResponse)
+def get_overdue_reviews(
+    db: Session = Depends(get_db),
+    _editor=Depends(require_editor_mfa),
+):
+    """Return submissions with at least one pending review past its expiry."""
+    ids = submissions_with_overdue_reviews(db)
+    return OverdueReviewsResponse(
+        count=count_overdue_reviews(db),
+        submission_ids=ids,
     )

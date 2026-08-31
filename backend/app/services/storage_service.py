@@ -70,5 +70,32 @@ def upload_fileobj(file_obj, key: str, content_type: str = "application/pdf") ->
     return upload_bytes(content, key, content_type)
 
 
+def upload_manuscript_file(
+    filename: str,
+    content: bytes,
+    content_type: str = "application/octet-stream",
+    subdir: str = "manuscript-uploads",
+) -> str:
+    """
+    Generic manuscript-file uploader used by ``/uploads/manuscript-file``.
+
+    Stores the payload under ``<subdir>/<uuid>/<safe-filename>`` so uploads
+    from different authors never collide, and returns the storage URL
+    (S3 URL or ``/uploads/…`` local path).
+
+    Kept separate from ``upload_bytes``/``upload_fileobj`` so the existing
+    PDF pipeline is untouched.
+    """
+    import re
+    import uuid as _uuid
+
+    # Sanitise the original filename — strip anything but the basic charset,
+    # so a hostile name can't traverse the storage layout.
+    base = filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1] or "file"
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", base)[:120] or "file"
+    key = f"{subdir}/{_uuid.uuid4()}/{safe}"
+    return upload_bytes(content, key, content_type)
+
+
 def storage_backend() -> str:
     return "s3" if _s3_configured() else "local"

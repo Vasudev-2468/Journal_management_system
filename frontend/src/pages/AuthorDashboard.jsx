@@ -2,6 +2,9 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import client from '../api/client';
 import { getAuthorProfile, getAuthorToken, authorLogout } from '../api/authorAuth';
+import ReviewerCommentsCard from '../components/authors/ReviewerCommentsCard';
+import DecisionLetterCard from '../components/authors/DecisionLetterCard';
+import SubmissionThread from '../components/authors/SubmissionThread';
 
 /* ── Status metadata ─────────────────────────────────── */
 export const STATUS_META = {
@@ -76,11 +79,10 @@ function StatCard({ icon, label, value, color = 'green' }) {
 }
 
 /* ─── Notification Bell ─────────────────────────────── */
-const NOTIFS = [
-  { id: 1, icon: '📋', text: 'Paper JGAIR-2026-045 moved to peer review', time: '2 days ago', unread: true },
-  { id: 2, icon: '📬', text: 'Decision letter available for JGAIR-2026-045', time: '5 days ago', unread: true },
-  { id: 3, icon: '✅', text: 'Initial check passed for JGAIR-2026-032', time: 'Apr 10', unread: false },
-];
+// JG-fix F9 — the previous notification list was three hardcoded entries
+// that were shown as if live. There is no notification endpoint on the
+// backend yet (JG-304). Empty by default; bell shows no unread badge.
+const NOTIFS = [];
 
 const CSS = `
 @keyframes bell-shake{0%,100%{transform:rotate(0)}10%{transform:rotate(12deg)}20%{transform:rotate(-10deg)}30%{transform:rotate(8deg)}40%{transform:rotate(-6deg)}50%{transform:rotate(4deg)}60%{transform:rotate(-2deg)}}
@@ -102,6 +104,11 @@ export default function AuthorDashboard() {
   const [filterStatus, setFilterStatus] = useState('all');
   const [notifOpen, setNotifOpen]   = useState(false);
   const [bellShake, setBellShake]   = useState(false);
+  // Top-level tab: all | in_review | published. Editors of the production
+  // queue would use `submission.production_stage === 'published'`, but that
+  // route is editor-gated — until the author-facing surface arrives we treat
+  // `status === 'accepted'` as the best available proxy.
+  const [tab, setTab]               = useState('all');
   const notifRef = useRef(null);
 
   useEffect(() => {
@@ -154,12 +161,36 @@ export default function AuthorDashboard() {
     accepted:   submissions.filter(s => s.status === 'accepted').length,
   };
 
-  /* Filter + search */
+  /* Filter + search + tab */
+  const inReviewStatuses = new Set([
+    'pending_classification',
+    'awaiting_format_check',
+    'awaiting_consult_review',
+    'awaiting_reviewer_suggestions',
+    'pending_assignment',
+    'under_review',
+    'revision_requested',
+    'returned_to_author',
+  ]);
+  // Proxy for "published" — the production queue is editor-gated so we
+  // treat accepted papers as the closest visible surface. See tab UI copy
+  // for the caveat we surface to authors.
+  const isPublishedSub = (s) => s.status === 'accepted';
+
   const visible = submissions.filter(s => {
     const matchSearch = !search || s.paper_title.toLowerCase().includes(search.toLowerCase()) || (s.paper_id_code || '').toLowerCase().includes(search.toLowerCase());
     const matchStatus = filterStatus === 'all' || s.status === filterStatus;
-    return matchSearch && matchStatus;
+    const matchTab =
+      tab === 'all'
+        ? true
+        : tab === 'in_review'
+          ? inReviewStatuses.has(s.status)
+          : /* tab === 'published' */ isPublishedSub(s);
+    return matchSearch && matchStatus && matchTab;
   });
+
+  const publishedCount = submissions.filter(isPublishedSub).length;
+  const inReviewCount  = submissions.filter(s => inReviewStatuses.has(s.status)).length;
 
   const authorName = profile?.full_name || 'Author';
 
@@ -203,7 +234,11 @@ export default function AuthorDashboard() {
                   <svg className={`w-5 h-5 text-gray-600 ${bellShake ? 'bell-shake' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
                   </svg>
-                  <span className="absolute top-1 right-1 w-4 h-4 bg-red-500 rounded-full text-white text-xs flex items-center justify-center font-bold">2</span>
+                  {NOTIFS.filter(n => n.unread).length > 0 && (
+                    <span className="absolute top-1 right-1 w-4 h-4 bg-red-500 rounded-full text-white text-xs flex items-center justify-center font-bold">
+                      {NOTIFS.filter(n => n.unread).length}
+                    </span>
+                  )}
                 </button>
                 {notifOpen && (
                   <div className="absolute right-0 top-12 w-80 bg-white rounded-2xl shadow-xl border border-gray-100 fade-in overflow-hidden z-50">
@@ -211,16 +246,22 @@ export default function AuthorDashboard() {
                       <span className="font-bold text-gray-900 text-sm">Notifications</span>
                       <span className="text-xs text-green-700 font-semibold cursor-pointer">Mark all read</span>
                     </div>
-                    {NOTIFS.map(n => (
-                      <div key={n.id} className={`flex items-start gap-3 px-4 py-3 hover:bg-gray-50 cursor-pointer border-b border-gray-50 last:border-0 ${n.unread ? 'bg-green-50/40' : ''}`}>
-                        <span className="text-lg shrink-0">{n.icon}</span>
-                        <div className="flex-1 min-w-0">
-                          <p className={`text-xs leading-snug ${n.unread ? 'font-semibold text-gray-900' : 'text-gray-600'}`}>{n.text}</p>
-                          <p className="text-xs text-gray-400 mt-0.5">{n.time}</p>
-                        </div>
-                        {n.unread && <span className="w-2 h-2 bg-green-500 rounded-full shrink-0 mt-1.5" />}
+                    {NOTIFS.length === 0 ? (
+                      <div className="px-4 py-6 text-center text-xs text-gray-500">
+                        No notifications yet.
                       </div>
-                    ))}
+                    ) : (
+                      NOTIFS.map(n => (
+                        <div key={n.id} className={`flex items-start gap-3 px-4 py-3 hover:bg-gray-50 cursor-pointer border-b border-gray-50 last:border-0 ${n.unread ? 'bg-green-50/40' : ''}`}>
+                          <span className="text-lg shrink-0">{n.icon}</span>
+                          <div className="flex-1 min-w-0">
+                            <p className={`text-xs leading-snug ${n.unread ? 'font-semibold text-gray-900' : 'text-gray-600'}`}>{n.text}</p>
+                            <p className="text-xs text-gray-400 mt-0.5">{n.time}</p>
+                          </div>
+                          {n.unread && <span className="w-2 h-2 bg-green-500 rounded-full shrink-0 mt-1.5" />}
+                        </div>
+                      ))
+                    )}
                   </div>
                 )}
               </div>
@@ -265,6 +306,45 @@ export default function AuthorDashboard() {
             <StatCard icon="✏️"  label="Action Required"  value={stats.decisions}   color="purple" />
             <StatCard icon="✅" label="Accepted"           value={stats.accepted}    color="blue"   />
           </div>
+
+          {/* ── Tabs ─────────────────────────────────────── */}
+          <div
+            role="tablist"
+            aria-label="Submission views"
+            className="flex items-center gap-1 border-b border-gray-200"
+          >
+            {[
+              { key: 'all',        label: 'All',        count: submissions.length },
+              { key: 'in_review',  label: 'In review',  count: inReviewCount },
+              { key: 'published',  label: 'Published',  count: publishedCount },
+            ].map(t => (
+              <button
+                key={t.key}
+                role="tab"
+                aria-selected={tab === t.key}
+                onClick={() => setTab(t.key)}
+                className={`relative px-4 py-2 text-sm font-semibold transition-colors border-b-2 -mb-px ${
+                  tab === t.key
+                    ? 'text-green-700 border-green-600'
+                    : 'text-gray-500 hover:text-gray-700 border-transparent'
+                }`}
+              >
+                {t.label}
+                <span className={`ml-2 text-xs font-bold rounded-full px-2 py-0.5 ${
+                  tab === t.key ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
+                }`}>
+                  {t.count}
+                </span>
+              </button>
+            ))}
+          </div>
+
+          {tab === 'published' && (
+            <div className="p-3 bg-blue-50 border border-blue-100 rounded-2xl text-xs text-blue-700">
+              Once your paper is published we'll surface it here. Until the production
+              queue is exposed to authors, we show accepted manuscripts as a preview.
+            </div>
+          )}
 
           {/* ── Search + Filter ─────────────────────────── */}
           <div className="flex flex-col sm:flex-row gap-3">
@@ -328,14 +408,12 @@ export default function AuthorDashboard() {
               )}
             </div>
           ) : (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              {visible.map((sub, idx) => {
+            <div className="space-y-4">
+              {visible.map((sub) => {
                 const meta = STATUS_META[sub.status] || { label: sub.status, color: 'gray', icon: '•', milestone: 0 };
-                const c    = COLOR_CLS[meta.color];
-                const isNew = idx === 0 && submissions.length === 1;
                 return (
+                  <div key={sub.id} className="space-y-3">
                   <div
-                    key={sub.id}
                     onClick={() => navigate(`/author-dashboard/${sub.paper_id_code || sub.id}`)}
                     className="bg-white rounded-2xl border border-gray-100 shadow-sm hover:shadow-md hover:border-green-200 cursor-pointer transition-all group p-5 space-y-4"
                   >
@@ -392,6 +470,21 @@ export default function AuthorDashboard() {
                         <span>📅 {formatDate(sub.submitted_at)}</span>
                       </div>
                     </div>
+                  </div>
+
+                  {/* ── Decision-facing cards embedded per submission ─── */}
+                  <DecisionLetterCard
+                    submissionId={sub.id}
+                    status={sub.status}
+                    paperTitle={sub.paper_title}
+                    authorName={authorName}
+                    paperIdCode={sub.paper_id_code || null}
+                  />
+                  <ReviewerCommentsCard
+                    submissionId={sub.id}
+                    status={sub.status}
+                  />
+                  <SubmissionThread submissionId={sub.id} viewerRole="author" />
                   </div>
                 );
               })}

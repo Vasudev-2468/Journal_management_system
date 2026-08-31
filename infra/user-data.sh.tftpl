@@ -16,6 +16,13 @@ curl -fsSL https://get.docker.com | sh
 usermod -aG docker ubuntu
 systemctl enable --now docker
 
+# Group membership added by usermod does not apply to already-open sessions.
+# Every `sudo -u ubuntu docker ...` below runs through `sg docker -c ...` so
+# the current shell activates the group before touching /var/run/docker.sock.
+run_as_ubuntu_with_docker() {
+  sudo -u ubuntu sg docker -c "$*"
+}
+
 # ── Clone the app repo ────────────────────────────────────
 APP_DIR="/home/ubuntu/Journal_management_system"
 if [ ! -d "$APP_DIR" ]; then
@@ -24,8 +31,13 @@ fi
 cd "$APP_DIR"
 
 # ── Write production backend/.env ─────────────────────────
-cat > "$APP_DIR/backend/.env" <<'ENVEOF'
-DATABASE_URL=postgresql://journaladmin:${postgres_password}@db:5432/journaldb
+# postgres_password is URL-encoded so any special character produced by
+# openssl rand (@ / : + # ?) doesn't corrupt the DATABASE_URL.
+apt-get install -y python3 || true
+POSTGRES_PASSWORD_ENC=$(PW='${postgres_password}' python3 -c 'import os,urllib.parse;print(urllib.parse.quote(os.environ["PW"],safe=""))')
+
+cat > "$APP_DIR/backend/.env" <<ENVEOF
+DATABASE_URL=postgresql://journaladmin:$${POSTGRES_PASSWORD_ENC}@db:5432/journaldb
 SECRET_KEY=${secret_key}
 ALGORITHM=HS256
 JWT_EXPIRE_DAYS=14
@@ -101,9 +113,11 @@ OVERRIDEEOF
 chown ubuntu:ubuntu "$APP_DIR/docker-compose.override.yml"
 
 # ── Bring the stack up ────────────────────────────────────
+# sg docker -c activates the docker group in a fresh shell, so ubuntu can
+# talk to /var/run/docker.sock in the same boot without a re-login.
 cd "$APP_DIR"
-sudo -u ubuntu docker compose pull || true
-sudo -u ubuntu docker compose up -d --build
+run_as_ubuntu_with_docker "cd $APP_DIR && docker compose pull" || true
+run_as_ubuntu_with_docker "cd $APP_DIR && docker compose up -d --build"
 
 # ── 2 GB swap (helps on t3.micro; cheap insurance on t3.small too) ─
 if [ ! -f /swapfile ]; then

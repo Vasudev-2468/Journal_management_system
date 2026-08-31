@@ -143,7 +143,10 @@ class NotificationBotAgent:
         {_btn("View Reviews", f"{settings.FRONTEND_URL}/editor")}
         """)
         try:
-            _send_and_log(settings.SENDGRID_FROM_EMAIL, subject, body, "agent5_review_complete_email")
+            # D5 — route to the configured editorial inbox, not the sender.
+            editor_cc = settings.EDITORIAL_INBOX_EMAIL or settings.SENDGRID_FROM_EMAIL
+            if editor_cc:
+                _send_and_log(editor_cc, subject, body, "agent5_review_complete_email")
             results["email_sent"] = True
         except Exception as exc:
             results["email_error"] = str(exc)
@@ -222,4 +225,6 @@ class NotificationBotAgent:
         <ul>{reviewers_html}</ul>
         {_btn("Open Dashboard", f"{settings.FRONTEND_URL}/editor")}
         """)
-        _send_and_log(settings.SENDGRID_FROM_EMAIL, subject, body, "agent5_invitations_sent_email")
+        editor_cc = settings.EDITORIAL_INBOX_EMAIL or settings.SENDGRID_FROM_EMAIL
+        if editor_cc:
+            _send_and_log(editor_cc, subject, body, "agent5_invitations_sent_email")

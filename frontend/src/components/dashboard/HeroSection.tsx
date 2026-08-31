@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import JournalLogo from '../common/JournalLogo';
+import { useJournal } from '../../context/JournalContext';
 
 const HERO_VIDEOS = [
     'https://videos.pexels.com/video-files/36252897/15374243_1920_1080_30fps.mp4',
@@ -11,6 +12,7 @@ const HeroSection: React.FC = () => {
     const [searchQuery, setSearchQuery] = useState('');
     const videoRef = useRef<HTMLVideoElement>(null);
     const [videoLoaded, setVideoLoaded] = useState(false);
+    const { journal } = useJournal();
 
     useEffect(() => {
         const v = videoRef.current;
@@ -57,7 +59,7 @@ const HeroSection: React.FC = () => {
 
                         <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-emerald-500/20 border border-emerald-400/30 text-emerald-300 text-sm font-semibold mb-6 backdrop-blur-sm">
                             <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
-                            Now Accepting Submissions — Volume 14, 2026
+                            Now Accepting Submissions{journal?.start_year ? ` — Since ${journal.start_year}` : ''}
                         </div>
 
                         <h1 className="text-4xl sm:text-5xl lg:text-[3.5rem] font-extrabold text-white leading-[1.1] tracking-tight drop-shadow-lg">
@@ -74,18 +76,31 @@ const HeroSection: React.FC = () => {
                             for faster, fairer peer review.
                         </p>
 
-                        {/* ISSN & Indexing */}
-                        <div className="mt-5 flex flex-wrap items-center gap-x-3 gap-y-2 text-sm">
-                            <span className="px-3 py-1 rounded-full bg-white/10 text-white font-medium backdrop-blur-sm border border-white/10">
-                                Print ISSN: 2348-8549
-                            </span>
-                            <span className="px-3 py-1 rounded-full bg-white/10 text-white font-medium backdrop-blur-sm border border-white/10">
-                                Online ISSN: 2348-8557
-                            </span>
-                            <span className="px-3 py-1 rounded-full bg-brand-500/20 text-brand-200 font-medium backdrop-blur-sm border border-brand-400/20">
-                                Scopus &amp; Web of Science Indexed
-                            </span>
-                        </div>
+                        {/* ISSN & licence — from JournalContext (JG-101).
+                            Individual chips are omitted when the underlying
+                            field is null, so an unregistered ISSN doesn't leave
+                            an empty label. The "Scopus & Web of Science
+                            Indexed" claim was untrue and has been removed;
+                            JG-108 introduces an honest indexing page. */}
+                        {(journal?.issn_print || journal?.issn_online || journal?.licence) && (
+                            <div className="mt-5 flex flex-wrap items-center gap-x-3 gap-y-2 text-sm">
+                                {journal.issn_print && (
+                                    <span className="px-3 py-1 rounded-full bg-white/10 text-white font-medium backdrop-blur-sm border border-white/10">
+                                        Print ISSN: {journal.issn_print}
+                                    </span>
+                                )}
+                                {journal.issn_online && (
+                                    <span className="px-3 py-1 rounded-full bg-white/10 text-white font-medium backdrop-blur-sm border border-white/10">
+                                        Online ISSN: {journal.issn_online}
+                                    </span>
+                                )}
+                                {journal.licence && (
+                                    <span className="px-3 py-1 rounded-full bg-brand-500/20 text-brand-200 font-medium backdrop-blur-sm border border-brand-400/20">
+                                        {journal.licence}
+                                    </span>
+                                )}
+                            </div>
+                        )}
 
                         {/* Search bar */}
                         <div className="mt-8 max-w-xl">

@@ -1,58 +1,32 @@
-import axios from 'axios';
+import client from './client';
 import { Journal } from '../types';
 
-const API_URL = '/api/journals';
+// Backend routes are mounted at /journals (not /api/journals) — see
+// backend/app/main.py. All requests go through the shared axios client so
+// that the base URL and auth header handling stay consistent.
 
-// TODO: Implement function to fetch all journals
+const BASE = '/journals';
+
 export const fetchJournals = async (): Promise<Journal[]> => {
-    try {
-        const response = await axios.get(API_URL);
-        return response.data;
-    } catch (error) {
-        console.error('Error fetching journals:', error);
-        throw error;
-    }
+    const response = await client.get(`${BASE}/`);
+    return response.data;
 };
 
-// TODO: Implement function to fetch a single journal by ID
 export const fetchJournalById = async (id: string): Promise<Journal> => {
-    try {
-        const response = await axios.get(`${API_URL}/${id}`);
-        return response.data;
-    } catch (error) {
-        console.error(`Error fetching journal with ID ${id}:`, error);
-        throw error;
-    }
+    const response = await client.get(`${BASE}/${id}`);
+    return response.data;
 };
 
-// TODO: Implement function to create a new journal
 export const createJournal = async (journalData: Omit<Journal, 'id'>): Promise<Journal> => {
-    try {
-        const response = await axios.post(API_URL, journalData);
-        return response.data;
-    } catch (error) {
-        console.error('Error creating journal:', error);
-        throw error;
-    }
+    const response = await client.post(`${BASE}/`, journalData);
+    return response.data;
 };
 
-// TODO: Implement function to update an existing journal
 export const updateJournal = async (id: string, journalData: Journal): Promise<Journal> => {
-    try {
-        const response = await axios.put(`${API_URL}/${id}`, journalData);
-        return response.data;
-    } catch (error) {
-        console.error(`Error updating journal with ID ${id}:`, error);
-        throw error;
-    }
+    const response = await client.put(`${BASE}/${id}`, journalData);
+    return response.data;
 };
 
-// TODO: Implement function to delete a journal
 export const deleteJournal = async (id: string): Promise<void> => {
-    try {
-        await axios.delete(`${API_URL}/${id}`);
-    } catch (error) {
-        console.error(`Error deleting journal with ID ${id}:`, error);
-        throw error;
-    }
+    await client.delete(`${BASE}/${id}`);
 };

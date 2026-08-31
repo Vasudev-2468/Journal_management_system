@@ -8,3 +8,17 @@ from .reviewer import Reviewer
 from .notification import Notification
 from .access_log import AccessLog
 from .cv_request import CVRequest
+from .article_review import ArticleReview
+from .volume import Volume, Issue, IssueArticle
+from .contact_message import ContactMessage
+from .announcement import Announcement
+from .editorial_board_member import EditorialBoardMember
+from .manuscript_version import ManuscriptVersion
+from .manuscript_file import ManuscriptFile
+from .special_issue import SpecialIssue
+from .email_template import EmailTemplate
+from .audit_log import AuditLog
+from .article_reference import ArticleReference
+from .production_stage import ProductionRecord
+from .plagiarism_check import PlagiarismCheck
+from .submission_message import SubmissionMessage

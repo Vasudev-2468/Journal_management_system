@@ -70,6 +70,17 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     )
     try:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        # Fix R2 — reject bounded-scope tokens (currently the editor pre-auth
+        # token minted by editor_auth.login). Those tokens prove a password
+        # was typed but MFA hasn't been completed yet; they must not authenticate
+        # anything except /editor-auth/verify-otp and /editor-auth/resend-otp.
+        scope = payload.get("scope")
+        if scope and scope != "session":
+            raise credentials_exception
+        # Also reject review-link tokens (utils/link_tokens): those authorise
+        # a specific review URL, not the user's identity.
+        if payload.get("type") == "review_link":
+            raise credentials_exception
         email: str = payload.get("sub")
         if email is None:
             raise credentials_exception
@@ -81,4 +92,3 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         raise credentials_exception
     return user
 
-# TODO: Implement additional functions for user management as needed.

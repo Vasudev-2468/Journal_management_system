@@ -22,17 +22,51 @@ import AuthorRegisterPage from './pages/AuthorRegisterPage';
 import AuthorDashboard from './pages/AuthorDashboard';
 import AuthorSubmissionDetail from './pages/AuthorSubmissionDetail';
 import ProtectedEditorRoute from './components/common/ProtectedEditorRoute';
+import ProtectedAuthorRoute from './components/common/ProtectedAuthorRoute';
 import { AuthProvider } from './context/AuthContext';
+import { JournalProvider } from './context/JournalContext';
+import EditorJournalIdentityPage from './pages/EditorJournalIdentityPage';
+import ArticleListPage from './pages/ArticleListPage';
+import PolicyPageView from './pages/PolicyPageView';
+import ContactPage from './pages/ContactPage';
+import EditorContactInbox from './pages/EditorContactInbox';
+import EditorEditorialBoardAdmin from './pages/EditorEditorialBoardAdmin';
+import EditorAnnouncementsAdmin from './pages/EditorAnnouncementsAdmin';
+import EditorIssuesAdmin from './pages/EditorIssuesAdmin';
+import EditorPoliciesAdmin from './pages/EditorPoliciesAdmin';
+import AnnouncementsPage from './pages/AnnouncementsPage';
+import SpecialIssuesPage from './pages/SpecialIssuesPage';
+import SpecialIssueDetailPage from './pages/SpecialIssueDetailPage';
+import ReviewerLoginPage from './pages/ReviewerLoginPage';
+import ReviewerSetPasswordPage from './pages/ReviewerSetPasswordPage';
+import ReviewerDashboardPage from './pages/ReviewerDashboardPage';
+import AuthorRevisionPage from './pages/AuthorRevisionPage';
+import EditorUsersAdmin from './pages/EditorUsersAdmin';
+import EditorAuditLogPage from './pages/EditorAuditLogPage';
+import EditorEmailTemplatesPage from './pages/EditorEmailTemplatesPage';
+import EditorSpecialIssuesAdmin from './pages/EditorSpecialIssuesAdmin';
+import EditorProductionQueue from './pages/EditorProductionQueue';
+import StatisticsPage from './pages/StatisticsPage';
+import SearchPage from './pages/SearchPage';
+import AuthorProfilePage from './pages/AuthorProfilePage';
+import APCPage from './pages/APCPage';
+import ManuscriptPreparationPage from './pages/ManuscriptPreparationPage';
+import AnalyticsLoader from './components/common/AnalyticsLoader';
+import CookieBanner from './components/common/CookieBanner';
 import './styles/index.css';
 
 const App: React.FC = () => {
     return (
         <AuthProvider>
-            <Router>
-                <Routes>
+            <AnalyticsLoader />
+            <CookieBanner />
+            <JournalProvider>
+                <Router>
+                    <Routes>
                     <Route path="/" element={<Dashboard />} />
                     <Route path="/journals" element={<JournalPage />} />
-                    <Route path="/articles" element={<ArticlePage />} />
+                    <Route path="/articles" element={<ArticleListPage />} />
+                    <Route path="/articles/:id" element={<ArticlePage />} />
                     <Route path="/reviews" element={<ReviewPage />} />
                     <Route path="/ai-insights" element={<AIInsightsPage />} />
                     <Route path="/login" element={<LoginPage />} />
@@ -44,9 +78,21 @@ const App: React.FC = () => {
                             <EditorDashboard />
                         </ProtectedEditorRoute>
                     } />
-                    <Route path="/submit" element={<SubmitPaper />} />
-                    <Route path="/author-dashboard" element={<AuthorDashboard />} />
-                    <Route path="/author-dashboard/:submissionId" element={<AuthorSubmissionDetail />} />
+                    <Route path="/submit" element={
+                        <ProtectedAuthorRoute>
+                            <SubmitPaper />
+                        </ProtectedAuthorRoute>
+                    } />
+                    <Route path="/author-dashboard" element={
+                        <ProtectedAuthorRoute>
+                            <AuthorDashboard />
+                        </ProtectedAuthorRoute>
+                    } />
+                    <Route path="/author-dashboard/:submissionId" element={
+                        <ProtectedAuthorRoute>
+                            <AuthorSubmissionDetail />
+                        </ProtectedAuthorRoute>
+                    } />
                     <Route path="/review/:token" element={<ReviewerPortal />} />
                     <Route path="/about" element={<AboutPage />} />
                     <Route path="/editorial-board" element={<EditorialBoardPage />} />
@@ -59,8 +105,100 @@ const App: React.FC = () => {
                             <ConsultPartyDashboard />
                         </ProtectedEditorRoute>
                     } />
-                </Routes>
-            </Router>
+                    <Route path="/editor/journal-identity" element={
+                        <ProtectedEditorRoute>
+                            <EditorJournalIdentityPage />
+                        </ProtectedEditorRoute>
+                    } />
+                    <Route path="/publication-ethics" element={<PolicyPageView slug="publication-ethics" />} />
+                    <Route path="/open-access" element={<PolicyPageView slug="open-access" />} />
+                    <Route path="/copyright" element={<PolicyPageView slug="copyright" />} />
+                    <Route path="/plagiarism-policy" element={<PolicyPageView slug="plagiarism-policy" />} />
+                    <Route path="/peer-review-process" element={<PolicyPageView slug="peer-review-process" />} />
+                    <Route path="/archiving-policy" element={<PolicyPageView slug="archiving-policy" />} />
+                    <Route path="/corrections-retractions" element={<PolicyPageView slug="corrections-retractions" />} />
+                    <Route path="/contact" element={<ContactPage />} />
+                    <Route path="/editor/contact-inbox" element={
+                        <ProtectedEditorRoute>
+                            <EditorContactInbox />
+                        </ProtectedEditorRoute>
+                    } />
+                    <Route path="/editor/editorial-board" element={
+                        <ProtectedEditorRoute>
+                            <EditorEditorialBoardAdmin />
+                        </ProtectedEditorRoute>
+                    } />
+                    <Route path="/editor/announcements" element={
+                        <ProtectedEditorRoute>
+                            <EditorAnnouncementsAdmin />
+                        </ProtectedEditorRoute>
+                    } />
+                    <Route path="/editor/issues" element={
+                        <ProtectedEditorRoute>
+                            <EditorIssuesAdmin />
+                        </ProtectedEditorRoute>
+                    } />
+                    <Route path="/editor/policies" element={
+                        <ProtectedEditorRoute>
+                            <EditorPoliciesAdmin />
+                        </ProtectedEditorRoute>
+                    } />
+
+                    {/* New public routes — announcements, special issues, legal, reviewer */}
+                    <Route path="/announcements" element={<AnnouncementsPage />} />
+                    <Route path="/special-issues" element={<SpecialIssuesPage />} />
+                    <Route path="/special-issues/:slug" element={<SpecialIssueDetailPage />} />
+                    <Route path="/privacy-policy" element={<PolicyPageView slug="privacy-policy" />} />
+                    <Route path="/terms-of-use" element={<PolicyPageView slug="terms-of-use" />} />
+                    <Route path="/cookie-policy" element={<PolicyPageView slug="cookie-policy" />} />
+                    <Route path="/accessibility-statement" element={<PolicyPageView slug="accessibility-statement" />} />
+                    <Route path="/reviewer-login" element={<ReviewerLoginPage />} />
+                    <Route path="/reviewer-set-password" element={<ReviewerSetPasswordPage />} />
+                    <Route path="/reviewer-dashboard" element={<ReviewerDashboardPage />} />
+
+                    {/* Public informational pages — statistics, search, author profile, APC, manuscript prep */}
+                    <Route path="/statistics" element={<StatisticsPage />} />
+                    <Route path="/search" element={<SearchPage />} />
+                    <Route path="/authors/:id" element={<AuthorProfilePage />} />
+                    <Route path="/apc" element={<APCPage />} />
+                    <Route path="/manuscript-preparation" element={<ManuscriptPreparationPage />} />
+
+                    {/* Author revision UI */}
+                    <Route path="/author-dashboard/:submissionId/revise" element={
+                        <ProtectedAuthorRoute>
+                            <AuthorRevisionPage />
+                        </ProtectedAuthorRoute>
+                    } />
+
+                    {/* Editor admin — user mgmt / audit / email templates / special issues / production */}
+                    <Route path="/editor/users" element={
+                        <ProtectedEditorRoute>
+                            <EditorUsersAdmin />
+                        </ProtectedEditorRoute>
+                    } />
+                    <Route path="/editor/audit-log" element={
+                        <ProtectedEditorRoute>
+                            <EditorAuditLogPage />
+                        </ProtectedEditorRoute>
+                    } />
+                    <Route path="/editor/email-templates" element={
+                        <ProtectedEditorRoute>
+                            <EditorEmailTemplatesPage />
+                        </ProtectedEditorRoute>
+                    } />
+                    <Route path="/editor/special-issues" element={
+                        <ProtectedEditorRoute>
+                            <EditorSpecialIssuesAdmin />
+                        </ProtectedEditorRoute>
+                    } />
+                    <Route path="/editor/production" element={
+                        <ProtectedEditorRoute>
+                            <EditorProductionQueue />
+                        </ProtectedEditorRoute>
+                    } />
+                    </Routes>
+                </Router>
+            </JournalProvider>
         </AuthProvider>
     );
 };

@@ -1,261 +1,349 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import Header from '../components/layout/Header';
 import Footer from '../components/layout/Footer';
 import JournalLogo from '../components/common/JournalLogo';
-
-/* ── Images (Unsplash — free licence) ───────────────────── */
-const IMG = {
-    hero: 'https://images.unsplash.com/photo-1523050854058-8df90110c7f1?w=1920&h=600&fit=crop&q=80',
-    eic: 'https://images.unsplash.com/photo-1560250097-0b93528c311a?w=400&h=400&fit=crop&q=80',
-    photos: [
-        'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=400&h=400&fit=crop&q=80',
-        'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=400&h=400&fit=crop&q=80',
-        'https://images.unsplash.com/photo-1580489944761-15a19d654956?w=400&h=400&fit=crop&q=80',
-        'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=400&h=400&fit=crop&q=80',
-    ],
-    advisory: [
-        'https://images.unsplash.com/photo-1438761681033-6461ffad8d80?w=200&h=200&fit=crop&q=80',
-        'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=200&h=200&fit=crop&q=80',
-        'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=200&h=200&fit=crop&q=80',
-        'https://images.unsplash.com/photo-1519085360753-af0119f7cbe7?w=200&h=200&fit=crop&q=80',
-        'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=200&h=200&fit=crop&q=80',
-        'https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?w=200&h=200&fit=crop&q=80',
-    ],
-};
+import Loading from '../components/common/Loading';
+import SEO from '../components/common/SEO';
+import {
+    BoardCategory,
+    BoardMember,
+    CATEGORY_LABELS,
+    CATEGORY_ORDER,
+    fetchBoardMembers,
+} from '../api/board';
 
 const HERO_VIDEO = 'https://videos.pexels.com/video-files/3255275/3255275-hd_1920_1080_25fps.mp4';
+const HERO_FALLBACK =
+    'https://images.unsplash.com/photo-1523050854058-8df90110c7f1?w=1920&h=600&fit=crop&q=80';
 
-/* ── Data ────────────────────────────────────────────────── */
-
-interface BoardMember {
-    name: string;
-    role: string;
-    affiliation: string;
-    country: string;
-    expertise: string[];
-    email: string;
-    orcid: string;
-    scholar?: string;
-    photo: string;
-    bio: string;
-    cvAvailable: boolean;
-}
-
-const editorInChief: BoardMember = {
-    name: 'Prof. Dr. A. Rajendran',
-    role: 'Editor-in-Chief',
-    affiliation: 'Department of Computer Science, Stanford University',
-    country: 'USA',
-    expertise: ['Machine Learning', 'Neural Architecture Search', 'AI Systems'],
-    email: 'editor@jgair-journal.org',
-    orcid: '0000-0001-2345-6789',
-    scholar: 'https://scholar.google.com',
-    photo: IMG.eic,
-    bio: 'Leading researcher with 25+ years in ML/AI. Published 200+ papers, h-index 78. Previously at Google Brain and MIT CSAIL. Editor for IEEE TPAMI and NeurIPS area chair.',
-    cvAvailable: true,
+const initials = (name: string): string => {
+    const parts = name.replace(/^(Prof\.?|Dr\.?|Mr\.?|Ms\.?)\s+/i, '').trim().split(/\s+/);
+    if (parts.length === 0) return '§';
+    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 };
 
-const associateEditors: BoardMember[] = [
-    {
-        name: 'Prof. Dr. Maria Santos',
-        role: 'Associate Editor',
-        affiliation: 'Faculty of Engineering, ETH Zurich',
-        country: 'Switzerland',
-        expertise: ['Computer Vision', '3D Reconstruction', 'Medical Imaging'],
-        email: 'santos@jgair-journal.org',
-        orcid: '0000-0002-3456-7890',
-        photo: IMG.photos[0],
-        bio: 'Pioneer in medical image analysis using deep learning. 120+ publications, recipient of the ECCV Best Paper Award 2023.',
-        cvAvailable: true,
-    },
-    {
-        name: 'Prof. Dr. Wei Zhang',
-        role: 'Associate Editor',
-        affiliation: 'School of AI, Tsinghua University',
-        country: 'China',
-        expertise: ['NLP', 'Large Language Models', 'Dialogue Systems'],
-        email: 'zhang@jgair-journal.org',
-        orcid: '0000-0003-4567-8901',
-        photo: IMG.photos[1],
-        bio: 'Expert in transformer architectures and multilingual NLP. Core contributor to open-source LLM projects. ACL Fellow.',
-        cvAvailable: true,
-    },
-    {
-        name: 'Prof. Dr. Sarah Mitchell',
-        role: 'Associate Editor',
-        affiliation: 'Department of Data Science, University of Oxford',
-        country: 'UK',
-        expertise: ['Reinforcement Learning', 'Robotics', 'Autonomous Agents'],
-        email: 'mitchell@jgair-journal.org',
-        orcid: '0000-0004-5678-9012',
-        photo: IMG.photos[2],
-        bio: 'Focuses on safe RL for real-world deployment. Advisor to UK AI Safety Institute. 80+ peer-reviewed articles.',
-        cvAvailable: true,
-    },
-    {
-        name: 'Prof. Dr. Kenji Tanaka',
-        role: 'Associate Editor',
-        affiliation: 'Graduate School of Informatics, University of Tokyo',
-        country: 'Japan',
-        expertise: ['Edge AI', 'IoT Intelligence', 'Embedded ML'],
-        email: 'tanaka@jgair-journal.org',
-        orcid: '0000-0005-6789-0123',
-        photo: IMG.photos[3],
-        bio: 'Specialises in on-device inference and TinyML. Holds 15 patents. IEEE Senior Member and JST CREST PI.',
-        cvAvailable: true,
-    },
-];
+const parseList = (raw: string | null | undefined): string[] => {
+    if (!raw) return [];
+    return raw
+        .split(/[,;\n]+/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+};
 
-interface AdvisoryMember {
-    name: string;
-    affiliation: string;
-    country: string;
-    expertise: string;
-    photo: string;
+const CATEGORY_ACCENT: Record<BoardCategory, string> = {
+    editor_in_chief: 'from-amber-500 via-orange-500 to-rose-500',
+    associate_editor: 'from-brand-500 via-indigo-500 to-purple-500',
+    managing_editor: 'from-sky-500 via-cyan-500 to-teal-500',
+    section_editor: 'from-emerald-500 via-teal-500 to-cyan-500',
+    board_member: 'from-blue-500 via-indigo-500 to-violet-500',
+    advisory: 'from-purple-500 via-fuchsia-500 to-pink-500',
+    technical: 'from-slate-500 via-gray-500 to-neutral-600',
+};
+
+const CATEGORY_SUBTITLE: Record<BoardCategory, string> = {
+    editor_in_chief: 'Sets the editorial direction of the journal.',
+    associate_editor: 'Lead handling editors overseeing peer review.',
+    managing_editor: 'Coordinates day-to-day editorial operations.',
+    section_editor: 'Handle submissions within their subject area.',
+    board_member: 'Provide topical expertise and shape the journal.',
+    advisory: 'Long-serving advisors on strategy and standards.',
+    technical: 'Production, typesetting, and platform engineering.',
+};
+
+/* ── One card ─────────────────────────────────────────── */
+
+interface CardProps {
+    member: BoardMember;
+    variant: 'featured' | 'default' | 'compact';
 }
 
-const advisoryBoard: AdvisoryMember[] = [
-    { name: 'Prof. Dr. Elena Voronova', affiliation: 'Moscow Institute of Physics and Technology', country: 'Russia', expertise: 'Quantum ML, Optimization', photo: IMG.advisory[0] },
-    { name: 'Prof. Dr. James Okonkwo', affiliation: 'University of Lagos', country: 'Nigeria', expertise: 'AI for Development, NLP for African Languages', photo: IMG.advisory[1] },
-    { name: 'Prof. Dr. Priya Sharma', affiliation: 'IIT Bombay', country: 'India', expertise: 'Federated Learning, Privacy-Preserving ML', photo: IMG.advisory[2] },
-    { name: 'Prof. Dr. Carlos Fernandez', affiliation: 'Universidad Politécnica de Madrid', country: 'Spain', expertise: 'Explainable AI, Trustworthy AI', photo: IMG.advisory[3] },
-    { name: 'Prof. Dr. Aisha Al-Rashid', affiliation: 'King Abdullah University', country: 'Saudi Arabia', expertise: 'Generative Models, Multimodal Learning', photo: IMG.advisory[4] },
-    { name: 'Prof. Dr. Henrik Johansson', affiliation: 'KTH Royal Institute of Technology', country: 'Sweden', expertise: 'AI Safety, Alignment, Formal Verification', photo: IMG.advisory[5] },
-];
+const iconLink = (
+    href: string,
+    label: string,
+    svg: React.ReactNode,
+): React.ReactNode => (
+    <a
+        key={label}
+        href={href}
+        target="_blank"
+        rel="noreferrer"
+        title={label}
+        aria-label={label}
+        className="w-8 h-8 rounded-lg bg-gray-100 hover:bg-brand-600 text-gray-600 hover:text-white flex items-center justify-center transition no-underline"
+    >
+        {svg}
+    </a>
+);
 
-const sectionEditors = [
-    { name: 'Dr. Liang Chen', section: 'Machine Learning', affiliation: 'UC Berkeley, USA' },
-    { name: 'Dr. Fatima Noor', section: 'Computer Vision', affiliation: 'KAUST, Saudi Arabia' },
-    { name: 'Dr. Marco Rossi', section: 'NLP & Language Models', affiliation: 'Sapienza University, Italy' },
-    { name: 'Dr. Akiko Yamada', section: 'Robotics & Autonomous Systems', affiliation: 'NAIST, Japan' },
-];
+const ORCID_ICON = (
+    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M12 0C5.372 0 0 5.372 0 12s5.372 12 12 12 12-5.372 12-12S18.628 0 12 0zM7.369 4.378c.525 0 .947.431.947.947 0 .525-.422.947-.947.947a.95.95 0 01-.947-.947c0-.516.422-.947.947-.947zm-.722 3.038h1.444v10.041H6.647V7.416zm3.562 0h3.9c3.712 0 5.344 2.653 5.344 5.025 0 2.578-2.016 5.016-5.325 5.016h-3.919V7.416zm1.444 1.303v7.444h2.297c3.272 0 4.019-2.484 4.019-3.722 0-2.016-1.284-3.722-4.088-3.722h-2.228z" />
+    </svg>
+);
 
-/* ── CV Request Modal ───────────────────────────────────── */
+const SCHOLAR_ICON = (
+    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M5.242 13.769L0 9.5 12 0l12 9.5-5.242 4.269C17.548 11.249 14.978 9.5 12 9.5c-2.977 0-5.548 1.748-6.758 4.269zM12 10a7 7 0 100 14 7 7 0 000-14z" />
+    </svg>
+);
 
-const CVRequestModal: React.FC<{
-    member: BoardMember;
-    onClose: () => void;
-}> = ({ member, onClose }) => {
-    const [form, setForm] = useState({ name: '', email: '', reason: '' });
-    const [status, setStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
+const SCOPUS_ICON = (
+    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M14.97 17.106c-.79-1.02-1.94-1.5-2.99-1.99-1.02-.47-2.09-.94-2.63-1.75-.42-.62-.4-1.34.05-1.85.61-.7 1.65-.87 2.44-.48.65.31 1.16.87 1.44 1.55l1.02-.44c-.37-.91-1.06-1.64-1.93-2.05-1.16-.55-2.55-.36-3.5.5-.94.85-1.17 2.24-.55 3.34.54.96 1.5 1.51 2.44 1.98 1.32.65 2.65 1.32 3.02 2.4.28.83-.11 1.75-.9 2.13-.79.38-1.79.28-2.48-.24-.83-.6-1.19-1.66-.98-2.66l-1.11-.19c-.28 1.4.28 2.85 1.42 3.66 1.14.81 2.7.87 3.9.15 1.19-.71 1.79-2.2 1.34-3.55zM12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z" />
+    </svg>
+);
 
-    const handleSubmit = async (e: React.FormEvent) => {
-        e.preventDefault();
-        setStatus('sending');
+const INSTITUTION_ICON = (
+    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M12 21v-8.25M15.75 21v-8.25M8.25 21v-8.25M3 9l9-6 9 6m-1.5 12V10.332A48.36 48.36 0 0012 9.75c-2.551 0-5.056.2-7.5.582V21M3 21h18M12 6.75h.008v.008H12V6.75z" />
+    </svg>
+);
 
-        try {
-            const res = await fetch(
-                `${process.env.REACT_APP_API_URL || 'http://localhost:8000'}/editorial/cv-request`,
-                {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        member_name: member.name,
-                        member_email: member.email,
-                        requester_name: form.name,
-                        requester_email: form.email,
-                        reason: form.reason,
-                    }),
-                },
-            );
-            if (res.ok) setStatus('sent');
-            else setStatus('error');
-        } catch {
-            setStatus('error');
-        }
-    };
+const EMAIL_ICON = (
+    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75" />
+    </svg>
+);
 
+const MemberCard: React.FC<CardProps> = ({ member, variant }) => {
+    const accent = CATEGORY_ACCENT[member.category];
+    const interests = parseList(member.expertise);
+    const quals = parseList(member.qualifications);
+    const links: React.ReactNode[] = [];
+    if (member.orcid) {
+        links.push(
+            iconLink(
+                member.orcid.startsWith('http')
+                    ? member.orcid
+                    : `https://orcid.org/${member.orcid}`,
+                'ORCID',
+                ORCID_ICON,
+            ),
+        );
+    }
+    if (member.scholar_url) links.push(iconLink(member.scholar_url, 'Google Scholar', SCHOLAR_ICON));
+    if (member.scopus_id) {
+        links.push(
+            iconLink(
+                member.scopus_id.startsWith('http')
+                    ? member.scopus_id
+                    : `https://www.scopus.com/authid/detail.uri?authorId=${encodeURIComponent(member.scopus_id)}`,
+                'Scopus',
+                SCOPUS_ICON,
+            ),
+        );
+    }
+    if (member.institutional_profile_url) {
+        links.push(iconLink(member.institutional_profile_url, 'Institutional profile', INSTITUTION_ICON));
+    }
+    if (member.email) {
+        links.push(iconLink(`mailto:${member.email}`, member.email, EMAIL_ICON));
+    }
+
+    if (variant === 'featured') {
+        return (
+            <div className="relative bg-white rounded-3xl border border-gray-100 shadow-2xl overflow-hidden">
+                <div className={`h-2 bg-gradient-to-r ${accent}`} />
+                <div className="grid md:grid-cols-3 gap-0">
+                    <div className={`md:col-span-1 p-8 flex items-center justify-center bg-gradient-to-br ${accent} relative overflow-hidden`}>
+                        <div className="absolute inset-0 opacity-30">
+                            <div className="absolute -top-16 -right-16 w-64 h-64 rounded-full bg-white blur-3xl" />
+                        </div>
+                        <div className="relative w-40 h-40 rounded-full border-4 border-white/40 bg-white/20 backdrop-blur-sm shadow-2xl overflow-hidden flex items-center justify-center">
+                            {member.photo_url ? (
+                                <img src={member.photo_url} alt={member.name} className="w-full h-full object-cover" loading="lazy" />
+                            ) : (
+                                <span className="text-6xl font-black text-white">{initials(member.name)}</span>
+                            )}
+                        </div>
+                    </div>
+                    <div className="md:col-span-2 p-8">
+                        <span className="text-xs font-bold uppercase tracking-widest text-brand-600">
+                            {member.role}
+                        </span>
+                        <h3 className="text-2xl sm:text-3xl font-extrabold text-gray-900 mt-1">
+                            {member.name}
+                        </h3>
+                        <p className="mt-2 text-gray-700">
+                            {[member.department, member.affiliation].filter(Boolean).join(' · ')}
+                        </p>
+                        {member.country && (
+                            <p className="text-sm text-gray-500">📍 {member.country}</p>
+                        )}
+                        {quals.length > 0 && (
+                            <div className="mt-4">
+                                <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1.5">
+                                    Qualifications
+                                </p>
+                                <ul className="space-y-0.5 text-sm text-gray-700">
+                                    {quals.map((q, i) => (
+                                        <li key={i} className="flex items-start gap-1.5">
+                                            <span className="text-brand-600">▸</span>
+                                            {q}
+                                        </li>
+                                    ))}
+                                </ul>
+                            </div>
+                        )}
+                        {interests.length > 0 && (
+                            <div className="mt-4">
+                                <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1.5">
+                                    Research interests
+                                </p>
+                                <div className="flex flex-wrap gap-1.5">
+                                    {interests.map((tag, i) => (
+                                        <span
+                                            key={i}
+                                            className="text-xs px-2.5 py-1 bg-brand-50 text-brand-700 rounded-full font-medium"
+                                        >
+                                            {tag}
+                                        </span>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                        {member.bio && (
+                            <p className="mt-4 text-sm text-gray-600 leading-relaxed">{member.bio}</p>
+                        )}
+                        {links.length > 0 && (
+                            <div className="mt-5 flex flex-wrap gap-2">{links}</div>
+                        )}
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    if (variant === 'compact') {
+        return (
+            <div className="bg-white rounded-2xl border border-gray-100 p-4 hover:shadow-md hover:-translate-y-0.5 transition-all duration-300">
+                <div className="flex items-center gap-3">
+                    <div className={`w-14 h-14 rounded-full overflow-hidden flex items-center justify-center flex-shrink-0 bg-gradient-to-br ${accent}`}>
+                        {member.photo_url ? (
+                            <img src={member.photo_url} alt={member.name} className="w-full h-full object-cover" loading="lazy" />
+                        ) : (
+                            <span className="text-lg font-bold text-white">{initials(member.name)}</span>
+                        )}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                        <h4 className="text-sm font-bold text-gray-900 truncate">{member.name}</h4>
+                        <p className="text-xs text-brand-700 font-semibold truncate">{member.role}</p>
+                        <p className="text-xs text-gray-500 truncate">
+                            {[member.department, member.affiliation].filter(Boolean).join(' · ')}
+                            {member.country ? ` · ${member.country}` : ''}
+                        </p>
+                    </div>
+                </div>
+                {(interests.length > 0 || links.length > 0) && (
+                    <div className="mt-3 pt-3 border-t border-gray-100 flex items-center justify-between gap-2">
+                        <div className="flex flex-wrap gap-1 min-w-0">
+                            {interests.slice(0, 2).map((tag, i) => (
+                                <span key={i} className="text-[10px] px-1.5 py-0.5 bg-gray-100 text-gray-600 rounded truncate">
+                                    {tag}
+                                </span>
+                            ))}
+                        </div>
+                        <div className="flex gap-1 flex-shrink-0">{links.slice(0, 3)}</div>
+                    </div>
+                )}
+            </div>
+        );
+    }
+
+    // default
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm" onClick={onClose}>
-            <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-0 overflow-hidden" onClick={e => e.stopPropagation()}>
-                {/* Header */}
-                <div className="bg-brand-600 p-6">
-                    <h3 className="text-lg font-bold text-white">Request CV Access</h3>
-                    <p className="text-brand-200 text-sm mt-1">
-                        Request to view <strong className="text-white">{member.name}</strong>'s resume
-                    </p>
+        <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden hover:shadow-xl hover:-translate-y-1 transition-all duration-300 flex flex-col">
+            <div className={`h-1.5 bg-gradient-to-r ${accent}`} />
+            <div className="p-6 flex flex-col flex-1">
+                <div className="flex items-start gap-4">
+                    <div className={`w-20 h-20 rounded-2xl overflow-hidden flex-shrink-0 flex items-center justify-center bg-gradient-to-br ${accent} shadow-md`}>
+                        {member.photo_url ? (
+                            <img src={member.photo_url} alt={member.name} className="w-full h-full object-cover" loading="lazy" />
+                        ) : (
+                            <span className="text-2xl font-black text-white">{initials(member.name)}</span>
+                        )}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                        <span className="text-[10px] font-bold uppercase tracking-widest text-brand-600">
+                            {member.role}
+                        </span>
+                        <h3 className="text-lg font-extrabold text-gray-900 mt-0.5 leading-tight">
+                            {member.name}
+                        </h3>
+                        {member.country && (
+                            <p className="text-xs text-gray-500 mt-1">📍 {member.country}</p>
+                        )}
+                    </div>
                 </div>
 
-                {status === 'sent' ? (
-                    <div className="p-8 text-center">
-                        <div className="w-16 h-16 rounded-full bg-emerald-100 flex items-center justify-center mx-auto mb-4">
-                            <svg className="w-8 h-8 text-emerald-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                            </svg>
-                        </div>
-                        <h4 className="font-bold text-gray-900 text-lg">Request Submitted</h4>
-                        <p className="text-sm text-gray-500 mt-2">
-                            An authentication email has been sent to the editor. You will receive the CV via email once approved.
+                <div className="mt-4 text-sm text-gray-700">
+                    {member.department && <p className="font-medium">{member.department}</p>}
+                    {member.affiliation && <p className="text-gray-600">{member.affiliation}</p>}
+                </div>
+
+                {quals.length > 0 && (
+                    <div className="mt-3">
+                        <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1">
+                            Qualifications
                         </p>
-                        <button onClick={onClose} className="mt-6 px-6 py-2.5 bg-brand-600 text-white rounded-xl text-sm font-semibold hover:bg-brand-700 transition">
-                            Close
-                        </button>
+                        <p className="text-xs text-gray-600 line-clamp-2">{quals.join(' · ')}</p>
                     </div>
-                ) : (
-                    <form onSubmit={handleSubmit} className="p-6 space-y-4">
-                        <div>
-                            <label className="block text-sm font-semibold text-gray-700 mb-1">Your Full Name</label>
-                            <input
-                                type="text" required
-                                className="w-full px-4 py-2.5 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none"
-                                value={form.name}
-                                onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
-                                placeholder="Dr. Jane Doe"
-                            />
-                        </div>
-                        <div>
-                            <label className="block text-sm font-semibold text-gray-700 mb-1">Your Email</label>
-                            <input
-                                type="email" required
-                                className="w-full px-4 py-2.5 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none"
-                                value={form.email}
-                                onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
-                                placeholder="jane.doe@university.edu"
-                            />
-                        </div>
-                        <div>
-                            <label className="block text-sm font-semibold text-gray-700 mb-1">Reason for Request</label>
-                            <textarea
-                                required rows={3}
-                                className="w-full px-4 py-2.5 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none resize-none"
-                                value={form.reason}
-                                onChange={e => setForm(f => ({ ...f, reason: e.target.value }))}
-                                placeholder="I would like to review the editor's qualifications for a potential collaboration..."
-                            />
-                        </div>
-                        {status === 'error' && (
-                            <p className="text-sm text-red-600 bg-red-50 rounded-lg p-3">
-                                Something went wrong. Please try again or email editorial@jgair-journal.org directly.
-                            </p>
-                        )}
-                        <div className="flex gap-3 pt-2">
-                            <button type="button" onClick={onClose} className="flex-1 px-4 py-2.5 border border-gray-200 rounded-xl text-sm font-semibold text-gray-600 hover:bg-gray-50 transition">
-                                Cancel
-                            </button>
-                            <button
-                                type="submit"
-                                disabled={status === 'sending'}
-                                className="flex-1 px-4 py-2.5 bg-brand-600 text-white rounded-xl text-sm font-semibold hover:bg-brand-700 transition disabled:opacity-60"
+                )}
+
+                {interests.length > 0 && (
+                    <div className="mt-3 flex flex-wrap gap-1">
+                        {interests.slice(0, 4).map((tag, i) => (
+                            <span
+                                key={i}
+                                className="text-[11px] px-2 py-0.5 bg-brand-50 text-brand-700 rounded-full font-medium"
                             >
-                                {status === 'sending' ? 'Sending...' : 'Submit Request'}
-                            </button>
-                        </div>
-                        <p className="text-xs text-gray-400 text-center">
-                            Your request will be reviewed by the editorial office. An authentication email will be sent for approval.
-                        </p>
-                    </form>
+                                {tag}
+                            </span>
+                        ))}
+                        {interests.length > 4 && (
+                            <span className="text-[11px] px-2 py-0.5 text-gray-400">
+                                +{interests.length - 4}
+                            </span>
+                        )}
+                    </div>
+                )}
+
+                {links.length > 0 && (
+                    <div className="mt-4 pt-4 border-t border-gray-100 flex flex-wrap gap-2">{links}</div>
                 )}
             </div>
         </div>
     );
 };
 
-/* ══════════════════════════════════════════════════════════ */
+/* ── Page ─────────────────────────────────────────────── */
 
 const EditorialBoardPage: React.FC = () => {
-    const videoRef = useRef<HTMLVideoElement>(null);
+    const [members, setMembers] = useState<BoardMember[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
     const [videoReady, setVideoReady] = useState(false);
-    const [cvModal, setCvModal] = useState<BoardMember | null>(null);
+    const videoRef = React.useRef<HTMLVideoElement>(null);
+
+    useEffect(() => {
+        let cancelled = false;
+        fetchBoardMembers()
+            .then((data) => {
+                if (!cancelled) setMembers(data);
+            })
+            .catch((err) => {
+                if (!cancelled) {
+                    setError(err?.response?.data?.detail || err?.message || 'Failed to load editorial board.');
+                }
+            })
+            .finally(() => {
+                if (!cancelled) setLoading(false);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, []);
 
     useEffect(() => {
         const v = videoRef.current;
@@ -264,270 +352,180 @@ const EditorialBoardPage: React.FC = () => {
         v.load();
     }, []);
 
+    const grouped = useMemo(() => {
+        const map: Record<BoardCategory, BoardMember[]> = {
+            editor_in_chief: [],
+            associate_editor: [],
+            managing_editor: [],
+            section_editor: [],
+            board_member: [],
+            advisory: [],
+            technical: [],
+        };
+        for (const m of members) {
+            (map[m.category] || map.board_member).push(m);
+        }
+        for (const key of Object.keys(map) as BoardCategory[]) {
+            map[key].sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name));
+        }
+        return map;
+    }, [members]);
+
+    const totalMembers = members.length;
+    const countries = useMemo(() => {
+        const set = new Set<string>();
+        for (const m of members) if (m.country) set.add(m.country);
+        return set.size;
+    }, [members]);
+
     return (
         <div className="min-h-screen flex flex-col bg-gray-50">
+            <SEO
+                title="Editorial Board — JGAIR"
+                description="Meet the international editorial board of the Journal of Generative and Applied Intelligence Research — the scholars overseeing peer review and publication of every article."
+                canonical={
+                    typeof window !== 'undefined'
+                        ? `${window.location.origin}/editorial-board`
+                        : undefined
+                }
+                type="website"
+            />
             <Header />
 
-            {/* ── Hero ──────────────────────────────────────── */}
-            <section className="relative h-[380px] lg:h-[420px] flex items-center overflow-hidden">
+            {/* Hero */}
+            <section className="relative h-[380px] lg:h-[440px] flex items-center overflow-hidden">
                 <video
                     ref={videoRef}
                     className="absolute inset-0 w-full h-full object-cover"
-                    autoPlay loop muted playsInline
+                    autoPlay
+                    loop
+                    muted
+                    playsInline
                     onCanPlayThrough={() => setVideoReady(true)}
                     style={{ opacity: videoReady ? 1 : 0, transition: 'opacity 1.2s ease-in' }}
                 />
-                <img src={IMG.hero} alt="" className="absolute inset-0 w-full h-full object-cover" style={{ opacity: videoReady ? 0 : 1, transition: 'opacity 1.2s' }} />
+                <img
+                    src={HERO_FALLBACK}
+                    alt=""
+                    className="absolute inset-0 w-full h-full object-cover"
+                    style={{ opacity: videoReady ? 0 : 1, transition: 'opacity 1.2s' }}
+                />
                 <div className="absolute inset-0 bg-gradient-to-r from-brand-950/90 via-brand-950/75 to-brand-900/60" />
                 <div className="relative max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-                    <div className="inline-block mb-5"><JournalLogo variant="compact" dark /></div>
-                    <h1 className="text-4xl sm:text-5xl font-extrabold text-white tracking-tight drop-shadow-lg">Editorial Board</h1>
-                    <p className="mt-4 text-lg text-brand-200 max-w-2xl mx-auto leading-relaxed font-light">
-                        Distinguished researchers and practitioners from world-leading institutions, dedicated to advancing AI &amp; computing research.
-                    </p>
-                    {/* Country badges */}
-                    <div className="mt-6 flex flex-wrap justify-center gap-2">
-                        {['USA', 'Switzerland', 'China', 'UK', 'Japan', 'India', 'Spain', 'Sweden', 'Saudi Arabia', 'Nigeria', 'Russia', 'Italy'].map(c => (
-                            <span key={c} className="px-3 py-1 bg-white/10 backdrop-blur-sm border border-white/20 text-white/90 text-xs font-medium rounded-full">
-                                {c}
-                            </span>
-                        ))}
+                    <div className="inline-block mb-5">
+                        <JournalLogo variant="compact" dark />
                     </div>
+                    <h1 className="text-4xl sm:text-5xl font-extrabold text-white tracking-tight drop-shadow-lg">
+                        Editorial Board
+                    </h1>
+                    <p className="mt-4 text-lg text-brand-200 max-w-2xl mx-auto font-light">
+                        A diverse, international team of scholars overseeing the peer-review and publication of every article.
+                    </p>
+                    {totalMembers > 0 && (
+                        <div className="mt-8 flex flex-wrap justify-center gap-3">
+                            <span className="inline-flex items-center gap-2 px-5 py-2.5 bg-white/10 backdrop-blur-sm border border-white/20 text-white rounded-xl text-sm font-semibold">
+                                👥 {totalMembers} Members
+                            </span>
+                            {countries > 0 && (
+                                <span className="inline-flex items-center gap-2 px-5 py-2.5 bg-white/10 backdrop-blur-sm border border-white/20 text-white rounded-xl text-sm font-semibold">
+                                    🌍 {countries} Countries
+                                </span>
+                            )}
+                        </div>
+                    )}
                 </div>
             </section>
 
-            <main className="flex-1">
-
-                {/* ── Editor-in-Chief ─────────────────────────── */}
-                <section className="py-16 bg-white">
-                    <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
-                        <div className="text-center mb-10">
-                            <span className="text-brand-600 text-sm font-bold uppercase tracking-wider">Leadership</span>
-                            <h2 className="text-3xl font-extrabold text-gray-900 mt-2 tracking-tight">Editor-in-Chief</h2>
+            <main className="flex-1 py-16">
+                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                    {loading ? (
+                        <Loading />
+                    ) : error ? (
+                        <div role="alert" className="bg-white rounded-2xl border border-red-200 p-8 text-center text-red-600">
+                            {error}
                         </div>
-
-                        <div className="max-w-3xl mx-auto bg-gradient-to-br from-brand-50 to-white rounded-2xl border border-brand-100 overflow-hidden shadow-lg">
-                            <div className="flex flex-col sm:flex-row">
-                                <div className="sm:w-56 flex-shrink-0">
-                                    <img src={editorInChief.photo} alt={editorInChief.name} className="w-full h-56 sm:h-full object-cover" loading="lazy" />
-                                </div>
-                                <div className="p-6 sm:p-8 flex-1">
-                                    <h3 className="text-xl font-extrabold text-gray-900">{editorInChief.name}</h3>
-                                    <p className="text-brand-600 font-semibold text-sm mt-0.5">{editorInChief.role}</p>
-                                    <p className="text-sm text-gray-500 mt-1">{editorInChief.affiliation}, {editorInChief.country}</p>
-                                    <p className="text-sm text-gray-600 mt-3 leading-relaxed">{editorInChief.bio}</p>
-
-                                    <div className="flex flex-wrap gap-1.5 mt-3">
-                                        {editorInChief.expertise.map(e => (
-                                            <span key={e} className="px-2.5 py-0.5 bg-brand-100 text-brand-700 text-xs font-semibold rounded-full">{e}</span>
-                                        ))}
-                                    </div>
-
-                                    <div className="flex flex-wrap items-center gap-3 mt-4 text-xs">
-                                        <a href={`https://orcid.org/${editorInChief.orcid}`} target="_blank" rel="noopener noreferrer" className="text-brand-600 hover:text-brand-700 font-semibold no-underline flex items-center gap-1">
-                                            <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.372 0 0 5.372 0 12s5.372 12 12 12 12-5.372 12-12S18.628 0 12 0zm-.6 4.8c.6 0 1.08.48 1.08 1.08s-.48 1.08-1.08 1.08-1.08-.48-1.08-1.08S10.8 4.8 11.4 4.8zm-1.2 3.6h2.4v10.8h-2.4V8.4z" /></svg>
-                                            ORCID
-                                        </a>
-                                        {editorInChief.scholar && (
-                                            <a href={editorInChief.scholar} target="_blank" rel="noopener noreferrer" className="text-brand-600 hover:text-brand-700 font-semibold no-underline">
-                                                Google Scholar
-                                            </a>
-                                        )}
-                                        <a href={`mailto:${editorInChief.email}`} className="text-brand-600 hover:text-brand-700 font-semibold no-underline">{editorInChief.email}</a>
-                                    </div>
-
-                                    {editorInChief.cvAvailable && (
-                                        <button
-                                            onClick={() => setCvModal(editorInChief)}
-                                            className="mt-4 inline-flex items-center gap-2 px-4 py-2 bg-brand-600 text-white text-xs font-bold rounded-lg hover:bg-brand-700 transition"
-                                        >
-                                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                                <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
-                                            </svg>
-                                            Request CV / Resume
-                                        </button>
-                                    )}
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </section>
-
-                {/* ── Associate Editors ────────────────────────── */}
-                <section className="py-16 bg-gray-50">
-                    <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
-                        <div className="text-center mb-10">
-                            <span className="text-brand-600 text-sm font-bold uppercase tracking-wider">Core Team</span>
-                            <h2 className="text-3xl font-extrabold text-gray-900 mt-2 tracking-tight">Associate Editors</h2>
-                            <p className="text-gray-500 mt-3 max-w-xl mx-auto">
-                                Our associate editors manage peer review across key AI sub-disciplines, ensuring rigorous and timely evaluation of every manuscript.
+                    ) : totalMembers === 0 ? (
+                        <div className="bg-white rounded-2xl border border-dashed border-gray-200 p-12 text-center">
+                            <span className="text-4xl block mb-3">🧑‍🎓</span>
+                            <h2 className="text-xl font-bold text-gray-900">Board is being finalised</h2>
+                            <p className="mt-2 text-gray-500 max-w-lg mx-auto">
+                                The editorial board is being confirmed and will be published here shortly.
                             </p>
                         </div>
+                    ) : (
+                        <div className="space-y-16">
+                            {CATEGORY_ORDER.map((category) => {
+                                const list = grouped[category];
+                                if (list.length === 0) return null;
 
-                        <div className="grid md:grid-cols-2 gap-6">
-                            {associateEditors.map(m => (
-                                <div key={m.name} className="bg-white rounded-2xl border border-gray-100 overflow-hidden hover:shadow-xl transition-shadow group">
-                                    <div className="flex">
-                                        <div className="w-32 flex-shrink-0 overflow-hidden">
-                                            <img src={m.photo} alt={m.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" loading="lazy" />
+                                // Featured layout for EiC and single Managing Editor.
+                                const isSolo =
+                                    (category === 'editor_in_chief' || category === 'managing_editor') &&
+                                    list.length === 1;
+                                const isCompact = category === 'technical' || category === 'advisory';
+
+                                return (
+                                    <section key={category}>
+                                        <div className="text-center mb-10">
+                                            <span className="text-brand-600 text-sm font-bold uppercase tracking-wider">
+                                                {CATEGORY_LABELS[category]}
+                                            </span>
+                                            <h2 className="text-3xl sm:text-4xl font-extrabold text-gray-900 mt-2 tracking-tight">
+                                                {CATEGORY_LABELS[category]}
+                                            </h2>
+                                            <p className="mt-2 text-gray-500 max-w-2xl mx-auto text-sm">
+                                                {CATEGORY_SUBTITLE[category]}
+                                            </p>
                                         </div>
-                                        <div className="p-5 flex-1">
-                                            <h3 className="font-bold text-gray-900 text-[15px]">{m.name}</h3>
-                                            <p className="text-brand-600 text-xs font-semibold mt-0.5">{m.role}</p>
-                                            <p className="text-xs text-gray-500 mt-1">{m.affiliation}, {m.country}</p>
-                                            <p className="text-xs text-gray-500 mt-2 leading-relaxed line-clamp-2">{m.bio}</p>
 
-                                            <div className="flex flex-wrap gap-1 mt-2">
-                                                {m.expertise.map(e => (
-                                                    <span key={e} className="px-2 py-0.5 bg-brand-50 border border-brand-100 text-brand-600 text-[10px] font-semibold rounded-full">{e}</span>
+                                        {isSolo ? (
+                                            <MemberCard member={list[0]} variant="featured" />
+                                        ) : isCompact ? (
+                                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                                                {list.map((m) => (
+                                                    <MemberCard key={m.id} member={m} variant="compact" />
                                                 ))}
                                             </div>
-
-                                            <div className="flex items-center gap-3 mt-3 text-[11px]">
-                                                <a href={`https://orcid.org/${m.orcid}`} target="_blank" rel="noopener noreferrer" className="text-brand-600 hover:text-brand-700 font-semibold no-underline">ORCID</a>
-                                                <a href={`mailto:${m.email}`} className="text-brand-600 hover:text-brand-700 font-semibold no-underline">{m.email}</a>
+                                        ) : (
+                                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                                                {list.map((m) => (
+                                                    <MemberCard key={m.id} member={m} variant="default" />
+                                                ))}
                                             </div>
-
-                                            {m.cvAvailable && (
-                                                <button
-                                                    onClick={() => setCvModal(m)}
-                                                    className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 bg-gray-100 text-gray-700 text-[11px] font-bold rounded-lg hover:bg-brand-50 hover:text-brand-700 transition"
-                                                >
-                                                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                                        <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
-                                                    </svg>
-                                                    Request CV
-                                                </button>
-                                            )}
-                                        </div>
-                                    </div>
-                                </div>
-                            ))}
+                                        )}
+                                    </section>
+                                );
+                            })}
                         </div>
-                    </div>
-                </section>
+                    )}
 
-                {/* ── Section Editors ──────────────────────────── */}
-                <section className="py-12 bg-white">
-                    <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
-                        <div className="text-center mb-8">
-                            <span className="text-brand-600 text-sm font-bold uppercase tracking-wider">Subject Expertise</span>
-                            <h2 className="text-2xl font-extrabold text-gray-900 mt-2 tracking-tight">Section Editors</h2>
+                    {/* Join the board CTA */}
+                    <section className="mt-20 relative overflow-hidden rounded-3xl">
+                        <div className="absolute inset-0 bg-gradient-to-br from-brand-950 via-brand-900 to-indigo-950" />
+                        <div className="absolute inset-0 opacity-30">
+                            <div className="absolute -top-24 -right-24 w-72 h-72 rounded-full bg-brand-500 blur-3xl" />
+                            <div className="absolute -bottom-24 -left-24 w-72 h-72 rounded-full bg-purple-500 blur-3xl" />
                         </div>
-                        <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                            {sectionEditors.map(s => (
-                                <div key={s.name} className="bg-gray-50 rounded-xl border border-gray-100 p-5 text-center hover:shadow-md transition">
-                                    <div className="w-10 h-10 rounded-lg bg-brand-100 flex items-center justify-center mx-auto mb-3">
-                                        <svg className="w-5 h-5 text-brand-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                            <path strokeLinecap="round" strokeLinejoin="round" d="M4.26 10.147a60.438 60.438 0 00-.491 6.347A48.62 48.62 0 0112 20.904a48.62 48.62 0 018.232-4.41 60.46 60.46 0 00-.491-6.347m-15.482 0a50.636 50.636 0 00-2.658-.813A59.906 59.906 0 0112 3.493a59.903 59.903 0 0110.399 5.84c-.896.248-1.783.52-2.658.814m-15.482 0A50.717 50.717 0 0112 13.489a50.702 50.702 0 017.74-3.342" />
-                                        </svg>
-                                    </div>
-                                    <p className="text-xs text-brand-600 font-bold uppercase tracking-wider">{s.section}</p>
-                                    <h3 className="font-bold text-gray-900 text-sm mt-1">{s.name}</h3>
-                                    <p className="text-xs text-gray-500 mt-0.5">{s.affiliation}</p>
-                                </div>
-                            ))}
-                        </div>
-                    </div>
-                </section>
-
-                {/* ── Editorial Advisory Board ─────────────────── */}
-                <section className="py-16 bg-gray-50">
-                    <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
-                        <div className="text-center mb-10">
-                            <span className="text-brand-600 text-sm font-bold uppercase tracking-wider">Senior Experts</span>
-                            <h2 className="text-3xl font-extrabold text-gray-900 mt-2 tracking-tight">Editorial Advisory Board</h2>
-                            <p className="text-gray-500 mt-3 max-w-xl mx-auto">
-                                Distinguished senior researchers providing strategic guidance and ensuring the journal's global academic standing.
+                        <div className="relative p-10 lg:p-16 text-center">
+                            <h2 className="text-3xl sm:text-4xl font-extrabold text-white tracking-tight">
+                                Join the Editorial Board
+                            </h2>
+                            <p className="mt-4 text-brand-200 max-w-2xl mx-auto">
+                                We welcome nominations from active researchers with a strong publication record and a
+                                commitment to open, ethical scholarship. Reach out to the editorial office to be considered.
                             </p>
-                        </div>
-
-                        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
-                            {advisoryBoard.map(m => (
-                                <div key={m.name} className="bg-white rounded-xl border border-gray-100 p-5 flex items-start gap-4 hover:shadow-md transition">
-                                    <img src={m.photo} alt={m.name} className="w-14 h-14 rounded-full object-cover flex-shrink-0 border-2 border-brand-100" loading="lazy" />
-                                    <div className="min-w-0">
-                                        <h3 className="text-sm font-bold text-gray-900">{m.name}</h3>
-                                        <p className="text-xs text-gray-500 mt-0.5">{m.affiliation}, {m.country}</p>
-                                        <p className="text-xs text-brand-600 mt-1 font-medium">{m.expertise}</p>
-                                    </div>
-                                </div>
-                            ))}
-                        </div>
-                    </div>
-                </section>
-
-                {/* ── Managing Editor & Contact ────────────────── */}
-                <section className="py-12 bg-white">
-                    <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
-                        <div className="grid sm:grid-cols-2 gap-6">
-                            {/* Managing Editor */}
-                            <div className="bg-gray-50 rounded-2xl border border-gray-100 p-6">
-                                <div className="flex items-center gap-3 mb-4">
-                                    <div className="w-10 h-10 rounded-lg bg-brand-100 flex items-center justify-center">
-                                        <svg className="w-5 h-5 text-brand-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                            <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z" />
-                                        </svg>
-                                    </div>
-                                    <div>
-                                        <h3 className="text-sm font-bold text-gray-900">Managing Editor</h3>
-                                        <p className="text-xs text-gray-500">Administrative & Coordination</p>
-                                    </div>
-                                </div>
-                                <p className="text-sm font-semibold text-gray-900">Emily Chen</p>
-                                <p className="text-xs text-gray-500 mt-0.5">Academic Press International</p>
-                                <a href="mailto:managing-editor@jgair-journal.org" className="text-xs text-brand-600 hover:text-brand-700 font-semibold no-underline mt-2 inline-block">
-                                    managing-editor@jgair-journal.org
-                                </a>
-                            </div>
-
-                            {/* Editorial Office */}
-                            <div className="bg-brand-50 rounded-2xl border border-brand-100 p-6">
-                                <div className="flex items-center gap-3 mb-4">
-                                    <div className="w-10 h-10 rounded-lg bg-brand-200 flex items-center justify-center">
-                                        <svg className="w-5 h-5 text-brand-700" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                            <path strokeLinecap="round" strokeLinejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75" />
-                                        </svg>
-                                    </div>
-                                    <div>
-                                        <h3 className="text-sm font-bold text-brand-900">Editorial Office</h3>
-                                        <p className="text-xs text-brand-600">General Inquiries</p>
-                                    </div>
-                                </div>
-                                <p className="text-sm text-brand-800">
-                                    For editorial inquiries, reviewer concerns, or submission questions:
-                                </p>
-                                <a href="mailto:editorial@jgair-journal.org" className="text-sm text-brand-700 hover:text-brand-800 font-bold no-underline mt-2 inline-block">
-                                    editorial@jgair-journal.org
-                                </a>
-                            </div>
-                        </div>
-                    </div>
-                </section>
-
-                {/* ── CTA: Join the Board ─────────────────────── */}
-                <section className="py-16 bg-brand-600">
-                    <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-                        <h2 className="text-3xl font-extrabold text-white tracking-tight">Interested in Joining Our Board?</h2>
-                        <p className="text-brand-200 text-lg mt-3 max-w-2xl mx-auto">
-                            We welcome applications from researchers with strong publication records. Send your CV and a brief statement of interest to our editorial office.
-                        </p>
-                        <div className="mt-8 flex flex-wrap justify-center gap-4">
-                            <a href="mailto:editorial@jgair-journal.org?subject=Editorial Board Application" className="inline-flex items-center gap-2 px-8 py-3.5 bg-white text-brand-900 font-bold rounded-xl hover:bg-gray-100 transition shadow-lg no-underline text-[15px]">
-                                Apply Now
-                            </a>
-                            <a href="/for-reviewers" className="inline-flex items-center gap-2 px-8 py-3.5 border-2 border-white/40 text-white font-bold rounded-xl hover:bg-white/10 transition no-underline text-[15px]">
-                                Become a Reviewer
+                            <a
+                                href="/contact"
+                                className="mt-8 inline-flex items-center gap-2 px-8 py-4 bg-white text-brand-900 font-bold rounded-2xl hover:bg-gray-100 transition shadow-2xl no-underline"
+                            >
+                                Contact the Editorial Office →
                             </a>
                         </div>
-                    </div>
-                </section>
+                    </section>
+                </div>
             </main>
 
             <Footer />
-
-            {/* ── CV Modal ────────────────────────────────── */}
-            {cvModal && <CVRequestModal member={cvModal} onClose={() => setCvModal(null)} />}
         </div>
     );
 };

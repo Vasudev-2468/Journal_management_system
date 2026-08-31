@@ -7,14 +7,15 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.services.auth_service import get_current_user
+from app.services.editor_auth import require_editor_mfa
 from app.services.review_service import (
-    all_reviews_completed,
     get_review_by_token,
     get_submission_reviews,
     log_access,
     record_decision,
     submit_review,
 )
+from app.models.submission import Submission, SubmissionStatus
 from app.schemas.review import (
     DecisionRequest,
     DecisionResponse,
@@ -114,15 +115,10 @@ def submit_review_endpoint(
         comments_to_editor=body.comments_to_editor,
     )
 
-    # Notify editor
+    # D6 — the task recomputes all_reviews_completed internally and stamps
+    # the "all reviews in" message from that state, so the second delay()
+    # was firing an identical email. Send the notification exactly once.
     notify_editor_review_complete.delay(str(updated.id))
-
-    # Check if all reviews for this submission are done
-    if all_reviews_completed(db, updated.submission_id):
-        # Extra notification: all reviews in
-        notify_editor_review_complete.delay(
-            str(updated.id),
-        )
 
     return ReviewSubmitResponse(
         review_id=updated.id,
@@ -136,7 +132,7 @@ def submit_review_endpoint(
 def get_reviews_for_submission(
     submission_id: uuid.UUID,
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
+    _editor=Depends(require_editor_mfa),
 ):
     result = get_submission_reviews(db, submission_id)
     if result is None:
@@ -155,7 +151,7 @@ def make_decision(
     submission_id: uuid.UUID,
     body: DecisionRequest,
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
+    _editor=Depends(require_editor_mfa),
 ):
     submission = record_decision(db, submission_id, body.decision)
     if submission is None:
@@ -171,3 +167,47 @@ def make_decision(
         new_status=submission.status.value,
         message=f"Decision '{body.decision}' recorded. Author has been notified.",
     )
+
+
+# ── POST /reviews/{submission_id}/request-additional-review  (editor only) ─
+#
+# When the completed reviews on a submission are split or an editor otherwise
+# wants another opinion, this reopens the submission for reviewer assignment
+# so the existing suggestion pipeline (Agent 3 → Agent 4) can produce and
+# assign one more reviewer. We deliberately do NOT retire or invalidate any
+# existing reviews — they remain valid feedback on the file.
+
+@router.post("/{submission_id}/request-additional-review", status_code=200)
+def request_additional_review(
+    submission_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _editor=Depends(require_editor_mfa),
+):
+    submission = (
+        db.query(Submission).filter(Submission.id == submission_id).first()
+    )
+    if submission is None:
+        raise HTTPException(status_code=404, detail="Submission not found.")
+
+    # Move the submission back to pending_assignment so the editor can pick
+    # (or the suggestion agent can recommend) an additional reviewer. If a
+    # decision has already been recorded we refuse — the review round is
+    # closed and reopening it here would silently overwrite that outcome.
+    if submission.status in (
+        SubmissionStatus.accepted,
+        SubmissionStatus.rejected,
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Submission has a final decision; additional review cannot be requested.",
+        )
+
+    submission.status = SubmissionStatus.pending_assignment
+    db.commit()
+    db.refresh(submission)
+
+    return {
+        "submission_id": str(submission.id),
+        "new_status": submission.status.value,
+        "message": "Submission reopened for one additional reviewer assignment.",
+    }

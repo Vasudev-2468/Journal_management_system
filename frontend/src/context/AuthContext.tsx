@@ -1,47 +1,90 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
-import { getUser, login, logout } from '../api/auth'; // TODO: Implement API calls for authentication
+import React, {
+    createContext,
+    useCallback,
+    useContext,
+    useEffect,
+    useState,
+} from 'react';
+import { getUser, login as apiLogin, logout as apiLogout } from '../api/auth';
+
+export interface AuthUser {
+    id: number | string;
+    username: string;
+    email?: string;
+    full_name?: string;
+    role?: string;
+    mfa_enabled?: boolean;
+}
 
 interface AuthContextType {
-  user: any; // TODO: Define a proper user type
-  login: (username: string, password: string) => Promise<void>;
-  logout: () => void;
+    user: AuthUser | null;
+    loading: boolean;
+    error: string | null;
+    login: (username: string, password: string) => Promise<void>;
+    logout: () => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [user, setUser] = useState<any>(null); // TODO: Define a proper user type
+    const [user, setUser] = useState<AuthUser | null>(null);
+    const [loading, setLoading] = useState<boolean>(true);
+    const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    const fetchUser = async () => {
-      const fetchedUser = await getUser(); // TODO: Handle errors and loading state
-      setUser(fetchedUser);
-    };
+    useEffect(() => {
+        let cancelled = false;
 
-    fetchUser();
-  }, []);
+        const fetchUser = async () => {
+            try {
+                const fetched = await getUser();
+                if (!cancelled) setUser(fetched);
+            } catch (err) {
+                if (!cancelled) setUser(null);
+            } finally {
+                if (!cancelled) setLoading(false);
+            }
+        };
 
-  const handleLogin = async (username: string, password: string) => {
-    const loggedInUser = await login(username, password); // TODO: Handle errors
-    setUser(loggedInUser);
-  };
+        fetchUser();
+        return () => {
+            cancelled = true;
+        };
+    }, []);
 
-  const handleLogout = () => {
-    logout(); // TODO: Handle errors
-    setUser(null);
-  };
+    const handleLogin = useCallback(async (username: string, password: string) => {
+        setError(null);
+        try {
+            const loggedInUser = await apiLogin(username, password);
+            setUser(loggedInUser);
+        } catch (err) {
+            const message =
+                err instanceof Error ? err.message : 'Login failed. Please try again.';
+            setError(message);
+            throw err;
+        }
+    }, []);
 
-  return (
-    <AuthContext.Provider value={{ user, login: handleLogin, logout: handleLogout }}>
-      {children}
-    </AuthContext.Provider>
-  );
+    const handleLogout = useCallback(() => {
+        try {
+            apiLogout();
+        } finally {
+            setUser(null);
+        }
+    }, []);
+
+    return (
+        <AuthContext.Provider
+            value={{ user, loading, error, login: handleLogin, logout: handleLogout }}
+        >
+            {children}
+        </AuthContext.Provider>
+    );
 };
 
 export const useAuth = () => {
-  const context = useContext(AuthContext);
-  if (context === undefined) {
-    throw new Error('useAuth must be used within an AuthProvider');
-  }
-  return context;
+    const context = useContext(AuthContext);
+    if (context === undefined) {
+        throw new Error('useAuth must be used within an AuthProvider');
+    }
+    return context;
 };

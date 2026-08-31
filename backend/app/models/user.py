@@ -40,6 +40,10 @@ class User(Base):
     mfa_email_verified_at = Column(DateTime)    # author 2FA: email step done
     mfa_whatsapp_verified_at = Column(DateTime) # author 2FA: whatsapp step done
 
+    # TOTP (authenticator-app 2FA) — required for every author.
+    totp_secret = Column(String(64))            # base32-encoded shared secret
+    totp_enrolled_at = Column(DateTime)         # first successful enrolment
+
     # Author profile fields
     institution = Column(String(500))
     orcid = Column(String(50))

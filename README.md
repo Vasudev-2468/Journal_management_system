@@ -113,7 +113,7 @@ The Celery `.delay()` interface is preserved — every task call site (`process_
 2. Recreate `backend/app/tasks/celery_app.py` (see git history for the original).
 3. Swap each `InlineTask(fn)` in `paper_tasks.py`/`notification_tasks.py` for the original `@celery_app.task(...)` decorator.
 4. Restore the `worker` and `beat` lines in `backend/Procfile`.
-5. Provision a Redis instance (Upstash free or Render Redis paid) and set `REDIS_URL`.
+5. Provision a Redis instance (Upstash free or Render Redis paid), re-add a `REDIS_URL` field to `app/config.py` (it was removed alongside Celery), and set the env var on your deploy target. `docker-compose.yml` no longer includes a Redis service — restore that too if you use compose.
 
 Similarly, to bring back on-device embeddings, re-add `sentence-transformers` and restore the `SentenceTransformer` path in `backend/app/services/ai_agent.py`.
 

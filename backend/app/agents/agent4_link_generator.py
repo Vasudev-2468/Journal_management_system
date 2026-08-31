@@ -10,7 +10,6 @@ Communicates with Agent 5 (Notification Bot) to send invitations.
 """
 
 import logging
-import secrets
 from datetime import datetime, timedelta
 from typing import List
 import uuid
@@ -21,6 +20,7 @@ from app.config import settings
 from app.models.review import Review, ReviewStatus
 from app.models.reviewer import Reviewer
 from app.models.submission import Submission, SubmissionStatus
+from app.utils.link_tokens import create_review_link_token
 
 logger = logging.getLogger(__name__)
 
@@ -76,12 +76,19 @@ class ReviewLinkGeneratorAgent:
                 results["errors"].append(f"Reviewer {reviewer.name} already assigned")
                 continue
 
-            # Generate secure token
-            token = secrets.token_urlsafe(48)
-            expiry = datetime.utcnow() + timedelta(days=21)
+            # Fix D1 — the router (routers/reviews.py:55, :96) verifies this
+            # token as a JWT via utils.link_tokens.verify_review_link_token.
+            # The prior secrets.token_urlsafe(48) string always failed JWT
+            # decode, so every reviewer got a 401 on their invitation link.
+            # We generate the review id first so it can be embedded as the
+            # JWT `sub` claim before commit.
+            review_id = uuid.uuid4()
+            expiry_days = 21
+            token = create_review_link_token(review_id, expires_days=expiry_days)
+            expiry = datetime.utcnow() + timedelta(days=expiry_days)
 
-            # Create review record
             review = Review(
+                id=review_id,
                 submission_id=submission.id,
                 reviewer_id=rid,
                 link_token=token,

@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.services.auth_service import get_current_user
+from app.services.editor_auth import require_editor_mfa
 from app.services.reviewer_service import (
     assign_reviewers,
     get_reviewer_detail,
@@ -68,7 +69,7 @@ def list_all_reviewers(
     expertise_tag: Optional[str] = Query(None),
     is_active: Optional[bool] = Query(None),
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
+    _editor=Depends(require_editor_mfa),
 ):
     return list_reviewers(db, expertise_tag=expertise_tag, is_active=is_active)
 
@@ -79,7 +80,7 @@ def list_all_reviewers(
 def get_reviewer(
     reviewer_id: uuid.UUID,
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
+    _editor=Depends(require_editor_mfa),
 ):
     result = get_reviewer_detail(db, reviewer_id)
     if result is None:
@@ -94,7 +95,7 @@ def patch_reviewer(
     reviewer_id: uuid.UUID,
     body: ReviewerUpdateRequest,
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
+    _editor=Depends(require_editor_mfa),
 ):
     reviewer = update_reviewer(
         db,
@@ -114,7 +115,7 @@ def patch_reviewer(
 def suggest_reviewers(
     submission_id: uuid.UUID,
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
+    _editor=Depends(require_editor_mfa),
 ):
     try:
         suggestions = match_reviewers(db, submission_id, top_k=5)
@@ -129,7 +130,7 @@ def suggest_reviewers(
 def assign(
     body: AssignReviewersRequest,
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
+    _editor=Depends(require_editor_mfa),
 ):
     try:
         created_reviews = assign_reviewers(db, body.submission_id, body.reviewer_ids)

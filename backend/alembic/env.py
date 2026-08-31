@@ -8,7 +8,9 @@ from alembic import context
 from app.config import settings
 from app.database import Base
 
-# Import ALL models so Alembic sees them for autogenerate
+# Import ALL models so Alembic sees them for autogenerate. Missing a model
+# here means `alembic revision --autogenerate` will emit a drop for its
+# table on the next run.
 from app.models.user import User
 from app.models.journal import Journal
 from app.models.article import Article
@@ -18,6 +20,8 @@ from app.models.submission import Submission
 from app.models.reviewer import Reviewer
 from app.models.notification import Notification
 from app.models.access_log import AccessLog
+from app.models.cv_request import CVRequest  # noqa: F401  (was missing — JG-fix I9)
+from app.models.policy_page import PolicyPage  # noqa: F401  (JG-102/103)
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

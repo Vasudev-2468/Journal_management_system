@@ -5,6 +5,7 @@ import Footer from '../components/layout/Footer';
 import JournalLogo from '../components/common/JournalLogo';
 import {
     volumes,
+    volumesByYear,
     categoryColor,
     statusBadge,
     getCurrentIssue,
@@ -80,6 +81,9 @@ const IssuesArchivesPage: React.FC = () => {
     const current = getCurrentIssue();
     const forthcoming = getForthcomingIssue();
     const currentPageRange = current ? pageRangeFor(current.issue) : null;
+    const yearBuckets = volumesByYear();
+    const activeYear = yearBuckets.find((b) => b.volumes.some((v) => v.volume === selectedVolume))?.year;
+    const [expandedYear, setExpandedYear] = useState<number | null>(activeYear ?? null);
 
     const toggleIssue = (key: string) => {
         setExpandedIssue(expandedIssue === key ? null : key);
@@ -151,16 +155,35 @@ const IssuesArchivesPage: React.FC = () => {
                                 <div className="grid lg:grid-cols-5 gap-0">
                                     {/* Cover */}
                                     <div className="lg:col-span-2 bg-gradient-to-br from-brand-600 to-brand-900 p-10 flex items-center justify-center">
-                                        <div className="aspect-[3/4] w-full max-w-[220px] rounded-xl bg-gradient-to-br from-brand-500 to-brand-800 border-4 border-white/15 shadow-2xl flex flex-col items-center justify-center p-6">
-                                            <span className="text-brand-100 text-[10px] font-bold uppercase tracking-widest">JGAIR</span>
-                                            <p className="mt-3 text-brand-100 text-xs font-semibold">Volume {current.volume.volume}</p>
-                                            <p className="text-white text-5xl font-extrabold my-2">{current.issue.number}</p>
-                                            <p className="text-brand-100 text-xs font-semibold">{current.issue.month} {current.volume.year}</p>
-                                            {current.issue.theme && (
-                                                <div className="mt-5 pt-4 border-t border-white/20 w-full">
-                                                    <p className="text-[10px] text-brand-100 text-center italic">{current.issue.theme}</p>
-                                                </div>
+                                        <div className="aspect-[3/4] w-full max-w-[220px] rounded-xl border-4 border-white/15 shadow-2xl overflow-hidden relative">
+                                            {current.issue.coverImage ? (
+                                                <>
+                                                    <img
+                                                        src={current.issue.coverImage}
+                                                        alt={`Cover of Volume ${current.volume.volume}, Issue ${current.issue.number}`}
+                                                        className="absolute inset-0 w-full h-full object-cover"
+                                                        loading="lazy"
+                                                    />
+                                                    <div className="absolute inset-0 bg-gradient-to-b from-brand-950/40 via-transparent to-brand-950/85" />
+                                                </>
+                                            ) : (
+                                                <div className="absolute inset-0 bg-gradient-to-br from-brand-500 to-brand-800" />
                                             )}
+                                            <div className="relative h-full flex flex-col justify-between items-center p-6 text-center">
+                                                <span className="text-white text-[10px] font-bold uppercase tracking-widest drop-shadow">JGAIR</span>
+                                                <div>
+                                                    <p className="text-brand-100 text-xs font-semibold drop-shadow">Volume {current.volume.volume}</p>
+                                                    <p className="text-white text-5xl font-extrabold my-2 drop-shadow-lg">{current.issue.number}</p>
+                                                    <p className="text-brand-100 text-xs font-semibold drop-shadow">{current.issue.month} {current.volume.year}</p>
+                                                </div>
+                                                {current.issue.theme ? (
+                                                    <div className="pt-4 border-t border-white/20 w-full">
+                                                        <p className="text-[10px] text-brand-100 text-center italic drop-shadow">{current.issue.theme}</p>
+                                                    </div>
+                                                ) : (
+                                                    <div />
+                                                )}
+                                            </div>
                                         </div>
                                     </div>
 
@@ -363,34 +386,76 @@ const IssuesArchivesPage: React.FC = () => {
                             {/* Left sidebar — Volume selector */}
                             <aside className="lg:col-span-1">
                                 <div className="bg-white rounded-2xl border border-gray-100 p-5 sticky top-24">
-                                    <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wider mb-4">Volumes</h3>
-                                    <div className="space-y-1.5">
-                                        {volumes.map((v) => {
-                                            const pubCount = v.issues.filter(i => i.status === 'published').length;
-                                            const totalArticles = v.issues.reduce((s, i) => s + i.articleCount, 0);
+                                    <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wider mb-4 flex items-center gap-2">
+                                        <span>Archive</span>
+                                        <span className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Year › Volume</span>
+                                    </h3>
+                                    <div className="space-y-2">
+                                        {yearBuckets.map((bucket) => {
+                                            const isOpen = expandedYear === bucket.year;
+                                            const totalIssues = bucket.volumes.reduce((sum, v) => sum + v.issues.length, 0);
                                             return (
-                                                <button
-                                                    key={v.volume}
-                                                    onClick={() => { setSelectedVolume(v.volume); setExpandedIssue(null); }}
-                                                    className={`w-full text-left px-4 py-3 rounded-xl text-sm font-medium transition ${
-                                                        selectedVolume === v.volume
-                                                            ? 'bg-brand-600 text-white shadow-md'
-                                                            : 'text-gray-600 hover:bg-gray-50'
-                                                    }`}
-                                                >
-                                                    <span className="font-bold">Vol. {v.volume}</span>
-                                                    <span className={`ml-2 ${selectedVolume === v.volume ? 'text-brand-200' : 'text-gray-400'}`}>
-                                                        ({v.year})
-                                                    </span>
-                                                    <span className={`block text-xs mt-0.5 ${selectedVolume === v.volume ? 'text-brand-200' : 'text-gray-400'}`}>
-                                                        {v.issues.length} issues · {totalArticles > 0 ? `${totalArticles} articles` : 'Planned'}
-                                                    </span>
-                                                    {pubCount > 0 && (
-                                                        <span className={`block text-[10px] mt-1 ${selectedVolume === v.volume ? 'text-brand-200' : 'text-emerald-500'}`}>
-                                                            ● {pubCount} published
+                                                <div key={bucket.year} className="border border-gray-100 rounded-xl overflow-hidden">
+                                                    <button
+                                                        onClick={() => setExpandedYear(isOpen ? null : bucket.year)}
+                                                        className={`w-full flex items-center justify-between px-3 py-2.5 text-left transition ${
+                                                            isOpen
+                                                                ? 'bg-gradient-to-r from-brand-50 to-brand-100/60 text-brand-900'
+                                                                : 'bg-white hover:bg-gray-50 text-gray-700'
+                                                        }`}
+                                                    >
+                                                        <span className="flex items-center gap-2">
+                                                            <svg
+                                                                className={`w-3.5 h-3.5 transition-transform ${isOpen ? 'rotate-90' : ''}`}
+                                                                fill="none"
+                                                                viewBox="0 0 24 24"
+                                                                stroke="currentColor"
+                                                                strokeWidth={2}
+                                                            >
+                                                                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                                                            </svg>
+                                                            <span className="text-sm font-extrabold">{bucket.year}</span>
                                                         </span>
+                                                        <span className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider">
+                                                            {bucket.volumes.length} vol · {totalIssues} iss
+                                                        </span>
+                                                    </button>
+                                                    {isOpen && (
+                                                        <div className="border-t border-gray-100 bg-gray-50/60 divide-y divide-gray-100">
+                                                            {bucket.volumes.map((v) => {
+                                                                const active = selectedVolume === v.volume;
+                                                                const pubCount = v.issues.filter(i => i.status === 'published').length;
+                                                                const totalArt = v.issues.reduce((s, i) => s + i.articleCount, 0);
+                                                                return (
+                                                                    <button
+                                                                        key={v.volume}
+                                                                        onClick={() => { setSelectedVolume(v.volume); setExpandedIssue(null); }}
+                                                                        className={`w-full text-left px-4 py-2.5 text-xs transition ${
+                                                                            active
+                                                                                ? 'bg-brand-600 text-white shadow-inner'
+                                                                                : 'text-gray-700 hover:bg-white'
+                                                                        }`}
+                                                                    >
+                                                                        <div className="flex items-center justify-between gap-2">
+                                                                            <span className="flex items-center gap-1.5">
+                                                                                <span className="opacity-60">├─</span>
+                                                                                <span className="font-bold">Volume {v.volume}</span>
+                                                                            </span>
+                                                                            {pubCount > 0 && (
+                                                                                <span className={`text-[10px] font-bold ${active ? 'text-emerald-200' : 'text-emerald-600'}`}>
+                                                                                    ● {pubCount}
+                                                                                </span>
+                                                                            )}
+                                                                        </div>
+                                                                        <p className={`text-[11px] mt-0.5 ml-4 ${active ? 'text-brand-100' : 'text-gray-500'}`}>
+                                                                            {v.issues.length} issues · {totalArt > 0 ? `${totalArt} articles` : 'Planned'}
+                                                                        </p>
+                                                                    </button>
+                                                                );
+                                                            })}
+                                                        </div>
                                                     )}
-                                                </button>
+                                                </div>
                                             );
                                         })}
                                     </div>
