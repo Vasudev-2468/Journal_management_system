@@ -4,6 +4,67 @@ This is a full-stack AI-powered academic journal management system built with Fa
 
 ---
 
+## What's new
+
+The last two platform-expansion waves broadened the system from a submission/review pipeline into a full journal operations platform. Highlights:
+
+- **Revisions loop.** Editors can request author revisions from a review round and track the manuscript through re-submission without breaking the review history.
+- **Production stages.** Post-acceptance production (copy-edit, typesetting, proofreading, publication) is tracked per-article on a stage timeline.
+- **Special issues.** Curated calls-for-papers with their own landing pages and per-issue submission routing.
+- **Email templates.** Editor-managed message templates (subject/body) for every automated touchpoint (submission confirmation, reviewer invite, decision, etc.).
+- **Audit log.** Every editor-side write is journalled and queryable, so decisions and role changes are attributable.
+- **Editorial-board CRUD.** Full admin surface for the public "Editorial Board" page.
+- **Contact inbox.** Reader messages from the public Contact page land in an editor-gated inbox with read/resolved state.
+- **Announcements.** Editor-authored announcements published to the public site.
+- **Policies CMS.** Editable publication-ethics, open-access, copyright, plagiarism, peer-review, archiving, corrections, privacy, terms, cookie and accessibility pages.
+- **Reviewer accounts.** First-class reviewer authentication (invite → password → dashboard) alongside the existing token-link review flow.
+- **Statistics.** Aggregate counts for submissions, reviews and decisions surfaced on the editor dashboard.
+- **Search.** Article search across title, author, keyword and DOI.
+- **SEO / discovery.** `robots.txt`, `sitemap.xml`, OAI-PMH, RSS and Atom feeds for indexing and syndication.
+- **Cookie banner.** Consent banner on the public site with a link to the cookie policy.
+
+## New API surface
+
+Endpoint prefixes added or extended by the platform expansion. Each is wired up in [`backend/app/main.py`](backend/app/main.py):
+
+| Prefix | Purpose |
+|---|---|
+| `/publication` | Volumes and issues (masthead of published content) |
+| `/revisions` | Author revision cycles on a manuscript |
+| `/production` | Post-acceptance production stage timeline |
+| `/production-public` | Public-read production status for authors |
+| `/special-issues` | Curated calls-for-papers |
+| `/announcements` | Editor-authored public announcements |
+| `/board` | Editorial-board CRUD |
+| `/contact` | Reader → editor contact inbox |
+| `/policies` | Editable policy CMS pages |
+| `/article-reviews` | Public-facing review threads on an article |
+| `/email-templates` | Editor-managed message templates |
+| `/audit-logs` | Editor-write audit trail |
+| `/references` | Article references / citations |
+| `/users-admin` | Admin surface for user accounts and roles |
+| `/uploads` | Signed upload endpoints for manuscripts and figures |
+| `/submission-messages` | Threaded messages on a submission |
+| `/ai/plagiarism-checks` | Plagiarism-check admin |
+| `/crossref` | Crossref DOI XML + registration |
+| `/authors-public` | Public author profiles |
+| `/reviewer-auth` | Reviewer accounts (invite → login) |
+| `/reviewer-invite` | Reviewer invitation lifecycle |
+| `/rss.xml` | Article RSS feed |
+| `/atom.xml` | Article Atom feed |
+| `/kbart.txt` | KBART holdings feed |
+| `/sitemap.xml` | XML sitemap for crawlers |
+| `/robots.txt` | Robots policy |
+| `/oai-pmh` | OAI-PMH metadata harvesting (Dublin Core) |
+| `/search` | Article search across title/author/keyword/DOI |
+| `/cited-by` | Crossref cited-by lookup |
+
+## Applying migrations
+
+Every wave ships new Alembic revisions under `backend/alembic/versions/` (recent: `f2b6c8d3e5a1_platform_expansion`, `g3c7d8e4b6f2_add_submission_messages`, `h4d8e5f6a2c1_extra_policies_and_contact`, `i5e9f6a7b3d2_reviewer_auth`, `j6f0a8b9c4e3_article_search_index`, `k7h2c0d1e6f5_extra_user_roles`). After pulling a new revision, run `alembic upgrade head` from `backend/` before restarting the API so the schema matches the code.
+
+---
+
 ## Free-tier deployment (Vercel + Render + Neon)
 
 The backend has been trimmed to fit inside free-hosting limits:

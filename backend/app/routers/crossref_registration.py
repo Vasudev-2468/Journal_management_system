@@ -1,10 +1,15 @@
-"""Editor-gated Crossref DOI registration.
+"""Editor-gated Crossref DOI registration and status polling.
 
 The read-only Crossref XML view lives under discovery.py (GET /discovery/
 crossref/{id}). This router adds the write-side counterpart — an editor
 clicks "Register with Crossref", we regenerate the deposit XML, post it,
-and store the outcome in the audit log so we know what happened even if
-we never look at the endpoint's response body.
+and store the outcome (including Crossref's raw response and batch_id) in
+the audit log so we know what happened even if we never look at the
+endpoint's response body.
+
+A second endpoint (``GET /crossref/status/{batch_id}``) lets the same
+editor UI poll for the deposit's downstream outcome — success, pending or
+failed — and each poll is recorded in ``audit_logs`` as well.
 
 We never surface Crossref credentials to the caller. When the environment
 does not have them configured the service returns "Not configured" and the
@@ -22,7 +27,10 @@ from app.database import get_db
 from app.models.article import Article
 from app.models.audit_log import AuditLog
 from app.models.user import User
-from app.services.crossref_service import register_article_via_crossref
+from app.services.crossref_service import (
+    poll_crossref_status,
+    register_article_via_crossref,
+)
 from app.services.editor_auth import require_editor_mfa
 
 router = APIRouter()
@@ -90,9 +98,11 @@ def register_article_with_crossref(
 ) -> dict:
     """Post the article's deposit XML to Crossref.
 
-    Returns the service's ``{ok, detail, batch_id}`` payload untouched. Every
-    call — including "not configured" fallbacks — leaves an ``AuditLog`` row
-    with the outcome, keyed by the acting editor.
+    Returns the service's ``{ok, detail, batch_id}`` payload. Every call —
+    including "not configured" fallbacks — leaves an ``AuditLog`` row with
+    the outcome, keyed by the acting editor. The full Crossref response
+    body (first 4 kB) is persisted into ``meta.raw`` so we can diagnose
+    schema drift after the fact without having to replay the request.
     """
     article = (
         db.query(Article)
@@ -118,6 +128,50 @@ def register_article_with_crossref(
             "ok": bool(result.get("ok")),
             "detail": result.get("detail"),
             "batch_id": result.get("batch_id"),
+            "raw": (result.get("raw") or "")[:4000],
+        },
+    )
+    db.add(audit)
+    db.commit()
+
+    # Trim ``raw`` from the API payload — it is only useful in the audit log.
+    return {
+        "ok": bool(result.get("ok")),
+        "detail": result.get("detail"),
+        "batch_id": result.get("batch_id"),
+    }
+
+
+@router.get("/status/{batch_id}")
+def get_crossref_batch_status(
+    batch_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    editor: User = Depends(require_editor_mfa),
+) -> dict:
+    """Poll Crossref for the outcome of a previously-submitted batch.
+
+    Returns ``{status, detail}`` where ``status`` is one of ``success``,
+    ``pending`` or ``failed``. Every poll is captured in the audit log —
+    editors can see the timeline of "pending → success" for a batch even
+    if the UI was closed between polls.
+    """
+    if not batch_id or len(batch_id) > 200:
+        raise HTTPException(status_code=400, detail="Invalid batch_id")
+
+    result = poll_crossref_status(batch_id)
+
+    client_host = request.client.host if request.client else None
+    audit = AuditLog(
+        actor_id=getattr(editor, "id", None),
+        actor_email=getattr(editor, "email", None),
+        action="crossref.status",
+        target_type="crossref_batch",
+        target_id=batch_id,
+        ip_address=client_host,
+        meta={
+            "status": result.get("status"),
+            "detail": result.get("detail"),
         },
     )
     db.add(audit)

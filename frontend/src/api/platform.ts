@@ -227,6 +227,26 @@ export const fetchReferences = async (articleId: number): Promise<ArticleReferen
     return r.data;
 };
 
+// ── Cited-by (Crossref + OpenCitations) ──────────────────
+
+export interface CitingWork {
+    doi: string;
+    title?: string | null;
+    year?: number | null;
+}
+
+export interface CitedByResponse {
+    count: number;
+    citing: CitingWork[];
+    doi?: string;
+    detail?: string;
+}
+
+export const fetchCitedBy = async (articleId: number): Promise<CitedByResponse> => {
+    const r = await client.get(`/cited-by/article/${articleId}`);
+    return r.data;
+};
+
 export const addReference = async (
     articleId: number,
     payload: { sequence?: number; text: string; doi?: string; url?: string },

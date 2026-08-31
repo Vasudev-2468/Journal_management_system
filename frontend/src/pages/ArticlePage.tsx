@@ -13,7 +13,12 @@ import {
     Table as ArticleTable,
     ArticleContentSection,
 } from '../data/issues';
-import { fetchReferences, ArticleReference } from '../api/platform';
+import {
+    fetchReferences,
+    ArticleReference,
+    fetchCitedBy,
+    CitedByResponse,
+} from '../api/platform';
 
 /* ══════════════════════════════════════════════════════
  *   Helpers
@@ -358,6 +363,8 @@ const ArticlePage: React.FC = () => {
     const [showCite, setShowCite] = useState(false);
     const [fetchedRefs, setFetchedRefs] = useState<ArticleReference[]>([]);
     const [linkCopied, setLinkCopied] = useState(false);
+    const [citedBy, setCitedBy] = useState<CitedByResponse | null>(null);
+    const [citedByLoading, setCitedByLoading] = useState(false);
 
     useEffect(() => {
         if (!Number.isFinite(numericId)) return;
@@ -370,6 +377,27 @@ const ArticlePage: React.FC = () => {
                 // Silent — a missing backend reference set just leaves the
                 // section empty (or falls back to the mock refs above).
                 if (!cancelled) setFetchedRefs([]);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [numericId]);
+
+    useEffect(() => {
+        if (!Number.isFinite(numericId)) return;
+        let cancelled = false;
+        setCitedByLoading(true);
+        fetchCitedBy(numericId)
+            .then((data) => {
+                if (!cancelled) setCitedBy(data);
+            })
+            .catch(() => {
+                // Any failure — DOI unregistered, Crossref rate-limit, network
+                // — collapses to a zero-count empty state below.
+                if (!cancelled) setCitedBy({ count: 0, citing: [] });
+            })
+            .finally(() => {
+                if (!cancelled) setCitedByLoading(false);
             });
         return () => {
             cancelled = true;
@@ -570,7 +598,9 @@ const ArticlePage: React.FC = () => {
                                 📥 Download PDF
                             </a>
                             <a
-                                href={article.htmlUrl ?? '#'}
+                                href={`/articles/${article.id}/html`}
+                                target="_blank"
+                                rel="noopener noreferrer"
                                 className="inline-flex items-center gap-2 px-5 py-3 bg-white/10 border border-white/25 text-white text-sm font-bold rounded-xl hover:bg-white/20 transition no-underline"
                             >
                                 🌐 View HTML
@@ -751,7 +781,7 @@ const ArticlePage: React.FC = () => {
                             </section>
                         )}
 
-                        {/* Cited by — placeholder until Crossref indexing lands */}
+                        {/* Cited by — real Crossref + OpenCitations lookup */}
                         <section className="mt-12" aria-labelledby="cited-by">
                             <h2
                                 id="cited-by"
@@ -759,12 +789,69 @@ const ArticlePage: React.FC = () => {
                             >
                                 Cited by
                             </h2>
-                            <div className="mt-4 rounded-2xl border border-dashed border-gray-200 bg-white p-6 text-center">
-                                <span className="text-2xl block mb-2">📚</span>
-                                <p className="text-sm text-gray-500">
-                                    Citation tracking will appear here once indexed by Crossref.
-                                </p>
+
+                            {/* Counter tile — always rendered so the section has a
+                                stable footprint (0 while loading, 0 for uncited). */}
+                            <div className="mt-4 rounded-2xl border border-brand-100 bg-gradient-to-br from-brand-50 via-white to-brand-50/60 p-6 shadow-sm">
+                                <div className="flex items-center gap-5">
+                                    <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-brand-500 to-brand-700 text-white flex items-center justify-center shadow-md shadow-brand-500/30 flex-shrink-0">
+                                        <span className="text-2xl">📚</span>
+                                    </div>
+                                    <div className="min-w-0">
+                                        <p className="text-[10px] font-extrabold text-brand-700 uppercase tracking-widest">
+                                            Citations
+                                        </p>
+                                        <p className="text-3xl font-extrabold text-gray-900 leading-none mt-1">
+                                            Cited by {citedByLoading ? '…' : citedBy?.count ?? 0}
+                                        </p>
+                                        <p className="text-xs text-gray-500 mt-1">
+                                            Source: Crossref{citedBy?.citing && citedBy.citing.length > 0
+                                                ? ' + OpenCitations'
+                                                : ''}
+                                        </p>
+                                    </div>
+                                </div>
                             </div>
+
+                            {/* List of citing works, when any were returned. */}
+                            {citedBy && citedBy.citing.length > 0 ? (
+                                <ol className="mt-4 space-y-3">
+                                    {citedBy.citing.map((w, idx) => (
+                                        <li
+                                            key={`${w.doi}-${idx}`}
+                                            className="flex gap-3 text-sm text-gray-700 leading-relaxed group rounded-xl border border-gray-100 bg-white p-3 hover:border-brand-200 transition"
+                                        >
+                                            <span className="flex-shrink-0 w-7 h-7 rounded-lg bg-brand-50 border border-brand-100 text-brand-700 text-xs font-extrabold flex items-center justify-center">
+                                                {idx + 1}
+                                            </span>
+                                            <div className="min-w-0 flex-1">
+                                                <p className="font-semibold text-gray-900 truncate">
+                                                    {w.title || w.doi}
+                                                    {w.year ? (
+                                                        <span className="ml-2 text-xs font-normal text-gray-500">
+                                                            ({w.year})
+                                                        </span>
+                                                    ) : null}
+                                                </p>
+                                                <a
+                                                    href={`https://doi.org/${w.doi}`}
+                                                    target="_blank"
+                                                    rel="noopener noreferrer"
+                                                    className="text-xs text-brand-600 hover:text-brand-800 font-semibold no-underline mt-1 inline-block font-mono break-all"
+                                                >
+                                                    doi.org/{w.doi}
+                                                </a>
+                                            </div>
+                                        </li>
+                                    ))}
+                                </ol>
+                            ) : !citedByLoading ? (
+                                <div className="mt-4 rounded-2xl border border-dashed border-gray-200 bg-white p-6 text-center">
+                                    <p className="text-sm text-gray-500">
+                                        Not yet cited — check back later.
+                                    </p>
+                                </div>
+                            ) : null}
                         </section>
                     </div>
 

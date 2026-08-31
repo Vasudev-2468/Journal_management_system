@@ -5,6 +5,7 @@ from typing import List, Optional
 from sqlalchemy.orm import Session
 
 from app.models.access_log import AccessLog
+from app.models.production_stage import ProductionRecord
 from app.models.review import Review, ReviewStatus, OverallRecommendation
 from app.models.reviewer import Reviewer
 from app.models.submission import Submission, SubmissionStatus
@@ -174,6 +175,27 @@ def record_decision(
         "major_revision": SubmissionStatus.revision_requested,
     }
     submission.status = status_map[decision]
+
+    # JG — when an editor lands the `accepted` decision, kick off the
+    # post-acceptance production pipeline so authors don't have to wait for
+    # a separate editor click to move the paper into copy editing. Only
+    # create a fresh row if one hasn't already been opened for this
+    # submission (e.g. an editor manually seeded it via the production
+    # queue), so we never clobber existing stage/notes/DOI state.
+    if decision == "accepted":
+        existing_production = (
+            db.query(ProductionRecord)
+            .filter(ProductionRecord.submission_id == submission.id)
+            .first()
+        )
+        if existing_production is None:
+            db.add(
+                ProductionRecord(
+                    submission_id=submission.id,
+                    stage="copy_editing",
+                )
+            )
+
     db.commit()
     db.refresh(submission)
     return submission

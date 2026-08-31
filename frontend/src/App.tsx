@@ -39,6 +39,7 @@ import SpecialIssuesPage from './pages/SpecialIssuesPage';
 import SpecialIssueDetailPage from './pages/SpecialIssueDetailPage';
 import ReviewerLoginPage from './pages/ReviewerLoginPage';
 import ReviewerSetPasswordPage from './pages/ReviewerSetPasswordPage';
+import ReviewerInvitePage from './pages/ReviewerInvitePage';
 import ReviewerDashboardPage from './pages/ReviewerDashboardPage';
 import AuthorRevisionPage from './pages/AuthorRevisionPage';
 import EditorUsersAdmin from './pages/EditorUsersAdmin';
@@ -154,6 +155,7 @@ const App: React.FC = () => {
                     <Route path="/accessibility-statement" element={<PolicyPageView slug="accessibility-statement" />} />
                     <Route path="/reviewer-login" element={<ReviewerLoginPage />} />
                     <Route path="/reviewer-set-password" element={<ReviewerSetPasswordPage />} />
+                    <Route path="/reviewer-invite/:token" element={<ReviewerInvitePage />} />
                     <Route path="/reviewer-dashboard" element={<ReviewerDashboardPage />} />
 
                     {/* Public informational pages — statistics, search, author profile, APC, manuscript prep */}

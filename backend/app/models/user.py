@@ -11,6 +11,12 @@ class UserRole(str, enum.Enum):
     editor = "editor"
     section_editor = "section_editor"
     admin = "admin"
+    # Extended editorial roles — kept alongside the legacy set so any
+    # existing role check that whitelists `editor / section_editor / admin`
+    # continues to pass without modification.
+    super_admin = "super_admin"
+    managing_editor = "managing_editor"
+    production_editor = "production_editor"
 
 
 class User(Base):

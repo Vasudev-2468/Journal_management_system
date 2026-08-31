@@ -23,8 +23,21 @@ from app.services.auth_service import oauth2_scheme
 
 logger = logging.getLogger(__name__)
 
-# Roles allowed to access the editor portal
-EDITOR_ROLES = {UserRole.editor, UserRole.section_editor, UserRole.admin}
+# Roles allowed to access the editor portal.
+#
+# ``super_admin`` and ``managing_editor`` are privileged editorial roles
+# introduced alongside the legacy set; they get the same gate as an editor.
+# ``production_editor`` is deliberately NOT in this whitelist — production
+# staff cannot make editorial decisions. They pass a separate gate that
+# ``require_role(UserRole.production_editor, ...)`` wires up on production
+# endpoints (see the helper at the bottom of this file).
+EDITOR_ROLES = {
+    UserRole.editor,
+    UserRole.section_editor,
+    UserRole.admin,
+    UserRole.super_admin,
+    UserRole.managing_editor,
+}
 
 # MFA session validity — how long since last OTP verification before
 # the user must re-verify.  Set to 0 to require OTP on every login session.
@@ -127,3 +140,74 @@ def require_editor(
         )
 
     return user
+
+
+# ── Generic role whitelist helper ───────────────────────
+#
+# The editor gate above is route-agnostic. For endpoints that need a
+# custom whitelist — production routes that must let ``production_editor``
+# in but keep everyone else out, or a super-admin-only settings surface —
+# use ``require_role(*roles)`` to build a dependency on the fly:
+#
+#     @router.post("/production/{id}/typeset",
+#                  dependencies=[Depends(require_role(
+#                      UserRole.production_editor,
+#                      UserRole.managing_editor,
+#                      UserRole.admin,
+#                      UserRole.super_admin,
+#                  ))])
+#
+# The returned dependency validates the JWT, requires MFA, and enforces
+# the whitelist. It does NOT change ``require_editor_mfa`` behaviour —
+# every existing gate keeps working exactly as before.
+def require_role(*roles: UserRole):
+    """Return a FastAPI dependency that lets a user through when their
+    role is in ``roles`` (and their JWT is valid and MFA-verified).
+
+    Empty ``roles`` is treated as "any authenticated + MFA-verified user"
+    so this can double as a plain MFA gate without a role restriction.
+    """
+    allowed = set(roles)
+
+    def _dependency(
+        token: str = Depends(oauth2_scheme),
+        db: Session = Depends(get_db),
+    ) -> User:
+        payload = _decode_token(token)
+
+        email = payload.get("sub")
+        if not email:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token — no subject claim",
+            )
+
+        user = db.query(User).filter(User.email == email).first()
+        if user is None or not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User not found or deactivated",
+            )
+
+        if allowed and user.role not in allowed:
+            logger.warning(
+                "User %s (role=%s) blocked by require_role whitelist %s",
+                email,
+                user.role,
+                sorted(r.value for r in allowed),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have permission for this action.",
+            )
+
+        if not payload.get("mfa_verified", False):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="MFA verification required.",
+                headers={"X-MFA-Required": "true"},
+            )
+
+        return user
+
+    return _dependency

@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 
 /**
  * Bottom-right cookie consent banner.
@@ -66,6 +67,17 @@ const CookieBanner: React.FC = () => {
             <p className="mt-2 text-sm text-gray-600 leading-relaxed">
                 We use anonymous analytics to understand how JGAIR is read, and only if
                 you agree. You can change your mind any time from the cookie policy page.
+            </p>
+            {/* Learn-more affordance so readers can read the policy before
+                choosing. Sits between description and buttons to preserve the
+                banner's existing focus order (Decline → Accept remain last). */}
+            <p className="mt-2 text-xs">
+                <Link
+                    to="/cookie-policy"
+                    className="text-brand-600 hover:text-brand-700 font-semibold underline"
+                >
+                    Learn more
+                </Link>
             </p>
             <div className="mt-4 flex flex-wrap gap-2 justify-end">
                 <button

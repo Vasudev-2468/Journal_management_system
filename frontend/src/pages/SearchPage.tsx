@@ -1,13 +1,10 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import Header from '../components/layout/Header';
 import Footer from '../components/layout/Footer';
 import Loading from '../components/common/Loading';
 import SEO from '../components/common/SEO';
-import { fetchArticles } from '../api/articles';
-import { Article } from '../types';
-
-type SearchKind = 'any' | 'title' | 'author' | 'keyword' | 'doi';
+import { searchArticles, SearchItem, SearchKind } from '../api/search';
 
 const KIND_OPTIONS: { value: SearchKind; label: string }[] = [
     { value: 'any', label: 'Any field' },
@@ -17,75 +14,114 @@ const KIND_OPTIONS: { value: SearchKind; label: string }[] = [
     { value: 'doi', label: 'DOI' },
 ];
 
-const excerpt = (text: string | null | undefined, maxChars = 260): string => {
-    if (!text) return '';
-    const clean = text.replace(/\s+/g, ' ').trim();
-    return clean.length <= maxChars ? clean : clean.slice(0, maxChars).trimEnd() + '…';
-};
+const PAGE_SIZE = 20;
 
-const highlightNeedle = (haystack: string, needle: string): React.ReactNode => {
-    if (!needle) return haystack;
-    const lower = haystack.toLowerCase();
-    const n = needle.toLowerCase();
-    const idx = lower.indexOf(n);
-    if (idx < 0) return haystack;
-    return (
-        <>
-            {haystack.slice(0, idx)}
-            <mark className="bg-yellow-200 text-gray-900 rounded px-0.5">{haystack.slice(idx, idx + needle.length)}</mark>
-            {haystack.slice(idx + needle.length)}
-        </>
-    );
-};
+// Debounce interval on the search input. 400 ms feels responsive on
+// keystrokes without hammering the endpoint mid-type.
+const DEBOUNCE_MS = 400;
 
-const matches = (article: Article, kind: SearchKind, q: string): boolean => {
-    const needle = q.toLowerCase().trim();
-    if (!needle) return true;
-    const title = (article.title || '').toLowerCase();
-    const abstract = (article.abstract || '').toLowerCase();
-    const content = (article.content || '').toLowerCase();
-    const author = (article.author_display || article.author || '').toLowerCase();
-
-    switch (kind) {
-        case 'title':
-            return title.includes(needle);
-        case 'author':
-            return author.includes(needle);
-        case 'keyword':
-            return abstract.includes(needle) || content.includes(needle) || title.includes(needle);
-        case 'doi':
-            // No dedicated DOI field on Article — search content/abstract for the identifier
-            return content.includes(needle) || abstract.includes(needle);
-        case 'any':
-        default:
-            return (
-                title.includes(needle) ||
-                abstract.includes(needle) ||
-                content.includes(needle) ||
-                author.includes(needle)
-            );
-    }
-};
+/**
+ * Subtly render the ts_rank_cd score as a badge. Ranks are unbounded
+ * positive floats; we scale to two decimals so they read as a "score"
+ * on the card without dominating the layout.
+ */
+const RankBadge: React.FC<{ rank: number }> = ({ rank }) => (
+    <span
+        title={`Relevance score: ${rank.toFixed(4)}`}
+        className="inline-flex items-center gap-1 rounded-full bg-brand-50 text-brand-700 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide border border-brand-100"
+    >
+        <span aria-hidden="true">★</span>
+        rank {rank.toFixed(2)}
+    </span>
+);
 
 const SearchPage: React.FC = () => {
     const [params, setParams] = useSearchParams();
+
+    // Seed state from the URL so a shared link lands on the same view.
     const initialQ = params.get('q') || '';
-    const initialFilter = (params.get('filter') as SearchKind) || 'any';
+    const initialKind = (params.get('kind') as SearchKind) || 'any';
+    const initialPage = Math.max(1, parseInt(params.get('page') || '1', 10) || 1);
 
     const [q, setQ] = useState(initialQ);
-    const [kind, setKind] = useState<SearchKind>(initialFilter);
-    const [articles, setArticles] = useState<Article[]>([]);
-    const [loading, setLoading] = useState(true);
+    const [kind, setKind] = useState<SearchKind>(initialKind);
+    const [page, setPage] = useState<number>(initialPage);
+
+    const [items, setItems] = useState<SearchItem[]>([]);
+    const [total, setTotal] = useState(0);
+    const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
+    // Debounced echo of ``q`` — the value actually sent to the endpoint.
+    const [debouncedQ, setDebouncedQ] = useState(initialQ);
+    const debounceRef = useRef<number | null>(null);
+
+    useEffect(() => {
+        if (debounceRef.current !== null) {
+            window.clearTimeout(debounceRef.current);
+        }
+        debounceRef.current = window.setTimeout(() => {
+            setDebouncedQ(q);
+        }, DEBOUNCE_MS);
+        return () => {
+            if (debounceRef.current !== null) {
+                window.clearTimeout(debounceRef.current);
+            }
+        };
+    }, [q]);
+
+    // A change to the query or filter resets pagination to page 1 so a
+    // new search doesn't drop the reader on page 4 of the previous one.
+    // We do this only when the input actually differs from the URL — an
+    // in-flight ``page=2`` navigation from the pagination buttons
+    // should not immediately snap back.
+    useEffect(() => {
+        setPage(1);
+        // We deliberately depend on debouncedQ + kind here so page 1 is
+        // asserted once the query settles.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [debouncedQ, kind]);
+
+    // Keep the URL in sync so results are shareable. ``replace`` avoids
+    // filling the history stack while the reader types.
+    useEffect(() => {
+        const next = new URLSearchParams();
+        if (debouncedQ) next.set('q', debouncedQ);
+        if (kind && kind !== 'any') next.set('kind', kind);
+        if (page > 1) next.set('page', String(page));
+        setParams(next, { replace: true });
+    }, [debouncedQ, kind, page, setParams]);
+
+    // Fetch results whenever the settled query, filter, or page moves.
     useEffect(() => {
         let cancelled = false;
-        fetchArticles()
+        const trimmed = debouncedQ.trim();
+        if (!trimmed) {
+            setItems([]);
+            setTotal(0);
+            setLoading(false);
+            setError(null);
+            return () => {
+                cancelled = true;
+            };
+        }
+        setLoading(true);
+        setError(null);
+        searchArticles({ q: trimmed, kind, page, page_size: PAGE_SIZE })
             .then((data) => {
-                if (!cancelled) setArticles(data);
+                if (cancelled) return;
+                setItems(data.items);
+                setTotal(data.total);
             })
             .catch((err) => {
-                if (!cancelled) setError(err?.message || 'Failed to load articles.');
+                if (cancelled) return;
+                setError(
+                    err?.response?.data?.detail ||
+                        err?.message ||
+                        'Search failed. Please try again.',
+                );
+                setItems([]);
+                setTotal(0);
             })
             .finally(() => {
                 if (!cancelled) setLoading(false);
@@ -93,23 +129,23 @@ const SearchPage: React.FC = () => {
         return () => {
             cancelled = true;
         };
-    }, []);
+    }, [debouncedQ, kind, page]);
 
-    // Keep the URL in sync with the current query so results are shareable.
-    useEffect(() => {
-        const next = new URLSearchParams();
-        if (q) next.set('q', q);
-        if (kind && kind !== 'any') next.set('filter', kind);
-        setParams(next, { replace: true });
-    }, [q, kind, setParams]);
+    const trimmedQ = debouncedQ.trim();
+    const totalPages = useMemo(
+        () => (total > 0 ? Math.ceil(total / PAGE_SIZE) : 0),
+        [total],
+    );
 
-    const results = useMemo(() => {
-        const trimmed = q.trim();
-        if (!trimmed) return [];
-        return articles.filter((a) => matches(a, kind, trimmed));
-    }, [articles, kind, q]);
-
-    const trimmedQ = q.trim();
+    const goToPage = useCallback(
+        (next: number) => {
+            const clamped = Math.min(Math.max(1, next), Math.max(1, totalPages));
+            setPage(clamped);
+            // Scroll to the top of the results list for the next page.
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        },
+        [totalPages],
+    );
 
     return (
         <div className="min-h-screen flex flex-col bg-gray-50">
@@ -134,7 +170,11 @@ const SearchPage: React.FC = () => {
                     </p>
 
                     <form
-                        onSubmit={(e) => e.preventDefault()}
+                        onSubmit={(e) => {
+                            e.preventDefault();
+                            // Force-flush the debounce when the user hits enter.
+                            setDebouncedQ(q);
+                        }}
                         className="mt-8 bg-white/95 backdrop-blur rounded-2xl shadow-2xl p-3 flex flex-col md:flex-row gap-2"
                     >
                         <select
@@ -168,38 +208,47 @@ const SearchPage: React.FC = () => {
 
             <main className="flex-1 py-12">
                 <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
-                    {loading ? (
+                    {!trimmedQ ? (
+                        <div className="bg-white border border-dashed border-gray-200 rounded-2xl p-12 text-center">
+                            <span className="text-4xl block mb-3">🔎</span>
+                            <h3 className="text-lg font-bold text-gray-900">Start typing to search</h3>
+                            <p className="mt-2 text-gray-500">
+                                Results appear as you type — Postgres full-text search matches title,
+                                abstract, and body.
+                            </p>
+                        </div>
+                    ) : loading ? (
                         <Loading />
                     ) : error ? (
                         <div role="alert" className="bg-white border border-red-200 rounded-2xl p-8 text-center text-red-600">
                             {error}
                         </div>
-                    ) : !trimmedQ ? (
-                        <div className="bg-white border border-dashed border-gray-200 rounded-2xl p-12 text-center">
-                            <span className="text-4xl block mb-3">🔎</span>
-                            <h3 className="text-lg font-bold text-gray-900">Start typing to search</h3>
-                            <p className="mt-2 text-gray-500">
-                                We search across {articles.length.toLocaleString()} published article
-                                {articles.length === 1 ? '' : 's'}.
-                            </p>
-                        </div>
-                    ) : results.length === 0 ? (
+                    ) : items.length === 0 ? (
                         <div className="bg-white border border-dashed border-gray-200 rounded-2xl p-12 text-center">
                             <span className="text-4xl block mb-3">📭</span>
                             <h3 className="text-lg font-bold text-gray-900">No matches</h3>
                             <p className="mt-2 text-gray-500">
-                                Nothing found for “{trimmedQ}” in {KIND_OPTIONS.find((o) => o.value === kind)?.label.toLowerCase()}.
+                                Nothing found for “{trimmedQ}” in{' '}
+                                {KIND_OPTIONS.find((o) => o.value === kind)?.label.toLowerCase()}.
                                 Try a broader query or the “Any field” filter.
                             </p>
                         </div>
                     ) : (
                         <>
                             <p className="mb-6 text-sm text-gray-500">
-                                <span className="font-bold text-gray-800">{results.length.toLocaleString()}</span> result
-                                {results.length === 1 ? '' : 's'} for “{trimmedQ}”
+                                <span className="font-bold text-gray-800">{total.toLocaleString()}</span> result
+                                {total === 1 ? '' : 's'} for “{trimmedQ}”
+                                {totalPages > 1 && (
+                                    <>
+                                        {' '}
+                                        · page{' '}
+                                        <span className="font-bold text-gray-800">{page}</span> of{' '}
+                                        {totalPages}
+                                    </>
+                                )}
                             </p>
                             <ul className="space-y-5">
-                                {results.map((a) => (
+                                {items.map((a) => (
                                     <li
                                         key={a.id}
                                         className="group bg-white rounded-2xl border border-gray-100 overflow-hidden hover:shadow-xl transition-all duration-300"
@@ -209,15 +258,18 @@ const SearchPage: React.FC = () => {
                                             to={`/articles/${a.id}`}
                                             className="block p-6 no-underline"
                                         >
-                                            <h2 className="text-xl font-extrabold text-gray-900 group-hover:text-brand-700 transition">
-                                                {highlightNeedle(a.title, trimmedQ)}
-                                            </h2>
+                                            <div className="flex items-start justify-between gap-3">
+                                                <h2 className="text-xl font-extrabold text-gray-900 group-hover:text-brand-700 transition">
+                                                    {a.title}
+                                                </h2>
+                                                <RankBadge rank={a.rank} />
+                                            </div>
                                             <p className="mt-1 text-sm text-gray-500">
-                                                {a.author_display || a.author || 'Unattributed'}
+                                                {a.author_display || 'Unattributed'}
                                             </p>
-                                            {a.abstract && (
+                                            {a.abstract_excerpt && (
                                                 <p className="mt-3 text-gray-700 leading-relaxed">
-                                                    {highlightNeedle(excerpt(a.abstract), trimmedQ)}
+                                                    {a.abstract_excerpt}
                                                 </p>
                                             )}
                                             <p className="mt-4 text-sm font-bold text-brand-700 group-hover:text-brand-800">
@@ -227,6 +279,35 @@ const SearchPage: React.FC = () => {
                                     </li>
                                 ))}
                             </ul>
+
+                            {totalPages > 1 && (
+                                <nav
+                                    aria-label="Search results pagination"
+                                    className="mt-10 flex items-center justify-between border-t border-gray-200 pt-6"
+                                >
+                                    <button
+                                        type="button"
+                                        onClick={() => goToPage(page - 1)}
+                                        disabled={page <= 1}
+                                        className="px-4 py-2 rounded-lg border border-gray-200 text-sm font-semibold text-gray-700 bg-white hover:bg-brand-50 hover:text-brand-700 disabled:opacity-40 disabled:hover:bg-white disabled:hover:text-gray-700 transition"
+                                    >
+                                        ← Previous
+                                    </button>
+                                    <span className="text-sm text-gray-500">
+                                        Page{' '}
+                                        <span className="font-bold text-gray-800">{page}</span> of{' '}
+                                        <span className="font-bold text-gray-800">{totalPages}</span>
+                                    </span>
+                                    <button
+                                        type="button"
+                                        onClick={() => goToPage(page + 1)}
+                                        disabled={page >= totalPages}
+                                        className="px-4 py-2 rounded-lg border border-gray-200 text-sm font-semibold text-gray-700 bg-white hover:bg-brand-50 hover:text-brand-700 disabled:opacity-40 disabled:hover:bg-white disabled:hover:text-gray-700 transition"
+                                    >
+                                        Next →
+                                    </button>
+                                </nav>
+                            )}
                         </>
                     )}
                 </div>

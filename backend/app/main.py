@@ -25,6 +25,15 @@ from app.routers import jats as jats_router
 from app.routers import crossref_registration as crossref_registration_router
 from app.routers import authors_public as authors_public_router
 from app.routers import reviewer_auth as reviewer_auth_router
+from app.routers import search as search_router
+from app.routers import reviews_public as reviews_public_router
+from app.routers import production_public as production_public_router
+from app.routers import cited_by as cited_by_router
+from app.routers import article_render as article_render_router
+from app.routers import article_pdf as article_pdf_router
+from app.routers import feeds as feeds_router
+from app.routers import kbart as kbart_router
+from app.routers import reviewer_invite as reviewer_invite_router
 from app.middleware import InMemoryRateLimiter, SecurityHeadersMiddleware
 from app.config import settings
 from app.database import SessionLocal
@@ -194,6 +203,15 @@ app.include_router(jats_router.router, prefix="/articles", tags=["jats"])
 app.include_router(crossref_registration_router.router, prefix="/crossref", tags=["crossref"])
 app.include_router(authors_public_router.router, prefix="/authors-public", tags=["authors-public"])
 app.include_router(reviewer_auth_router.router, prefix="/reviewer-auth", tags=["reviewer-auth"])
+app.include_router(search_router.router, prefix="/search", tags=["search"])
+app.include_router(reviews_public_router.router, prefix="/reviews-public", tags=["reviews-public"])
+app.include_router(production_public_router.router, prefix="/production-public", tags=["production-public"])
+app.include_router(cited_by_router.router, prefix="/cited-by", tags=["cited-by"])
+app.include_router(article_render_router.router, prefix="/articles", tags=["article-html"])
+app.include_router(article_pdf_router.router, prefix="/articles", tags=["article-pdf"])
+app.include_router(feeds_router.router, tags=["feeds"])
+app.include_router(kbart_router.router, tags=["kbart"])
+app.include_router(reviewer_invite_router.router, prefix="/reviewer-invite", tags=["reviewer-invite"])
 
 # ── Static files (downloadable templates) ────────────────
 _static_dir = Path(__file__).resolve().parent / "static" / "templates"

@@ -104,11 +104,16 @@ export default function AuthorDashboard() {
   const [filterStatus, setFilterStatus] = useState('all');
   const [notifOpen, setNotifOpen]   = useState(false);
   const [bellShake, setBellShake]   = useState(false);
-  // Top-level tab: all | in_review | published. Editors of the production
-  // queue would use `submission.production_stage === 'published'`, but that
-  // route is editor-gated — until the author-facing surface arrives we treat
-  // `status === 'accepted'` as the best available proxy.
+  // Top-level tab: all | in_review | published. The "Published" tab is
+  // backed by the author-scoped /production-public/my-published endpoint
+  // — production records whose stage has reached `published` for the
+  // caller's accepted submissions. Kept in its own list so we can show
+  // production metadata (DOI, final PDF) that the submissions payload
+  // does not carry.
   const [tab, setTab]               = useState('all');
+  const [published, setPublished]         = useState([]);
+  const [publishedLoaded, setPublishedLoaded] = useState(false);
+  const [publishedError, setPublishedError]   = useState(null);
   const notifRef = useRef(null);
 
   useEffect(() => {
@@ -151,6 +156,34 @@ export default function AuthorDashboard() {
     load();
   }, [navigate]);
 
+  // Fetch the author's published production records once, in parallel with
+  // the submissions list. A failure here is not fatal — the tab falls back
+  // to its friendly "once published" copy and we don't block the rest of
+  // the dashboard.
+  useEffect(() => {
+    if (!getAuthorToken()) return;
+    let cancelled = false;
+    async function loadPublished() {
+      try {
+        const res = await client.get('/production-public/my-published', {
+          headers: { Authorization: `Bearer ${getAuthorToken()}` },
+        });
+        if (cancelled) return;
+        setPublished(Array.isArray(res.data) ? res.data : []);
+      } catch (e) {
+        if (cancelled) return;
+        setPublished([]);
+        if (e?.response?.status && e.response.status !== 404) {
+          setPublishedError('Could not load your published papers.');
+        }
+      } finally {
+        if (!cancelled) setPublishedLoaded(true);
+      }
+    }
+    loadPublished();
+    return () => { cancelled = true; };
+  }, []);
+
   const handleLogout = () => { authorLogout(); navigate('/author-login'); };
 
   /* Derived stats */
@@ -172,25 +205,33 @@ export default function AuthorDashboard() {
     'revision_requested',
     'returned_to_author',
   ]);
-  // Proxy for "published" — the production queue is editor-gated so we
-  // treat accepted papers as the closest visible surface. See tab UI copy
-  // for the caveat we surface to authors.
-  const isPublishedSub = (s) => s.status === 'accepted';
 
-  const visible = submissions.filter(s => {
-    const matchSearch = !search || s.paper_title.toLowerCase().includes(search.toLowerCase()) || (s.paper_id_code || '').toLowerCase().includes(search.toLowerCase());
-    const matchStatus = filterStatus === 'all' || s.status === filterStatus;
-    const matchTab =
-      tab === 'all'
-        ? true
-        : tab === 'in_review'
-          ? inReviewStatuses.has(s.status)
-          : /* tab === 'published' */ isPublishedSub(s);
-    return matchSearch && matchStatus && matchTab;
-  });
+  // `visible` drives the "All" and "In review" tabs — the "Published" tab
+  // now renders from the `published` list fetched from
+  // /production-public/my-published, which carries production metadata
+  // (DOI, final PDF url, publication date) that the submissions payload
+  // does not have.
+  const visible = tab === 'published'
+    ? []
+    : submissions.filter(s => {
+      const matchSearch = !search || s.paper_title.toLowerCase().includes(search.toLowerCase()) || (s.paper_id_code || '').toLowerCase().includes(search.toLowerCase());
+      const matchStatus = filterStatus === 'all' || s.status === filterStatus;
+      const matchTab =
+        tab === 'all'
+          ? true
+          : /* tab === 'in_review' */ inReviewStatuses.has(s.status);
+      return matchSearch && matchStatus && matchTab;
+    });
 
-  const publishedCount = submissions.filter(isPublishedSub).length;
+  const publishedCount = published.length;
   const inReviewCount  = submissions.filter(s => inReviewStatuses.has(s.status)).length;
+
+  const visiblePublished = published.filter(p => {
+    if (!search) return true;
+    const q = search.toLowerCase();
+    return (p.paper_title || '').toLowerCase().includes(q)
+      || (p.doi || '').toLowerCase().includes(q);
+  });
 
   const authorName = profile?.full_name || 'Author';
 
@@ -339,10 +380,9 @@ export default function AuthorDashboard() {
             ))}
           </div>
 
-          {tab === 'published' && (
-            <div className="p-3 bg-blue-50 border border-blue-100 rounded-2xl text-xs text-blue-700">
-              Once your paper is published we'll surface it here. Until the production
-              queue is exposed to authors, we show accepted manuscripts as a preview.
+          {tab === 'published' && publishedError && (
+            <div className="p-3 bg-red-50 border border-red-100 rounded-2xl text-xs text-red-700">
+              {publishedError}
             </div>
           )}
 
@@ -382,8 +422,85 @@ export default function AuthorDashboard() {
             </div>
           )}
 
-          {/* ── Submission Cards ────────────────────────── */}
-          {visible.length === 0 ? (
+          {/* ── Published papers (production_public/my-published) ──── */}
+          {tab === 'published' ? (
+            !publishedLoaded ? (
+              <div className="bg-white rounded-3xl border border-gray-100 shadow-sm p-10 text-center text-sm text-gray-500">
+                Loading your published papers…
+              </div>
+            ) : visiblePublished.length === 0 ? (
+              <div className="bg-white rounded-3xl border border-gray-100 shadow-sm p-16 text-center">
+                <div className="w-20 h-20 bg-blue-50 rounded-3xl flex items-center justify-center mx-auto mb-4">
+                  <svg className="w-10 h-10 text-blue-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/>
+                  </svg>
+                </div>
+                <h3 className="text-lg font-bold text-gray-900 mb-2">Nothing published yet</h3>
+                <p className="text-sm text-gray-500 max-w-sm mx-auto">
+                  Once your paper is published we'll surface it here with the DOI and the final PDF.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {visiblePublished.map((p) => (
+                  <div
+                    key={p.submission_id}
+                    className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5 space-y-3"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+                          <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-full border bg-blue-50 text-blue-700 border-blue-200">
+                            <span className="w-1.5 h-1.5 rounded-full bg-blue-500" />
+                            📚 Published
+                          </span>
+                          {p.published_at && (
+                            <span className="text-xs text-gray-500">
+                              📅 {formatDate(p.published_at)}
+                            </span>
+                          )}
+                        </div>
+                        <h3 className="text-sm font-bold text-gray-900 leading-snug">
+                          {p.paper_title}
+                        </h3>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-3 pt-1 border-t border-gray-50">
+                      {p.doi ? (
+                        <a
+                          href={`https://doi.org/${p.doi}`}
+                          target="_blank"
+                          rel="noreferrer noopener"
+                          className="text-xs font-mono text-blue-700 hover:text-blue-900 underline underline-offset-2 truncate max-w-[70%]"
+                        >
+                          doi.org/{p.doi}
+                        </a>
+                      ) : (
+                        <span className="text-xs text-gray-400">DOI pending</span>
+                      )}
+
+                      {p.final_pdf_url ? (
+                        <a
+                          href={p.final_pdf_url}
+                          target="_blank"
+                          rel="noreferrer noopener"
+                          className="inline-flex items-center gap-1.5 text-xs font-semibold bg-green-700 hover:bg-green-800 text-white px-3 py-1.5 rounded-xl no-underline transition-colors"
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5m0 0l5-5m-5 5V4"/>
+                          </svg>
+                          Download PDF
+                        </a>
+                      ) : (
+                        <span className="text-xs text-gray-400">Final PDF pending</span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )
+          ) : visible.length === 0 ? (
             <div className="bg-white rounded-3xl border border-gray-100 shadow-sm p-16 text-center">
               <div className="w-20 h-20 bg-green-50 rounded-3xl flex items-center justify-center mx-auto mb-4">
                 <svg className="w-10 h-10 text-green-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -492,7 +609,13 @@ export default function AuthorDashboard() {
           )}
 
           {/* ── Count footer ──────────────────────────── */}
-          {visible.length > 0 && (
+          {tab === 'published' ? (
+            visiblePublished.length > 0 && (
+              <p className="text-xs text-gray-400 text-center">
+                Showing {visiblePublished.length} of {published.length} published paper{published.length !== 1 ? 's' : ''}
+              </p>
+            )
+          ) : visible.length > 0 && (
             <p className="text-xs text-gray-400 text-center">
               Showing {visible.length} of {submissions.length} submission{submissions.length !== 1 ? 's' : ''}
             </p>

@@ -1,4 +1,7 @@
 import React, { useEffect, useState } from 'react';
+import client from '../../api/client';
+// @ts-ignore — authorAuth.js is a plain-JS module in a mixed TS/JS repo.
+import { getAuthorToken } from '../../api/authorAuth';
 
 interface Props {
     submissionId: string;
@@ -6,6 +9,13 @@ interface Props {
      *  decision has landed (accepted / rejected / revision_requested /
      *  returned_to_author). */
     status?: string | null;
+}
+
+interface ReviewerEntry {
+    reviewer_alias: string;
+    overall_recommendation: string | null;
+    comments_to_authors: string | null;
+    completed_at: string | null;
 }
 
 const DECISION_STATUSES = new Set([
@@ -17,16 +27,60 @@ const DECISION_STATUSES = new Set([
 
 const storageKey = (id: string) => `reviewer-comments-read:${id}`;
 
+/** Pill styling per reviewer recommendation. Keep the palette narrow so the
+ *  reviewer packet reads visually consistent with the decision letter card. */
+const RECOMMENDATION_PILL: Record<string, { label: string; cls: string }> = {
+    accept: {
+        label: 'Accept',
+        cls: 'bg-green-50 text-green-700 border-green-200',
+    },
+    minor_revision: {
+        label: 'Minor revision',
+        cls: 'bg-yellow-50 text-yellow-700 border-yellow-200',
+    },
+    major_revision: {
+        label: 'Major revision',
+        cls: 'bg-orange-50 text-orange-700 border-orange-200',
+    },
+    reject: {
+        label: 'Reject',
+        cls: 'bg-red-50 text-red-700 border-red-200',
+    },
+};
+
+function RecommendationPill({ value }: { value: string | null }): JSX.Element | null {
+    if (!value) return null;
+    const meta = RECOMMENDATION_PILL[value] ?? {
+        label: value.replace(/_/g, ' '),
+        cls: 'bg-gray-50 text-gray-700 border-gray-200',
+    };
+    return (
+        <span
+            className={`inline-flex items-center text-xs font-semibold border rounded-full px-2.5 py-0.5 ${meta.cls}`}
+        >
+            {meta.label}
+        </span>
+    );
+}
+
 /**
- * ReviewerCommentsCard — anonymised reviewer packet placeholder.
+ * ReviewerCommentsCard — anonymised reviewer packet for the author.
  *
- * The full reviewer detail endpoint (/reviews/{submission_id}) is editor-gated,
- * so authors cannot fetch reviewer comments directly. Until the editorial
- * office releases them, we surface a friendly holding message and let the
- * author toggle a "read on this device" flag that persists in localStorage.
+ * Fetches from the author-scoped `/reviews-public/for-my-submission/:id`
+ * endpoint. The response is strictly redacted server-side (no reviewer
+ * name/email, no comments_to_editor), and only released once the editor
+ * has landed a decision. Until then — or when no reviewer has yet
+ * completed — we keep the friendly holding message.
+ *
+ * Preserves the "read on this device" localStorage toggle used by the
+ * previous placeholder implementation.
  */
 export default function ReviewerCommentsCard({ submissionId, status }: Props): JSX.Element | null {
     const [readOnDevice, setReadOnDevice] = useState<boolean>(false);
+    const [entries, setEntries] = useState<ReviewerEntry[]>([]);
+    const [loading, setLoading] = useState<boolean>(false);
+    const [loadError, setLoadError] = useState<string | null>(null);
+    const [openIdx, setOpenIdx] = useState<number | null>(0);
 
     useEffect(() => {
         try {
@@ -36,6 +90,40 @@ export default function ReviewerCommentsCard({ submissionId, status }: Props): J
             /* private mode / storage blocked — treat as unread */
         }
     }, [submissionId]);
+
+    useEffect(() => {
+        if (!submissionId || !status || !DECISION_STATUSES.has(status)) {
+            return;
+        }
+        let cancelled = false;
+        async function load(): Promise<void> {
+            setLoading(true);
+            setLoadError(null);
+            try {
+                const token = getAuthorToken();
+                const res = await client.get(
+                    `/reviews-public/for-my-submission/${submissionId}`,
+                    token
+                        ? { headers: { Authorization: `Bearer ${token}` } }
+                        : undefined,
+                );
+                if (cancelled) return;
+                setEntries(Array.isArray(res.data) ? res.data : []);
+            } catch {
+                if (cancelled) return;
+                // Fall back to the friendly holding state — do not surface
+                // a scary error; the packet may simply not be released yet.
+                setEntries([]);
+                setLoadError('Reviewer comments could not be loaded right now.');
+            } finally {
+                if (!cancelled) setLoading(false);
+            }
+        }
+        load();
+        return () => {
+            cancelled = true;
+        };
+    }, [submissionId, status]);
 
     if (!status || !DECISION_STATUSES.has(status)) {
         return null;
@@ -50,6 +138,8 @@ export default function ReviewerCommentsCard({ submissionId, status }: Props): J
             /* ignore — the toggle still updates in-memory state */
         }
     };
+
+    const hasComments = entries.length > 0;
 
     return (
         <section
@@ -70,10 +160,68 @@ export default function ReviewerCommentsCard({ submissionId, status }: Props): J
                 </span>
             </div>
 
-            <div className="bg-gray-50 border border-gray-100 rounded-xl p-4 text-sm text-gray-700 leading-relaxed">
-                Reviewer comments will appear here once released by the editorial office.
-                They are shared anonymously, alongside the decision letter.
-            </div>
+            {loading ? (
+                <div className="bg-gray-50 border border-gray-100 rounded-xl p-4 text-sm text-gray-500 leading-relaxed">
+                    Loading reviewer comments…
+                </div>
+            ) : hasComments ? (
+                <div className="space-y-3">
+                    {entries.map((entry, idx) => {
+                        const open = openIdx === idx;
+                        return (
+                            <div
+                                key={`${entry.reviewer_alias}-${idx}`}
+                                className="bg-gray-50 border border-gray-100 rounded-xl overflow-hidden"
+                            >
+                                <button
+                                    type="button"
+                                    onClick={() => setOpenIdx(open ? null : idx)}
+                                    aria-expanded={open}
+                                    className="w-full flex items-center justify-between gap-3 px-4 py-3 text-left hover:bg-gray-100 transition-colors"
+                                >
+                                    <div className="flex items-center gap-2 min-w-0">
+                                        <span className="text-sm font-bold text-gray-900">
+                                            {entry.reviewer_alias}
+                                        </span>
+                                        <RecommendationPill
+                                            value={entry.overall_recommendation}
+                                        />
+                                    </div>
+                                    <svg
+                                        className={`w-4 h-4 text-gray-400 shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}
+                                        fill="none"
+                                        stroke="currentColor"
+                                        viewBox="0 0 24 24"
+                                    >
+                                        <path
+                                            strokeLinecap="round"
+                                            strokeLinejoin="round"
+                                            strokeWidth={2}
+                                            d="M19 9l-7 7-7-7"
+                                        />
+                                    </svg>
+                                </button>
+                                {open && (
+                                    <div className="px-4 pb-4 pt-1 text-sm text-gray-700 leading-relaxed whitespace-pre-line">
+                                        {entry.comments_to_authors && entry.comments_to_authors.trim().length > 0
+                                            ? entry.comments_to_authors
+                                            : 'No written comments were shared with authors for this review.'}
+                                    </div>
+                                )}
+                            </div>
+                        );
+                    })}
+                </div>
+            ) : (
+                <div className="bg-gray-50 border border-gray-100 rounded-xl p-4 text-sm text-gray-700 leading-relaxed">
+                    Reviewer comments will appear once released by the editorial office.
+                    They are shared anonymously, alongside the decision letter.
+                </div>
+            )}
+
+            {loadError && !hasComments && (
+                <p className="mt-2 text-xs text-gray-400">{loadError}</p>
+            )}
 
             <div className="mt-4 flex items-center justify-between gap-3">
                 <label className="flex items-center gap-2 text-xs text-gray-600 cursor-pointer select-none">

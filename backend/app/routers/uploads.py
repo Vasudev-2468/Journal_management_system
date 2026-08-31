@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
 from app.models.user import User
 from app.services.auth_service import get_current_user
+from app.services.malware_scan import scan_bytes
 from app.services.storage_service import upload_manuscript_file
 
 router = APIRouter()
@@ -80,6 +81,14 @@ async def upload_manuscript_file_endpoint(
         )
 
     original_filename = file.filename or "upload"
+
+    # Malware scan hook — no-op when no scanner is configured. Blocks on hit.
+    scan_result = scan_bytes(contents, filename=original_filename)
+    if not scan_result.get("ok", True):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Malware scan rejected the file: {scan_result.get('detail', 'infected')}",
+        )
 
     try:
         stored_url = upload_manuscript_file(
