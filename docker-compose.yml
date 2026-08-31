@@ -66,9 +66,31 @@ services:
     networks:
       - frontend_network
 
+  # Daily pg_dump sidecar. Uses the stock postgres:15 image because it
+  # already ships pg_dump/pg_restore; no custom build required. The
+  # loop sleeps 24h between runs — good enough for a nightly cadence
+  # without pulling in cron. Dumps land in the db_backups named volume
+  # so they survive `docker compose down`.
+  backup:
+    image: postgres:15
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://journaladmin:journalpass@db:5432/journaldb
+      RETENTION_DAYS: "30"
+    volumes:
+      - db_backups:/backups
+      - ./backend/scripts:/scripts:ro
+    command: ["sh", "-c", "while true; do /scripts/backup_db.sh; sleep 86400; done"]
+    networks:
+      - backend_network
+
 networks:
   backend_network:
   frontend_network:
 
 volumes:
   postgres_data:
+  db_backups:

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import Header from '../components/layout/Header';
 import Footer from '../components/layout/Footer';
@@ -20,6 +20,12 @@ import {
     CitedByResponse,
 } from '../api/platform';
 import { getAIRecommendations, RelatedArticle } from '../api/ai';
+import {
+    trackView,
+    trackDownload,
+    getStats,
+    ArticleStats,
+} from '../api/articleStats';
 
 /* ══════════════════════════════════════════════════════
  *   Helpers
@@ -370,6 +376,12 @@ const ArticlePage: React.FC = () => {
     // Errors and empty payloads collapse to a silent no-op — the reader
     // never sees a broken widget for a page that otherwise renders fine.
     const [aiRelated, setAiRelated] = useState<RelatedArticle[]>([]);
+    // Live per-article stats fetched from /article-stats/{id}. ``null``
+    // means "not loaded yet OR the endpoint returned nothing usable" —
+    // both cases hide the strip cleanly. The ref below stops the view
+    // POST from firing twice under React StrictMode's dev double-mount.
+    const [liveStats, setLiveStats] = useState<ArticleStats | null>(null);
+    const viewTrackedFor = useRef<number | null>(null);
 
     useEffect(() => {
         if (!Number.isFinite(numericId)) return;
@@ -422,6 +434,37 @@ const ArticlePage: React.FC = () => {
             })
             .finally(() => {
                 if (!cancelled) setCitedByLoading(false);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [numericId]);
+
+    // Fire ``trackView`` exactly once per numeric id. The ``viewTrackedFor``
+    // ref survives React 18 StrictMode's dev double-mount (which would
+    // otherwise send two POSTs before the second was deduped
+    // server-side). Any subsequent navigation to a different article
+    // resets the guard by comparing against the new id.
+    useEffect(() => {
+        if (!Number.isFinite(numericId)) return;
+        if (viewTrackedFor.current === numericId) return;
+        viewTrackedFor.current = numericId;
+        trackView(numericId).catch(() => {
+            // Silent — analytics never breaks the reader's view.
+        });
+    }, [numericId]);
+
+    // Fetch aggregate stats for the header strip. A ``null`` result
+    // hides the strip cleanly (see render below).
+    useEffect(() => {
+        if (!Number.isFinite(numericId)) return;
+        let cancelled = false;
+        getStats(numericId)
+            .then((data) => {
+                if (!cancelled) setLiveStats(data);
+            })
+            .catch(() => {
+                if (!cancelled) setLiveStats(null);
             });
         return () => {
             cancelled = true;
@@ -561,6 +604,39 @@ const ArticlePage: React.FC = () => {
                             {article.title}
                         </h1>
 
+                        {/* Live stats strip — hides cleanly when the
+                            endpoint is unreachable, and shows a small
+                            placeholder while the first fetch is in
+                            flight. Rendered under the title so it sits
+                            alongside the byline, not the meta chips. */}
+                        {liveStats === null ? (
+                            <p
+                                className="mt-3 text-xs text-brand-100/70 font-semibold"
+                                aria-live="polite"
+                            >
+                                Loading stats…
+                            </p>
+                        ) : (
+                            <p
+                                className="mt-3 text-xs text-brand-100 font-semibold flex flex-wrap items-center gap-x-3 gap-y-1"
+                                aria-label="Article stats"
+                            >
+                                <span>
+                                    <span aria-hidden="true">👁 </span>
+                                    {liveStats.views.toLocaleString()} view
+                                    {liveStats.views === 1 ? '' : 's'}
+                                </span>
+                                <span className="text-brand-300" aria-hidden="true">
+                                    ·
+                                </span>
+                                <span>
+                                    <span aria-hidden="true">⬇ </span>
+                                    {liveStats.downloads.toLocaleString()} download
+                                    {liveStats.downloads === 1 ? '' : 's'}
+                                </span>
+                            </p>
+                        )}
+
                         {/* Byline */}
                         <div className="mt-6 flex flex-wrap gap-x-3 gap-y-1 text-base">
                             {authors.map((a, i) => (
@@ -615,8 +691,29 @@ const ArticlePage: React.FC = () => {
 
                         {/* Actions */}
                         <div className="mt-8 flex flex-wrap gap-3">
+                            {/* Download PDF — fires trackDownload before the
+                                browser starts fetching the PDF so the counter
+                                still ticks even if the reader immediately
+                                closes the resulting tab. Falls back to the
+                                generated-PDF endpoint when the article has
+                                no explicit ``pdfUrl`` in the CMS payload. */}
                             <a
-                                href={article.pdfUrl ?? '#'}
+                                href={article.pdfUrl ?? `/articles/${article.id}/generated.pdf`}
+                                target={article.pdfUrl ? undefined : '_blank'}
+                                rel={article.pdfUrl ? undefined : 'noopener noreferrer'}
+                                onClick={() => {
+                                    trackDownload(article.id).catch(() => {
+                                        // Silent — never block the download on
+                                        // an analytics failure.
+                                    });
+                                    // Optimistic local bump so the strip
+                                    // updates instantly. The server-side
+                                    // dedup makes this safe against
+                                    // over-counting on a rapid re-click.
+                                    setLiveStats((prev) =>
+                                        prev ? { ...prev, downloads: prev.downloads + 1 } : prev,
+                                    );
+                                }}
                                 className="inline-flex items-center gap-2 px-5 py-3 bg-white text-brand-800 text-sm font-bold rounded-xl hover:bg-gray-100 transition shadow-lg no-underline"
                             >
                                 📥 Download PDF

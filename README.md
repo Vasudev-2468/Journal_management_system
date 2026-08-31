@@ -242,6 +242,7 @@ The frontend is built using React 18 and Tailwind CSS, and it includes the follo
    ```
    uvicorn app.main:app --reload
    ```
+7. For time-triggered maintenance (reviewer 48h reminders, review-link expiry, author-proof nudges) see [`Docs/OPERATIONS.md`](Docs/OPERATIONS.md) — the hourly job runs from [`.github/workflows/scheduled-tasks.yml`](.github/workflows/scheduled-tasks.yml) or any external cron hitting `POST /scheduled-tasks/run`.
 
 ### Frontend
 

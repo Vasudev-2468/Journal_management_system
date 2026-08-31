@@ -40,6 +40,9 @@ import SpecialIssueDetailPage from './pages/SpecialIssueDetailPage';
 import ReviewerLoginPage from './pages/ReviewerLoginPage';
 import ReviewerSetPasswordPage from './pages/ReviewerSetPasswordPage';
 import ReviewerInvitePage from './pages/ReviewerInvitePage';
+import ForgotPasswordPage from './pages/ForgotPasswordPage';
+import ResetPasswordPage from './pages/ResetPasswordPage';
+import RecoveryCodesPage from './pages/RecoveryCodesPage';
 import ReviewerDashboardPage from './pages/ReviewerDashboardPage';
 import AuthorRevisionPage from './pages/AuthorRevisionPage';
 import EditorUsersAdmin from './pages/EditorUsersAdmin';
@@ -156,6 +159,9 @@ const App: React.FC = () => {
                     <Route path="/reviewer-login" element={<ReviewerLoginPage />} />
                     <Route path="/reviewer-set-password" element={<ReviewerSetPasswordPage />} />
                     <Route path="/reviewer-invite/:token" element={<ReviewerInvitePage />} />
+                    <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+                    <Route path="/reset-password" element={<ResetPasswordPage />} />
+                    <Route path="/recovery-codes" element={<RecoveryCodesPage />} />
                     <Route path="/reviewer-dashboard" element={<ReviewerDashboardPage />} />
 
                     {/* Public informational pages — statistics, search, author profile, APC, manuscript prep */}

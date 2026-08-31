@@ -1,0 +1,85 @@
+name: Nightly DB Backup
+
+# Triggers:
+#   - schedule: nightly at 02:00 UTC (off-peak for most authors, before
+#     EU morning).
+#   - workflow_dispatch: manual run from the Actions tab. Useful for
+#     drills or one-off backups before a risky migration.
+#
+# Configuration (repository secrets):
+#   DATABASE_URL       (required) — same connection string the backend
+#                                    uses. If unset the job skips
+#                                    gracefully with a warning so a
+#                                    freshly-forked repo does not fail
+#                                    every night.
+#   BACKUP_S3_BUCKET   (optional) — e.g. s3://jgair-backups/prod/pg.
+#                                    When set, backup_db.sh uploads the
+#                                    dump there. When unset, we upload
+#                                    the dump as a workflow artifact
+#                                    (7-day retention) as a fallback so
+#                                    the backup is not lost.
+#   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_REGION
+#                      (optional) — needed only when BACKUP_S3_BUCKET
+#                                    is set.
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backup:
+    name: backup
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      BACKUP_S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      BACKUP_DIR: ${{ github.workspace }}/backups
+      RETENTION_DAYS: '30'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Guard on DATABASE_URL secret
+        id: guard
+        run: |
+          if [ -z "${DATABASE_URL}" ]; then
+            echo "::warning::DATABASE_URL secret is not set — skipping nightly backup."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install postgresql-client
+        if: steps.guard.outputs.skip == 'false'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client
+
+      - name: Prepare backup directory
+        if: steps.guard.outputs.skip == 'false'
+        run: mkdir -p "${BACKUP_DIR}"
+
+      - name: Run backup_db.sh
+        if: steps.guard.outputs.skip == 'false'
+        run: bash backend/scripts/backup_db.sh
+
+      # Fallback: when BACKUP_S3_BUCKET is not configured we still want the
+      # dump to survive past the runner, so upload it as a workflow
+      # artifact. 7-day retention matches typical incident-response
+      # windows without racking up storage.
+      - name: Upload dump as workflow artifact
+        if: steps.guard.outputs.skip == 'false' && env.BACKUP_S3_BUCKET == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: jgair-backup-${{ github.run_id }}
+          path: ${{ env.BACKUP_DIR }}/jgair_*.dump
+          retention-days: 7
+          if-no-files-found: error

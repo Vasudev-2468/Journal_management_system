@@ -50,6 +50,20 @@ class User(Base):
     totp_secret = Column(String(64))            # base32-encoded shared secret
     totp_enrolled_at = Column(DateTime)         # first successful enrolment
 
+    # Password reset — self-serve forgotten-password flow.
+    # We store the bcrypt hash of the signed JWT so a leaked DB row can't be
+    # replayed as a valid reset link; the expires_at column is a cheap
+    # pre-filter before we spend a bcrypt verify.
+    password_reset_token_hash = Column(String(255), nullable=True)
+    password_reset_expires_at = Column(DateTime, nullable=True)
+
+    # 2FA recovery codes — comma-joined bcrypt hashes of 8 one-time codes.
+    # A consumed code is replaced in-place with the literal string "USED"
+    # so the position count survives for audit but the code cannot be
+    # replayed. Regenerating voids every remaining hash by overwriting.
+    recovery_codes_hashes = Column(String(2048), nullable=True)
+    recovery_codes_generated_at = Column(DateTime, nullable=True)
+
     # Author profile fields
     institution = Column(String(500))
     orcid = Column(String(50))

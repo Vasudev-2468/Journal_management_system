@@ -37,6 +37,10 @@ from app.routers import reviewer_invite as reviewer_invite_router
 from app.routers import editor_badges as editor_badges_router
 from app.routers import authors_notifications as authors_notifications_router
 from app.routers import csp_report as csp_report_router
+from app.routers import password_reset as password_reset_router
+from app.routers import recovery_codes as recovery_codes_router
+from app.routers import scheduled_tasks as scheduled_tasks_router
+from app.routers import article_stats as article_stats_router
 from app.middleware import InMemoryRateLimiter, SecurityHeadersMiddleware
 from app.config import settings
 from app.database import SessionLocal
@@ -218,6 +222,10 @@ app.include_router(reviewer_invite_router.router, prefix="/reviewer-invite", tag
 app.include_router(editor_badges_router.router, prefix="/editor-badges", tags=["editor-badges"])
 app.include_router(authors_notifications_router.router, prefix="/authors-notifications", tags=["authors-notifications"])
 app.include_router(csp_report_router.router, tags=["csp-report"])
+app.include_router(password_reset_router.router, prefix="/password-reset", tags=["password-reset"])
+app.include_router(recovery_codes_router.router, prefix="/recovery-codes", tags=["recovery-codes"])
+app.include_router(scheduled_tasks_router.router, prefix="/scheduled-tasks", tags=["scheduled-tasks"])
+app.include_router(article_stats_router.router, prefix="/article-stats", tags=["article-stats"])
 
 # ── Static files (downloadable templates) ────────────────
 _static_dir = Path(__file__).resolve().parent / "static" / "templates"

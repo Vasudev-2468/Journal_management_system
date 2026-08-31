@@ -231,3 +231,77 @@ Neon's PITR does not replace off-provider dumps: keep the daily
 `pg_dump` job running so a Neon-account compromise or accidental
 project deletion is still recoverable. The two together are what
 "real backups" mean for our deployment.
+
+## Automated backups
+
+The manual pipeline in sections 1-4 is now shipped as three checked-in
+scripts and two automated runners. Operators no longer need to
+hand-roll cron.
+
+### Scripts (`backend/scripts/`)
+
+- `backup_db.sh` — takes one custom-format dump per invocation, writes
+  it to `${BACKUP_DIR:-/backups}/jgair_<UTC-timestamp>.dump`, verifies
+  it with `pg_restore --list`, optionally uploads it to S3, and prunes
+  old local dumps. Respects `DATABASE_URL`, `RETENTION_DAYS`
+  (default 30), and `BACKUP_S3_BUCKET`. Ends with a one-line summary
+  `backup:ok size=<bytes> retention_removed=<N>`.
+- `restore_db.sh <dump-path-or-s3-url> [--yes]` — restores a dump into
+  `DATABASE_URL` with `pg_restore --clean --if-exists --no-owner
+  --no-privileges`. Downloads from S3 when the source is `s3://…`.
+  Warns loudly and requires interactive confirmation; scripted callers
+  pass `--yes`.
+- `test_backup_restore.sh` — end-to-end smoke that dumps
+  `TEST_DATABASE_URL`, restores into a throwaway scratch DB on the
+  same server, asserts `SELECT 1`, and tears the scratch DB down.
+  Skips (exit 0) when `TEST_DATABASE_URL` is unset so it can sit
+  unconditionally in CI.
+
+### GitHub Actions workflow
+
+`.github/workflows/nightly-backup.yml` runs the daily job:
+
+- **Schedule**: `cron: '0 2 * * *'` — 02:00 UTC every day. Also
+  exposes `workflow_dispatch`, so operators can trigger a backup
+  manually from the Actions tab (**Actions -> Nightly DB Backup ->
+  Run workflow**).
+- **Secrets**: `DATABASE_URL` is required. If it is not set on the
+  repo, the job emits a `::warning::` and exits cleanly rather than
+  failing every night.
+- **S3 opt-in**: set `BACKUP_S3_BUCKET` (e.g.
+  `s3://jgair-backups/prod/pg`) plus `AWS_ACCESS_KEY_ID`,
+  `AWS_SECRET_ACCESS_KEY`, and `AWS_REGION` as repo secrets. When set,
+  `backup_db.sh` uploads each dump straight to S3.
+- **Fallback**: when `BACKUP_S3_BUCKET` is unset, the workflow uploads
+  the `.dump` file as a workflow artifact with 7-day retention so the
+  backup is not lost with the runner.
+
+### Docker Compose sidecar
+
+`docker-compose.yml` gains a `backup` service and a `db_backups`
+named volume. The service uses `postgres:15` (which ships pg_dump),
+depends on `db`, mounts `backend/scripts` read-only at `/scripts`, and
+runs:
+
+```sh
+while true; do /scripts/backup_db.sh; sleep 86400; done
+```
+
+That gives self-hosted deployments a daily dump into
+`db_backups:/backups` with no host cron entry. Retention is bounded
+by the `RETENTION_DAYS` env on the service (default 30). To pull a
+dump out of the volume:
+
+```bash
+docker compose cp backup:/backups/jgair_20260901T020000Z.dump ./
+```
+
+### Manual triggers
+
+- **GitHub Actions**: Actions tab -> Nightly DB Backup ->
+  **Run workflow**.
+- **Compose**: `docker compose run --rm backup /scripts/backup_db.sh`
+  produces one dump immediately without waiting for the sleep.
+- **Host / ad-hoc**: `DATABASE_URL=... BACKUP_DIR=./backups
+  bash backend/scripts/backup_db.sh` runs the same pipeline anywhere
+  `pg_dump` is available.

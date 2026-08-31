@@ -1,0 +1,68 @@
+name: Scheduled Tasks
+
+# Triggers:
+#   - schedule: top of every hour. Reviewer 48h reminders, review-link
+#     expiry, and stuck-in-author-proof nudges are all idempotent, so
+#     running hourly is safe and gives a small enough window that a
+#     reminder still lands on time.
+#   - workflow_dispatch: manual run from the Actions tab. Useful for a
+#     one-off nudge or for verifying a fresh SCHEDULED_TASKS_URL secret.
+#
+# Configuration (repository secrets):
+#   SCHEDULED_TASKS_URL     (required) — full URL of the backend endpoint,
+#                                        e.g. https://journal-backend.onrender.com/scheduled-tasks/run
+#                                        If unset, the job warns and exits 0
+#                                        so a freshly-forked repo does not
+#                                        fail every hour.
+#   SCHEDULED_TASKS_SECRET  (required with the URL) — shared secret that
+#                                        matches SCHEDULED_TASKS_SECRET on
+#                                        the backend. Sent as the header
+#                                        X-Scheduled-Tasks-Secret.
+
+on:
+  schedule:
+    - cron: '0 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  run-scheduled-tasks:
+    name: run-scheduled-tasks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Guard on secrets
+        id: guard
+        env:
+          SCHEDULED_TASKS_URL: ${{ secrets.SCHEDULED_TASKS_URL }}
+        run: |
+          if [ -z "${SCHEDULED_TASKS_URL}" ]; then
+            echo "::warning::SCHEDULED_TASKS_URL secret is not set — skipping scheduled tasks."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Trigger scheduled tasks
+        if: steps.guard.outputs.skip == 'false'
+        env:
+          SCHEDULED_TASKS_URL: ${{ secrets.SCHEDULED_TASKS_URL }}
+          SCHEDULED_TASKS_SECRET: ${{ secrets.SCHEDULED_TASKS_SECRET }}
+        run: |
+          set -euo pipefail
+          response_file="$(mktemp)"
+          http_code=$(curl -sS -o "${response_file}" -w '%{http_code}' \
+            -X POST "${SCHEDULED_TASKS_URL}" \
+            -H "X-Scheduled-Tasks-Secret: ${SCHEDULED_TASKS_SECRET}" \
+            -H "Content-Type: application/json" \
+            --max-time 300)
+          echo "HTTP ${http_code}"
+          echo "--- response body ---"
+          cat "${response_file}"
+          echo
+          echo "--- end response ---"
+          if [ "${http_code}" != "200" ]; then
+            echo "::error::scheduled-tasks endpoint returned HTTP ${http_code}"
+            exit 1
+          fi

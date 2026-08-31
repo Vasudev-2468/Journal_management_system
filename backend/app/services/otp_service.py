@@ -41,6 +41,17 @@ def _verify_otp_hash(otp: str, hashed: str) -> bool:
     return bcrypt.checkpw(otp.encode("utf-8"), hashed.encode("utf-8"))
 
 
+def _looks_like_recovery_code(candidate: str) -> bool:
+    """Quick shape check — 12 base32-ish chars, optionally hyphenated.
+    Regular OTPs are 6 digits, so anything longer than 6 or containing
+    non-digit characters is worth trying as a recovery code before we
+    reject the input entirely."""
+    stripped = candidate.strip().replace(" ", "").replace("-", "")
+    if len(stripped) != 12:
+        return False
+    return stripped.isalnum() and not stripped.isdigit()
+
+
 def is_user_locked(user: User) -> bool:
     """Check if user is locked out from too many failed OTP attempts."""
     if user.mfa_locked_until and user.mfa_locked_until > datetime.utcnow():
@@ -117,6 +128,13 @@ def verify_otp(db: Session, user: User, otp_input: str) -> dict:
     """
     Verify the OTP input against the stored hash.
 
+    A recovery code (``xxxx-xxxx-xxxx`` shape — any casing, hyphens
+    optional) is also accepted here so a user who has lost access to
+    their email/WhatsApp channel can still finish the MFA challenge
+    with a backup code. Recovery codes are single-use; on a match the
+    slot is marked ``USED`` via the same helper the dedicated router
+    calls.
+
     Returns:
         dict with success status and error info if failed.
     """
@@ -128,6 +146,24 @@ def verify_otp(db: Session, user: User, otp_input: str) -> dict:
             "error": f"Account locked due to too many failed attempts. Try again in {remaining + 1} minutes.",
             "locked": True,
         }
+
+    # Recovery-code fallback — try this before touching the OTP path so a
+    # user who never asked for an OTP can still spend a backup code. The
+    # helper is defensive and returns False on any garbage; a match here
+    # ends the challenge without incrementing the OTP attempt counter.
+    if otp_input and _looks_like_recovery_code(otp_input):
+        try:
+            from app.routers.recovery_codes import consume_recovery_code
+        except Exception:  # noqa: BLE001 — router optional at import time
+            consume_recovery_code = None  # type: ignore[assignment]
+        if consume_recovery_code is not None and user.recovery_codes_hashes:
+            if consume_recovery_code(db, user, otp_input):
+                user.mfa_otp_hash = None
+                user.mfa_otp_expires_at = None
+                user.mfa_otp_attempts = 0
+                user.mfa_last_verified_at = datetime.utcnow()
+                db.commit()
+                return {"success": True, "recovery_code_used": True}
 
     # Check if OTP exists
     if not user.mfa_otp_hash:

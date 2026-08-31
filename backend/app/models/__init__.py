@@ -22,3 +22,4 @@ from .article_reference import ArticleReference
 from .production_stage import ProductionRecord
 from .plagiarism_check import PlagiarismCheck
 from .submission_message import SubmissionMessage
+from .article_event import ArticleEvent
