@@ -68,9 +68,9 @@ const App: React.FC = () => {
     return (
         <AuthProvider>
             <AnalyticsLoader />
-            <CookieBanner />
             <JournalProvider>
                 <Router>
+                    <CookieBanner />
                     <Routes>
                     <Route path="/" element={<Dashboard />} />
                     <Route path="/journals" element={<JournalPage />} />
