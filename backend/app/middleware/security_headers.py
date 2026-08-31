@@ -20,7 +20,11 @@ _CSP = (
     "img-src 'self' data:; "
     "connect-src 'self'; "
     "frame-ancestors 'none'; "
-    "base-uri 'none'"
+    "base-uri 'none'; "
+    # Browsers POST violation reports here — the endpoint lives in
+    # routers/csp_report.py and lands rows in ``audit_logs`` with
+    # ``action='csp.violation'``.
+    "report-uri /csp-report"
 )
 
 

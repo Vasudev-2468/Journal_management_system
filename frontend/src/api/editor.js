@@ -67,3 +67,10 @@ export const fetchNotificationLog = (params = {}) =>
 
 export const fetchOverdueReviews = () =>
   client.get('/editor-portal/overdue-reviews').then((r) => r.data);
+
+// ── Sidebar badge counts ────────────────────────────────
+// Aggregate endpoint powering the small red-circle counters next to
+// sidebar entries. Polled every 60s from EditorDashboard.
+
+export const fetchEditorBadges = () =>
+  client.get('/editor-badges/counts').then((r) => r.data);

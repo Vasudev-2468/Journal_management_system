@@ -5,6 +5,7 @@ import { getAuthorProfile, getAuthorToken, authorLogout } from '../api/authorAut
 import ReviewerCommentsCard from '../components/authors/ReviewerCommentsCard';
 import DecisionLetterCard from '../components/authors/DecisionLetterCard';
 import SubmissionThread from '../components/authors/SubmissionThread';
+import AuthorNotificationBell from '../components/authors/AuthorNotificationBell';
 
 /* ── Status metadata ─────────────────────────────────── */
 export const STATUS_META = {
@@ -269,6 +270,13 @@ export default function AuthorDashboard() {
             </div>
 
             <div className="flex items-center gap-3">
+              {/* Live author notification bell — polls
+                  /authors-notifications/mine every 60s for editor
+                  messages and recent decisions. Sits alongside the
+                  legacy inline bell below, which stays in place while
+                  the wider dashboard is migrated over. */}
+              <AuthorNotificationBell />
+
               {/* Bell */}
               <div className="relative" ref={notifRef}>
                 <button onClick={() => { setNotifOpen(v => !v); setBellShake(false); }} className="relative p-2 rounded-xl hover:bg-gray-100 transition-colors">

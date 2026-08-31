@@ -10,6 +10,14 @@ export interface SearchItem {
     abstract_excerpt: string;
     author_display: string | null;
     rank: number;
+    /**
+     * Postgres ``ts_headline`` HTML fragment with ``<mark>`` tags
+     * around matched terms. May be an empty string when the endpoint
+     * couldn't produce a snippet (e.g. no abstract). The SearchPage
+     * defensively strips any tag other than ``<mark>``/``</mark>``
+     * before rendering.
+     */
+    highlighted?: string;
 }
 
 /** Envelope returned by GET /search/articles. */
@@ -24,6 +32,17 @@ export interface SearchResponse {
 export interface SearchParams {
     q: string;
     kind?: SearchKind;
+    /**
+     * Optional publication-year filter. Backed server-side by
+     * ``volumes.year`` via the issue join — articles not yet placed
+     * in an issue won't match.
+     */
+    year?: number;
+    /**
+     * Optional classified-field substring. Server-side ILIKE
+     * %category% against the soft-joined submission row.
+     */
+    category?: string;
     page?: number;
     page_size?: number;
 }
@@ -47,13 +66,21 @@ export const searchArticles = async (
             page_size: params.page_size ?? 20,
         };
     }
+    const query: Record<string, string | number> = {
+        q,
+        kind: params.kind ?? 'any',
+        page: params.page ?? 1,
+        page_size: params.page_size ?? 20,
+    };
+    if (params.year !== undefined && params.year !== null && !Number.isNaN(params.year)) {
+        query.year = params.year;
+    }
+    const trimmedCat = (params.category || '').trim();
+    if (trimmedCat) {
+        query.category = trimmedCat;
+    }
     const response = await client.get<SearchResponse>('/search/articles', {
-        params: {
-            q,
-            kind: params.kind ?? 'any',
-            page: params.page ?? 1,
-            page_size: params.page_size ?? 20,
-        },
+        params: query,
     });
     return response.data;
 };

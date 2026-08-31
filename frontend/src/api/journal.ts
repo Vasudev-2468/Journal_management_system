@@ -17,6 +17,15 @@ export interface JournalIdentity {
     licence: string;
     doi_prefix: string | null;
     oai_identifier_prefix: string | null;
+    // ── Contact block (migration h4d8e5f6a2c1) ────────────
+    // Populated via the editor's journal-identity form; consumed by the
+    // public Contact page sidebar and the site footer.
+    phone: string | null;
+    address: string | null;
+    twitter_url: string | null;
+    linkedin_url: string | null;
+    email_editorial: string | null;
+    email_publisher: string | null;
     is_active: boolean;
 }
 

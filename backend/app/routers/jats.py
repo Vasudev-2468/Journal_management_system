@@ -11,6 +11,10 @@ downstream consumer needs and a populated ref-list. It is not a full-body
 representation of the manuscript; body XML is produced by production tooling
 downstream. Every string is escaped through ``xml.sax.saxutils.escape`` so a
 title containing angle brackets or ampersands cannot break the document.
+
+The pure XML assembly lives in :func:`build_jats_xml` so other endpoints
+(e.g. the reader-facing HTML view in ``routers/article_render.py``) can
+render the same shape without duplicating tag decisions.
 """
 
 from typing import Iterable, Optional
@@ -24,6 +28,8 @@ from app.models.article import Article
 from app.models.article_reference import ArticleReference
 
 router = APIRouter()
+
+__all__ = ["router", "build_jats_xml"]
 
 
 def _xml_escape(text: Optional[str]) -> str:
@@ -101,6 +107,55 @@ def _build_ref_list(refs: Iterable[ArticleReference]) -> str:
     return "<ref-list>" + "".join(items) + "</ref-list>"
 
 
+def build_jats_xml(
+    article: Article,
+    references: Iterable[ArticleReference],
+    journal=None,
+) -> str:
+    """Assemble a minimal-but-valid JATS 1.3 document string.
+
+    Kept as a pure function so both the machine-facing XML endpoint and
+    the reader-facing HTML endpoint render from the same tag decisions.
+    ``journal`` is currently unused — the journal identifier is taken
+    from ``article.journal_id`` — but the parameter is accepted so
+    callers that have the eager-loaded row can pass it in and future
+    additions (ISSN, publisher name) can be filled without changing
+    every call site.
+    """
+    _ = journal  # reserved for richer journal-meta once callers pass it in
+
+    title_xml = (
+        f"<title-group><article-title>{_xml_escape(article.title)}"
+        "</article-title></title-group>"
+    )
+    contrib_group = _build_contrib_group(article)
+    abstract_xml = _build_abstract(article)
+    ref_list_xml = _build_ref_list(references)
+
+    front = (
+        "<front>"
+        "<journal-meta>"
+        f"<journal-id journal-id-type=\"publisher\">journal-{article.journal_id or 0}</journal-id>"
+        "</journal-meta>"
+        "<article-meta>"
+        f"<article-id pub-id-type=\"publisher-id\">{article.id}</article-id>"
+        f"{title_xml}"
+        f"{contrib_group}"
+        f"{abstract_xml}"
+        "</article-meta>"
+        "</front>"
+    )
+    back = f"<back>{ref_list_xml}</back>"
+
+    return (
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+        "<article xmlns:xlink=\"http://www.w3.org/1999/xlink\" "
+        "dtd-version=\"1.3\" article-type=\"research-article\">"
+        f"{front}{back}"
+        "</article>"
+    )
+
+
 @router.get(
     "/{article_id}/jats.xml",
     response_class=Response,
@@ -124,31 +179,5 @@ def article_jats_xml(article_id: int, db: Session = Depends(get_db)) -> Response
         .all()
     )
 
-    title_xml = f"<title-group><article-title>{_xml_escape(article.title)}</article-title></title-group>"
-    contrib_group = _build_contrib_group(article)
-    abstract_xml = _build_abstract(article)
-    ref_list_xml = _build_ref_list(refs)
-
-    front = (
-        "<front>"
-        "<journal-meta>"
-        f"<journal-id journal-id-type=\"publisher\">journal-{article.journal_id or 0}</journal-id>"
-        "</journal-meta>"
-        "<article-meta>"
-        f"<article-id pub-id-type=\"publisher-id\">{article.id}</article-id>"
-        f"{title_xml}"
-        f"{contrib_group}"
-        f"{abstract_xml}"
-        "</article-meta>"
-        "</front>"
-    )
-    back = f"<back>{ref_list_xml}</back>"
-
-    xml = (
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
-        "<article xmlns:xlink=\"http://www.w3.org/1999/xlink\" "
-        "dtd-version=\"1.3\" article-type=\"research-article\">"
-        f"{front}{back}"
-        "</article>"
-    )
+    xml = build_jats_xml(article, refs, journal=getattr(article, "journal", None))
     return Response(content=xml, media_type="application/xml")

@@ -34,6 +34,9 @@ from app.routers import article_pdf as article_pdf_router
 from app.routers import feeds as feeds_router
 from app.routers import kbart as kbart_router
 from app.routers import reviewer_invite as reviewer_invite_router
+from app.routers import editor_badges as editor_badges_router
+from app.routers import authors_notifications as authors_notifications_router
+from app.routers import csp_report as csp_report_router
 from app.middleware import InMemoryRateLimiter, SecurityHeadersMiddleware
 from app.config import settings
 from app.database import SessionLocal
@@ -212,6 +215,9 @@ app.include_router(article_pdf_router.router, prefix="/articles", tags=["article
 app.include_router(feeds_router.router, tags=["feeds"])
 app.include_router(kbart_router.router, tags=["kbart"])
 app.include_router(reviewer_invite_router.router, prefix="/reviewer-invite", tags=["reviewer-invite"])
+app.include_router(editor_badges_router.router, prefix="/editor-badges", tags=["editor-badges"])
+app.include_router(authors_notifications_router.router, prefix="/authors-notifications", tags=["authors-notifications"])
+app.include_router(csp_report_router.router, tags=["csp-report"])
 
 # ── Static files (downloadable templates) ────────────────
 _static_dir = Path(__file__).resolve().parent / "static" / "templates"

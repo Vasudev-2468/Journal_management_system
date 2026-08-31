@@ -8,8 +8,9 @@ whatever a downstream tool ingests is what a reader sees.
 The pipeline is deliberately linear:
 
 1.  Load the article and its references from the database.
-2.  Assemble a minimal JATS 1.3 fragment inline, using the same shape as
-    ``routers/jats.py`` so the two views cannot drift.
+2.  Delegate to :func:`routers.jats.build_jats_xml` so the two views
+    share a single JATS-shape source of truth (the tag decisions live
+    once, in ``routers/jats.py``).
 3.  Feed that XML through ``services.jats_renderer.render_jats_to_html``,
     which returns a safe HTML5 fragment.
 4.  Wrap it in a full HTML page shell — ``<!doctype html>``, viewport,
@@ -17,16 +18,15 @@ The pipeline is deliberately linear:
     ``text/html; charset=utf-8`` media type.
 
 Everything user-supplied is escaped through ``xml.sax.saxutils.escape``
-when it enters the JATS fragment, and again through ``html.escape`` when
-the renderer converts that fragment to HTML. No inline JavaScript is
-emitted, so a hostile title cannot smuggle a script into the reader page.
+when it enters the JATS fragment (inside ``build_jats_xml``), and again
+through ``html.escape`` when the renderer converts that fragment to
+HTML. No inline JavaScript is emitted, so a hostile title cannot smuggle
+a script into the reader page.
 """
 
 from __future__ import annotations
 
 import html
-from typing import Iterable, Optional
-from xml.sax.saxutils import escape as xml_escape
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session, joinedload
@@ -35,83 +35,10 @@ from app.config import settings
 from app.database import get_db
 from app.models.article import Article
 from app.models.article_reference import ArticleReference
+from app.routers.jats import build_jats_xml
 from app.services.jats_renderer import render_jats_to_html
 
 router = APIRouter()
-
-
-# ── Minimal JATS assembly ────────────────────────────────────────────
-# Intentionally not imported from ``routers/jats.py`` so this endpoint
-# stays live if that module is ever refactored. The shape mirrors what
-# ``jats.py`` emits — same tag names, same attribute set — because the
-# renderer keys off those tags.
-
-
-def _xml(text: Optional[str]) -> str:
-    return xml_escape(text or "")
-
-
-def _author_display_parts(article: Article) -> tuple[str, str]:
-    """Best-effort (given, surname) split for the article's author row.
-
-    Mirrors ``routers.jats._author_names`` so the two front-matter views
-    show identical bylines.
-    """
-    author = getattr(article, "author", None)
-    if author is None:
-        return "", ""
-    surname = (getattr(author, "last_name", None) or "").strip()
-    given = (getattr(author, "first_name", None) or "").strip()
-    if surname or given:
-        return given, surname
-    display = (getattr(author, "full_name", None) or "").strip()
-    if display:
-        head, _, tail = display.rpartition(" ")
-        if head:
-            return head, tail
-        return "", display
-    return "", (getattr(author, "username", None) or "").strip()
-
-
-def _build_jats(article: Article, refs: Iterable[ArticleReference]) -> str:
-    given, surname = _author_display_parts(article)
-    contrib = ""
-    if surname or given:
-        contrib = (
-            "<contrib-group>"
-            '<contrib contrib-type="author">'
-            "<name>"
-            f"<surname>{_xml(surname)}</surname>"
-            f"<given-names>{_xml(given)}</given-names>"
-            "</name>"
-            "</contrib>"
-            "</contrib-group>"
-        )
-
-    abstract_xml = ""
-    if article.abstract:
-        abstract_xml = f"<abstract><p>{_xml(article.abstract)}</p></abstract>"
-
-    ref_items: list[str] = []
-    for r in refs:
-        ref_items.append(
-            f'<ref id="ref-{r.sequence or r.id}">'
-            f"<mixed-citation>{_xml(r.text)}</mixed-citation>"
-            "</ref>"
-        )
-    ref_list = "<ref-list>" + "".join(ref_items) + "</ref-list>" if ref_items else "<ref-list/>"
-
-    return (
-        '<?xml version="1.0" encoding="UTF-8"?>'
-        '<article dtd-version="1.3" article-type="research-article">'
-        "<front><article-meta>"
-        f"<title-group><article-title>{_xml(article.title)}</article-title></title-group>"
-        f"{contrib}"
-        f"{abstract_xml}"
-        "</article-meta></front>"
-        f"<back>{ref_list}</back>"
-        "</article>"
-    )
 
 
 # ── Page shell ───────────────────────────────────────────────────────
@@ -193,7 +120,7 @@ def article_html(article_id: int, db: Session = Depends(get_db)) -> Response:
         .all()
     )
 
-    jats_xml = _build_jats(article, refs)
+    jats_xml = build_jats_xml(article, refs, journal=getattr(article, "journal", None))
     fragment = render_jats_to_html(jats_xml)
 
     canonical = f"{settings.FRONTEND_URL.rstrip('/')}/articles/{article.id}"

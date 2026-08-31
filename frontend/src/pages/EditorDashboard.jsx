@@ -16,6 +16,7 @@ import {
   fetchReviewers,
   fetchOverdueReviews,
   requestAdditionalReview,
+  fetchEditorBadges,
 } from '../api/editor';
 import { useJournal } from '../context/JournalContext';
 import NotificationBell from '../components/editor/NotificationBell';
@@ -113,28 +114,42 @@ const SkeletonRows = ({ rows = 5 }) => (
    Main Dashboard
    ═══════════════════════════════════════════════════════════ */
 
+// `countKey` names a field on the /editor-badges/counts payload; the sidebar
+// looks that key up on every render and renders a small red circle when the
+// value is > 0. Entries without a `countKey` never show a badge.
 const SIDEBAR_ITEMS = [
   { key: 'overview', label: 'Overview', icon: '📊' },
-  { key: 'pending', label: 'Pending Actions', icon: '⏳', badge: true },
+  { key: 'pending', label: 'Pending Actions', icon: '⏳', badge: true, countKey: 'pending_actions' },
   { key: 'submissions', label: 'All Submissions', icon: '📄' },
   { key: 'reviewers', label: 'Reviewers', icon: '👥' },
-  { key: 'notifications', label: 'Notifications Log', icon: '🔔' },
+  { key: 'notifications', label: 'Notifications Log', icon: '🔔', countKey: 'notifications_unread' },
   { key: 'analytics', label: 'Analytics', icon: '📈' },
 ];
 
 const SIDEBAR_LINKS = [
-  { to: '/editor/production', label: 'Production Queue', icon: '⚙️' },
+  { to: '/editor/production', label: 'Production Queue', icon: '⚙️', countKey: 'production_queue' },
   { to: '/editor/issues', label: 'Volumes & Issues', icon: '📚' },
   { to: '/editor/special-issues', label: 'Special Issues', icon: '✨' },
   { to: '/editor/editorial-board', label: 'Editorial Board', icon: '🧑‍🎓' },
   { to: '/editor/announcements', label: 'Announcements', icon: '📣' },
   { to: '/editor/policies', label: 'Policy Pages', icon: '📜' },
-  { to: '/editor/contact-inbox', label: 'Contact Inbox', icon: '📬' },
+  { to: '/editor/contact-inbox', label: 'Contact Inbox', icon: '📬', countKey: 'contact_inbox_unread' },
   { to: '/editor/journal-identity', label: 'Journal Identity', icon: '🏛️' },
   { to: '/editor/email-templates', label: 'Email Templates', icon: '✉️' },
   { to: '/editor/users', label: 'User Management', icon: '👤' },
   { to: '/editor/audit-log', label: 'Audit Log', icon: '📋' },
 ];
+
+// Small red-circle counter used next to any sidebar entry with a matching
+// `countKey`. Hidden when the count is falsy so idle rows stay clean.
+const CountBadge = ({ count }) => {
+  if (!count) return null;
+  return (
+    <span className="bg-red-500 text-white text-xs font-bold rounded-full px-2 py-0.5 min-w-[1.25rem] text-center">
+      {count > 99 ? '99+' : count}
+    </span>
+  );
+};
 
 export default function EditorDashboard() {
   const [activePanel, setActivePanel] = useState('overview');
@@ -146,6 +161,9 @@ export default function EditorDashboard() {
   // accurate even before the submissions payload has arrived.
   const [overdueIds, setOverdueIds] = useState([]);
   const [overdueCount, setOverdueCount] = useState(0);
+  // Sidebar badge counts — polled from /editor-badges/counts. Missing keys
+  // are treated as zero, so a partial payload never crashes the render.
+  const [badgeCounts, setBadgeCounts] = useState({});
 
   // ── Data fetching ───────────────────────────────────────
 
@@ -172,10 +190,28 @@ export default function EditorDashboard() {
     }
   }, []);
 
+  const loadBadgeCounts = useCallback(async () => {
+    try {
+      const data = await fetchEditorBadges();
+      setBadgeCounts(data && typeof data === 'object' ? data : {});
+    } catch (e) {
+      // Non-fatal — a hiccup just leaves the previous counts on screen.
+      console.error('Failed to load editor badge counts', e);
+    }
+  }, []);
+
   useEffect(() => {
     loadSubmissions();
     loadOverdue();
   }, [loadSubmissions, loadOverdue]);
+
+  // Poll badge counts every 60s. Ticks pause while the tab is hidden — the
+  // browser throttles setInterval on background tabs and that's fine here.
+  useEffect(() => {
+    loadBadgeCounts();
+    const id = setInterval(loadBadgeCounts, 60000);
+    return () => clearInterval(id);
+  }, [loadBadgeCounts]);
 
   // Derived data
   const pendingClassification = submissions.filter(
@@ -210,25 +246,32 @@ export default function EditorDashboard() {
           <NotificationBell />
         </div>
         <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
-          {SIDEBAR_ITEMS.map((item) => (
-            <button
-              key={item.key}
-              onClick={() => setActivePanel(item.key)}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-                activePanel === item.key
-                  ? 'bg-blue-50 text-blue-700'
-                  : 'text-gray-600 hover:bg-gray-100'
-              }`}
-            >
-              <span>{item.icon}</span>
-              <span className="flex-1 text-left">{item.label}</span>
-              {item.badge && pendingCount > 0 && (
-                <span className="bg-red-500 text-white text-xs font-bold rounded-full px-2 py-0.5">
-                  {pendingCount}
-                </span>
-              )}
-            </button>
-          ))}
+          {SIDEBAR_ITEMS.map((item) => {
+            // Sidebar entries with a `countKey` show the polled backend count.
+            // The legacy pending badge falls back to the locally-computed
+            // pendingCount when the /editor-badges/counts response is not in
+            // yet, so first render still shows the number the user sees below.
+            const polledCount = item.countKey ? badgeCounts[item.countKey] : 0;
+            const shownCount =
+              item.countKey === 'pending_actions'
+                ? polledCount ?? pendingCount
+                : polledCount;
+            return (
+              <button
+                key={item.key}
+                onClick={() => setActivePanel(item.key)}
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+                  activePanel === item.key
+                    ? 'bg-blue-50 text-blue-700'
+                    : 'text-gray-600 hover:bg-gray-100'
+                }`}
+              >
+                <span>{item.icon}</span>
+                <span className="flex-1 text-left">{item.label}</span>
+                <CountBadge count={shownCount} />
+              </button>
+            );
+          })}
           <div className="pt-3 mt-3 border-t border-gray-100">
             <p className="px-3 pb-2 text-[10px] font-bold uppercase tracking-wider text-gray-400">
               Journal admin
@@ -241,6 +284,9 @@ export default function EditorDashboard() {
               >
                 <span>{item.icon}</span>
                 <span className="flex-1 text-left">{item.label}</span>
+                {item.countKey && (
+                  <CountBadge count={badgeCounts[item.countKey]} />
+                )}
               </Link>
             ))}
           </div>

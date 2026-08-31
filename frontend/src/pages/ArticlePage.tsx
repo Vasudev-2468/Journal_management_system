@@ -19,6 +19,7 @@ import {
     fetchCitedBy,
     CitedByResponse,
 } from '../api/platform';
+import { getAIRecommendations, RelatedArticle } from '../api/ai';
 
 /* ══════════════════════════════════════════════════════
  *   Helpers
@@ -365,6 +366,10 @@ const ArticlePage: React.FC = () => {
     const [linkCopied, setLinkCopied] = useState(false);
     const [citedBy, setCitedBy] = useState<CitedByResponse | null>(null);
     const [citedByLoading, setCitedByLoading] = useState(false);
+    // AI-recommended related articles. Powered by /ai/recommendations/{id}.
+    // Errors and empty payloads collapse to a silent no-op — the reader
+    // never sees a broken widget for a page that otherwise renders fine.
+    const [aiRelated, setAiRelated] = useState<RelatedArticle[]>([]);
 
     useEffect(() => {
         if (!Number.isFinite(numericId)) return;
@@ -377,6 +382,25 @@ const ArticlePage: React.FC = () => {
                 // Silent — a missing backend reference set just leaves the
                 // section empty (or falls back to the mock refs above).
                 if (!cancelled) setFetchedRefs([]);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [numericId]);
+
+    useEffect(() => {
+        if (!Number.isFinite(numericId)) return;
+        let cancelled = false;
+        getAIRecommendations(numericId)
+            .then((data) => {
+                if (cancelled) return;
+                const rows = Array.isArray(data?.related) ? data.related : [];
+                setAiRelated(rows.slice(0, 5));
+            })
+            .catch(() => {
+                // Silent — a missing AI backend or an unindexed article
+                // just collapses the section to nothing.
+                if (!cancelled) setAiRelated([]);
             });
         return () => {
             cancelled = true;
@@ -778,6 +802,47 @@ const ArticlePage: React.FC = () => {
                                         </li>
                                     ))}
                                 </ol>
+                            </section>
+                        )}
+
+                        {/* Related articles — from the AI recommender.
+                            Rendered inline after References so a reader who
+                            finished the piece has the next-hop suggestions
+                            in context. On an error or empty payload the
+                            block collapses entirely (no error surface). */}
+                        {aiRelated.length > 0 && (
+                            <section className="mt-12" aria-labelledby="ai-related">
+                                <h2
+                                    id="ai-related"
+                                    className="text-xl font-extrabold text-gray-900 tracking-tight border-b border-gray-100 pb-2"
+                                >
+                                    Related Articles
+                                </h2>
+                                <ul className="mt-4 grid gap-3 sm:grid-cols-2">
+                                    {aiRelated.map((r) => {
+                                        const pct = Math.round(
+                                            Math.max(0, Math.min(1, r.similarity || 0)) * 100,
+                                        );
+                                        return (
+                                            <li key={r.article_id}>
+                                                <Link
+                                                    to={`/articles/${r.article_id}`}
+                                                    className="flex items-start justify-between gap-3 rounded-xl border border-gray-100 bg-white p-4 hover:border-brand-200 hover:shadow-sm transition no-underline group"
+                                                >
+                                                    <span className="text-sm font-semibold text-gray-900 leading-snug group-hover:text-brand-700 transition min-w-0">
+                                                        {r.title}
+                                                    </span>
+                                                    <span
+                                                        className="flex-shrink-0 inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-brand-50 text-brand-700 border border-brand-100"
+                                                        title="Similarity score"
+                                                    >
+                                                        {pct}%
+                                                    </span>
+                                                </Link>
+                                            </li>
+                                        );
+                                    })}
+                                </ul>
                             </section>
                         )}
 
