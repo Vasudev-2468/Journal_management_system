@@ -13,6 +13,23 @@ class Article(Base):
     author_id = Column(Integer, ForeignKey('users.id'))
     journal_id = Column(Integer, ForeignKey('journals.id'))
 
+    # Preprint linkage. When an author has posted the manuscript to a
+    # preprint server (arXiv / bioRxiv / OSF / ChemRxiv / …) we surface a
+    # "Preprint" badge on the article page so readers can jump straight to
+    # the open-access version.
+    #
+    # ``preprint_doi`` is the canonical identifier — anything registered
+    # with a DOI resolves through https://doi.org/{preprint_doi}, which is
+    # what the badge links to by default. ``preprint_url`` is an optional
+    # override for preprints that do not (yet) have a DOI, or when the
+    # author wants a specific landing URL (e.g. an OSF project view).
+    #
+    # Both are nullable — the vast majority of legacy rows will not have
+    # them, and the article page collapses the badge cleanly when neither
+    # is set.
+    preprint_doi = Column(String(200), nullable=True)
+    preprint_url = Column(String(500), nullable=True)
+
     # Postgres full-text search vector. Kept fresh at write time by the
     # database itself (see migration j6f0a8b9c4e3): the column is
     # ``GENERATED ALWAYS AS`` a ``to_tsvector('english', …)`` over

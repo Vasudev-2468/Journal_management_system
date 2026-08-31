@@ -1,0 +1,111 @@
+/*
+ * print.css — Print-friendly stylesheet for the reader-facing pages
+ * (public ArticlePage and `/articles/{id}/html`).
+ *
+ * Everything is scoped to `@media print` so that screen rendering
+ * is completely unaffected. The goal is a clean, journal-style
+ * paper: black-on-white body, comfortable serif type, hidden site
+ * chrome, and considerate page-break behavior.
+ */
+
+@media print {
+    /* ---- Hide app chrome ---------------------------------------------- */
+    header,
+    footer,
+    nav,
+    [data-no-print],
+    button,
+    .no-print {
+        display: none !important;
+    }
+
+    /* ---- Page + body -------------------------------------------------- */
+    @page {
+        margin: 20mm;
+    }
+
+    html,
+    body {
+        background: #ffffff !important;
+        color: #000000 !important;
+    }
+
+    body {
+        font-family: 'Merriweather', Georgia, 'Times New Roman', serif;
+        font-size: 12pt;
+        line-height: 1.55;
+    }
+
+    /* ---- Article container ------------------------------------------- */
+    article {
+        max-width: 720px;
+        margin: 0 auto;
+        color: #000000;
+        background: #ffffff;
+    }
+
+    article p,
+    article li,
+    article blockquote {
+        color: #000000;
+        orphans: 3;
+        widows: 3;
+    }
+
+    /* Show link URLs after anchor text — but only inside article body.
+       The 0.8em / muted colour keeps them from overpowering the copy. */
+    article a::after {
+        content: " (" attr(href) ")";
+        font-size: 0.8em;
+        color: #555;
+    }
+
+    /* Don't append the URL for in-page anchors or `javascript:` links. */
+    article a[href^="#"]::after,
+    article a[href^="javascript:"]::after,
+    article a[href=""]::after,
+    article a:not([href])::after {
+        content: "";
+    }
+
+    /* ---- References -------------------------------------------------- */
+    article .references,
+    article ol.references,
+    article section.references {
+        margin-top: 2em;
+        padding-left: 2em;
+        font-size: 10pt;
+    }
+
+    article .references ol,
+    article ol.references {
+        list-style: decimal outside;
+        padding-left: 1.5em;
+    }
+
+    article .references li,
+    article ol.references > li {
+        margin-bottom: 0.5em;
+        padding-left: 0.25em;
+        text-indent: 0;
+    }
+
+    /* ---- Page-break control ------------------------------------------ */
+    h1,
+    h2,
+    h3 {
+        page-break-after: avoid;
+    }
+
+    figure,
+    table,
+    pre,
+    blockquote {
+        page-break-inside: avoid;
+    }
+
+    img {
+        max-width: 100% !important;
+        height: auto !important;
+    }
+}

@@ -41,6 +41,12 @@ from app.routers import password_reset as password_reset_router
 from app.routers import recovery_codes as recovery_codes_router
 from app.routers import scheduled_tasks as scheduled_tasks_router
 from app.routers import article_stats as article_stats_router
+from app.routers import sessions as sessions_router
+from app.routers import gdpr as gdpr_router
+from app.routers import bulk_ops as bulk_ops_router
+from app.routers import csv_export as csv_export_router
+from app.routers import reference_import as reference_import_router
+from app.routers import submission_timeline as submission_timeline_router
 from app.middleware import InMemoryRateLimiter, SecurityHeadersMiddleware
 from app.config import settings
 from app.database import SessionLocal
@@ -226,6 +232,12 @@ app.include_router(password_reset_router.router, prefix="/password-reset", tags=
 app.include_router(recovery_codes_router.router, prefix="/recovery-codes", tags=["recovery-codes"])
 app.include_router(scheduled_tasks_router.router, prefix="/scheduled-tasks", tags=["scheduled-tasks"])
 app.include_router(article_stats_router.router, prefix="/article-stats", tags=["article-stats"])
+app.include_router(sessions_router.router, prefix="/sessions", tags=["sessions"])
+app.include_router(gdpr_router.router, prefix="/gdpr", tags=["gdpr"])
+app.include_router(bulk_ops_router.router, prefix="/bulk-ops", tags=["bulk-ops"])
+app.include_router(csv_export_router.router, prefix="/csv-export", tags=["csv-export"])
+app.include_router(reference_import_router.router, prefix="/reference-import", tags=["reference-import"])
+app.include_router(submission_timeline_router.router, prefix="/submission-timeline", tags=["submission-timeline"])
 
 # ── Static files (downloadable templates) ────────────────
 _static_dir = Path(__file__).resolve().parent / "static" / "templates"

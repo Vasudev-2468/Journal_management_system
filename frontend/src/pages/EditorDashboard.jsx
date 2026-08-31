@@ -17,9 +17,40 @@ import {
   fetchOverdueReviews,
   requestAdditionalReview,
   fetchEditorBadges,
+  bulkUpdateSubmissions,
+  exportCsv,
 } from '../api/editor';
 import { useJournal } from '../context/JournalContext';
 import NotificationBell from '../components/editor/NotificationBell';
+
+// Canonical, human-readable labels for the structured reject-reason codes
+// the backend accepts. Kept next to the top-level imports so both the
+// decision dropdown and any future analytics view render the same
+// user-facing strings from a single source of truth.
+const REJECT_REASON_OPTIONS = [
+  { code: 'out_of_scope', label: 'Out of scope' },
+  { code: 'insufficient_novelty', label: 'Insufficient novelty' },
+  { code: 'methodology_flawed', label: 'Methodology flawed' },
+  { code: 'inconclusive_results', label: 'Inconclusive results' },
+  { code: 'poor_writing', label: 'Poor writing' },
+  { code: 'ethics_concern', label: 'Ethics concern' },
+  { code: 'plagiarism_suspected', label: 'Plagiarism suspected' },
+  { code: 'duplicate_submission', label: 'Duplicate submission' },
+];
+
+// Statuses an editor can bulk-apply via the SubmissionsPanel floating bar.
+// Kept short on purpose — bulk state changes are for triage, not decisions.
+const BULK_STATUS_OPTIONS = [
+  '',
+  'pending_classification',
+  'awaiting_format_check',
+  'pending_assignment',
+  'under_review',
+  'revision_requested',
+  'returned_to_author',
+  'accepted',
+  'rejected',
+];
 
 // JG-101 — dismissible banner shown to editors while the journal has not yet
 // been ISSN-registered. Public site omits the ISSN line entirely in that state;
@@ -639,6 +670,14 @@ function SubmissionsPanel({
   const [search, setSearch] = useState('');
   const [overdueOnly, setOverdueOnly] = useState(false);
 
+  // ── Bulk selection state ────────────────────────────
+  // A Set of submission ids the editor has checked in the table. The
+  // floating action bar appears while at least one row is selected.
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const [bulkStatus, setBulkStatus] = useState('');
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkError, setBulkError] = useState(null);
+
   // O(1) lookup against the overdue set the backend returned.
   const overdueSet = React.useMemo(() => new Set(overdueIds || []), [overdueIds]);
 
@@ -659,6 +698,66 @@ function SubmissionsPanel({
 
   const allStatuses = [...new Set(submissions.map((s) => s.status))].sort();
   const allFields = [...new Set(submissions.map((s) => s.classified_field).filter(Boolean))].sort();
+
+  // ── Bulk selection helpers ─────────────────────────
+  const toggleRow = (id) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const filteredIds = filtered.map((s) => s.id);
+  const allFilteredSelected =
+    filteredIds.length > 0 && filteredIds.every((id) => selectedIds.has(id));
+
+  const toggleAllFiltered = () => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (allFilteredSelected) {
+        filteredIds.forEach((id) => next.delete(id));
+      } else {
+        filteredIds.forEach((id) => next.add(id));
+      }
+      return next;
+    });
+  };
+
+  const clearSelection = () => setSelectedIds(new Set());
+
+  const applyBulkStatus = async () => {
+    if (!bulkStatus || selectedIds.size === 0) return;
+    setBulkBusy(true);
+    setBulkError(null);
+    try {
+      await bulkUpdateSubmissions(Array.from(selectedIds), { status: bulkStatus });
+      clearSelection();
+      setBulkStatus('');
+      onRefresh?.();
+    } catch (e) {
+      setBulkError(
+        e?.response?.data?.detail || e?.message || 'Bulk update failed.',
+      );
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const doExportCsv = async () => {
+    setBulkBusy(true);
+    setBulkError(null);
+    try {
+      await exportCsv('submissions');
+    } catch (e) {
+      setBulkError(
+        e?.response?.data?.detail || e?.message || 'CSV export failed.',
+      );
+    } finally {
+      setBulkBusy(false);
+    }
+  };
 
   return (
     <div>
@@ -713,10 +812,19 @@ function SubmissionsPanel({
       </div>
 
       {/* Table */}
-      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden relative">
         <table className="w-full text-sm">
           <thead>
             <tr className="bg-gray-50 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">
+              <th className="px-4 py-3 w-10">
+                <input
+                  type="checkbox"
+                  aria-label="Select all filtered submissions"
+                  checked={allFilteredSelected}
+                  onChange={toggleAllFiltered}
+                  className="rounded border-gray-300 text-blue-600"
+                />
+              </th>
               <th className="px-4 py-3">Title</th>
               <th className="px-4 py-3">Author</th>
               <th className="px-4 py-3">Status</th>
@@ -729,7 +837,7 @@ function SubmissionsPanel({
             {loading ? (
               Array.from({ length: 6 }).map((_, i) => (
                 <tr key={i}>
-                  {Array.from({ length: 6 }).map((_, j) => (
+                  {Array.from({ length: 7 }).map((_, j) => (
                     <td key={j} className="px-4 py-3">
                       <Skeleton className="h-5 w-full" />
                     </td>
@@ -738,7 +846,7 @@ function SubmissionsPanel({
               ))
             ) : filtered.length === 0 ? (
               <tr>
-                <td colSpan={6} className="px-4 py-12 text-center text-gray-400">
+                <td colSpan={7} className="px-4 py-12 text-center text-gray-400">
                   No submissions match your filters.
                 </td>
               </tr>
@@ -747,8 +855,22 @@ function SubmissionsPanel({
                 <tr
                   key={s.id}
                   onClick={() => onOpenDrawer(s)}
-                  className="hover:bg-blue-50 cursor-pointer transition-colors"
+                  className={`hover:bg-blue-50 cursor-pointer transition-colors ${
+                    selectedIds.has(s.id) ? 'bg-blue-50/60' : ''
+                  }`}
                 >
+                  <td
+                    className="px-4 py-3"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <input
+                      type="checkbox"
+                      aria-label={`Select ${s.paper_title}`}
+                      checked={selectedIds.has(s.id)}
+                      onChange={() => toggleRow(s.id)}
+                      className="rounded border-gray-300 text-blue-600"
+                    />
+                  </td>
                   <td className="px-4 py-3 font-medium text-gray-900 max-w-xs truncate">
                     {s.paper_title}
                   </td>
@@ -769,6 +891,71 @@ function SubmissionsPanel({
           </tbody>
         </table>
       </div>
+
+      {/*
+        Floating action bar — appears while at least one row is checked.
+        Sticky-bottom position keeps it in view as the editor scrolls a
+        long submissions table. Non-fixed layout so it doesn't overlap
+        the sidebar or other panels.
+      */}
+      {selectedIds.size > 0 && (
+        <div
+          role="toolbar"
+          aria-label="Bulk actions"
+          className="sticky bottom-4 mt-4 flex flex-wrap items-center gap-3 rounded-xl border border-blue-200 bg-white shadow-lg px-4 py-3"
+        >
+          <span className="text-sm font-semibold text-gray-800">
+            {selectedIds.size} selected
+          </span>
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-gray-500" htmlFor="bulk-status-select">
+              Bulk update status
+            </label>
+            <select
+              id="bulk-status-select"
+              value={bulkStatus}
+              onChange={(e) => setBulkStatus(e.target.value)}
+              disabled={bulkBusy}
+              className="px-2 py-1.5 border border-gray-300 rounded text-sm bg-white"
+            >
+              {BULK_STATUS_OPTIONS.map((s) => (
+                <option key={s || 'empty'} value={s}>
+                  {s ? s.replace(/_/g, ' ') : '— pick a status —'}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={applyBulkStatus}
+              disabled={!bulkStatus || bulkBusy}
+              className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded disabled:opacity-50"
+            >
+              {bulkBusy ? '…' : 'Apply'}
+            </button>
+          </div>
+          <button
+            type="button"
+            onClick={doExportCsv}
+            disabled={bulkBusy}
+            className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded disabled:opacity-50"
+          >
+            Export CSV
+          </button>
+          <button
+            type="button"
+            onClick={clearSelection}
+            disabled={bulkBusy}
+            className="px-3 py-1.5 border border-gray-200 text-gray-700 hover:bg-gray-50 text-xs font-semibold rounded disabled:opacity-50"
+          >
+            Clear selection
+          </button>
+          {bulkError && (
+            <span role="alert" className="text-xs text-red-600 ml-2">
+              {bulkError}
+            </span>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -784,6 +971,10 @@ function SubmissionDrawer({ submission, onClose, onRefresh }) {
   const [loadingSuggestions, setLoadingSuggestions] = useState(true);
   const [decisionComments, setDecisionComments] = useState('');
   const [decidingAs, setDecidingAs] = useState(null);
+  // Which decision the editor has queued up for submission. Drives whether
+  // the "Reason (optional)" dropdown is shown (only for `rejected`).
+  const [pendingDecision, setPendingDecision] = useState(null);
+  const [rejectReasonCode, setRejectReasonCode] = useState('');
   const [assigning, setAssigning] = useState(false);
   const [requestingAdditional, setRequestingAdditional] = useState(false);
   // Simple inline toast — a lightweight banner within the drawer so the
@@ -835,7 +1026,14 @@ function SubmissionDrawer({ submission, onClose, onRefresh }) {
   const handleDecision = async (decision) => {
     setDecidingAs(decision);
     try {
-      await submitDecision(submission.id, { decision, editor_comments: decisionComments });
+      const payload = { decision, editor_comments: decisionComments };
+      // Only ship the structured reason when the editor picked one AND
+      // the outgoing decision is `rejected` — anything else the backend
+      // ignores, but we drop it here too to keep payloads honest.
+      if (decision === 'rejected' && rejectReasonCode) {
+        payload.reject_reason_code = rejectReasonCode;
+      }
+      await submitDecision(submission.id, payload);
       onRefresh();
       onClose();
     } catch (e) {
@@ -843,6 +1041,18 @@ function SubmissionDrawer({ submission, onClose, onRefresh }) {
     } finally {
       setDecidingAs(null);
     }
+  };
+
+  const handleDecisionClick = (decision) => {
+    // Clicking a decision immediately submits — except for `rejected`,
+    // where we first give the editor a chance to pick a reason from the
+    // canonical list. A second click on the same button confirms.
+    if (decision === 'rejected' && pendingDecision !== 'rejected') {
+      setPendingDecision('rejected');
+      return;
+    }
+    setPendingDecision(decision);
+    handleDecision(decision);
   };
 
   const handleRequestAdditionalReview = async () => {
@@ -1036,14 +1246,52 @@ function SubmissionDrawer({ submission, onClose, onRefresh }) {
               ].map((d) => (
                 <button
                   key={d.label}
-                  onClick={() => handleDecision(d.key)}
+                  onClick={() => handleDecisionClick(d.key)}
                   disabled={decidingAs !== null}
                   className={`py-2.5 text-white font-semibold rounded-lg text-sm ${d.color} disabled:opacity-50`}
                 >
-                  {decidingAs === d.key ? '…' : d.label}
+                  {decidingAs === d.key
+                    ? '…'
+                    : d.key === 'rejected' && pendingDecision === 'rejected'
+                    ? 'Confirm Reject'
+                    : d.label}
                 </button>
               ))}
             </div>
+
+            {/*
+              Structured reject-reason picker — only visible after the
+              editor stages a `rejected` decision. Optional field: the
+              backend ignores it for anything but a reject, and empty is
+              accepted here too. Click Reject again to confirm.
+            */}
+            {pendingDecision === 'rejected' && (
+              <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3">
+                <label
+                  htmlFor="reject-reason-select"
+                  className="block text-xs font-semibold text-red-800 uppercase tracking-wider mb-2"
+                >
+                  Reason (optional)
+                </label>
+                <select
+                  id="reject-reason-select"
+                  value={rejectReasonCode}
+                  onChange={(e) => setRejectReasonCode(e.target.value)}
+                  disabled={decidingAs !== null}
+                  className="w-full px-3 py-2 border border-red-300 rounded text-sm bg-white"
+                >
+                  <option value="">— no specific reason —</option>
+                  {REJECT_REASON_OPTIONS.map((r) => (
+                    <option key={r.code} value={r.code}>
+                      {r.label}
+                    </option>
+                  ))}
+                </select>
+                <p className="mt-2 text-xs text-red-700">
+                  Click <span className="font-semibold">Reject</span> once more to confirm.
+                </p>
+              </div>
+            )}
 
             {/*
               Second-opinion escape hatch — reopens the submission for one

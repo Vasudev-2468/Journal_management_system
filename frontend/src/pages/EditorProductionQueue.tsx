@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import Loading from '../components/common/Loading';
+import useFilePreview from '../hooks/useFilePreview';
 import {
     ProductionRecord,
     ProductionStage,
@@ -46,6 +47,10 @@ const EditorProductionQueue: React.FC = () => {
     const [error, setError] = useState<string | null>(null);
     const [filter, setFilter] = useState<ProductionStage | ''>('');
     const [editing, setEditing] = useState<ProductionRecord | null>(null);
+
+    // Inline preview for proof / final PDFs so editors don't lose their
+    // place in the queue every time they open a file.
+    const { open: openPreview, PreviewNode } = useFilePreview();
 
     const load = () => {
         setLoading(true);
@@ -152,24 +157,70 @@ const EditorProductionQueue: React.FC = () => {
                                         </p>
                                         <div className="mt-3 flex flex-wrap gap-2 text-xs">
                                             {r.proof_pdf_url && (
-                                                <a
-                                                    href={r.proof_pdf_url}
-                                                    target="_blank"
-                                                    rel="noreferrer"
-                                                    className="px-2 py-1 rounded bg-purple-50 text-purple-700 border border-purple-100 no-underline"
-                                                >
-                                                    Proof PDF
-                                                </a>
+                                                <>
+                                                    <a
+                                                        href={r.proof_pdf_url}
+                                                        target="_blank"
+                                                        rel="noreferrer"
+                                                        onClick={(e) =>
+                                                            openPreview({
+                                                                url: r.proof_pdf_url!,
+                                                                filename: `proof-${r.submission_id}.pdf`,
+                                                                mimeType: 'application/pdf',
+                                                                event: e,
+                                                            })
+                                                        }
+                                                        className="px-2 py-1 rounded bg-purple-50 text-purple-700 border border-purple-100 no-underline"
+                                                    >
+                                                        Proof PDF
+                                                    </a>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() =>
+                                                            openPreview({
+                                                                url: r.proof_pdf_url!,
+                                                                filename: `proof-${r.submission_id}.pdf`,
+                                                                mimeType: 'application/pdf',
+                                                            })
+                                                        }
+                                                        className="px-2 py-1 rounded bg-white text-purple-700 border border-purple-200 hover:bg-purple-50"
+                                                    >
+                                                        Preview
+                                                    </button>
+                                                </>
                                             )}
                                             {r.final_pdf_url && (
-                                                <a
-                                                    href={r.final_pdf_url}
-                                                    target="_blank"
-                                                    rel="noreferrer"
-                                                    className="px-2 py-1 rounded bg-green-50 text-green-700 border border-green-100 no-underline"
-                                                >
-                                                    Final PDF
-                                                </a>
+                                                <>
+                                                    <a
+                                                        href={r.final_pdf_url}
+                                                        target="_blank"
+                                                        rel="noreferrer"
+                                                        onClick={(e) =>
+                                                            openPreview({
+                                                                url: r.final_pdf_url!,
+                                                                filename: `final-${r.submission_id}.pdf`,
+                                                                mimeType: 'application/pdf',
+                                                                event: e,
+                                                            })
+                                                        }
+                                                        className="px-2 py-1 rounded bg-green-50 text-green-700 border border-green-100 no-underline"
+                                                    >
+                                                        Final PDF
+                                                    </a>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() =>
+                                                            openPreview({
+                                                                url: r.final_pdf_url!,
+                                                                filename: `final-${r.submission_id}.pdf`,
+                                                                mimeType: 'application/pdf',
+                                                            })
+                                                        }
+                                                        className="px-2 py-1 rounded bg-white text-green-700 border border-green-200 hover:bg-green-50"
+                                                    >
+                                                        Preview
+                                                    </button>
+                                                </>
                                             )}
                                         </div>
                                     </div>
@@ -272,6 +323,7 @@ const EditorProductionQueue: React.FC = () => {
                     </div>
                 )}
             </div>
+            {PreviewNode}
         </div>
     );
 };

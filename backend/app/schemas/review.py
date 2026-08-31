@@ -98,6 +98,18 @@ class DecisionRequest(BaseModel):
         pattern="^(accepted|rejected|revision_requested|minor_revision|major_revision)$",
     )
     editor_comments: Optional[str] = None
+    # Optional structured reason for a rejected decision. Ignored when the
+    # decision is anything else. The fixed vocabulary keeps downstream
+    # analytics stable — free-form editor prose still goes into
+    # ``editor_comments``.
+    reject_reason_code: Optional[str] = Field(
+        default=None,
+        pattern=(
+            "^(out_of_scope|insufficient_novelty|methodology_flawed|"
+            "inconclusive_results|poor_writing|ethics_concern|"
+            "plagiarism_suspected|duplicate_submission)$"
+        ),
+    )
 
 
 class DecisionResponse(BaseModel):

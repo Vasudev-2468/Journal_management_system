@@ -62,6 +62,11 @@ export const fetchBoardMembers = async (
     return response.data;
 };
 
+export const fetchBoardMember = async (id: number | string): Promise<BoardMember> => {
+    const response = await client.get(`${BASE}/${id}`);
+    return response.data;
+};
+
 export const createBoardMember = async (
     payload: Omit<BoardMember, 'id'>,
 ): Promise<BoardMember> => {

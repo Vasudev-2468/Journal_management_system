@@ -758,6 +758,47 @@ const ArticlePage: React.FC = () => {
                                 https://doi.org/{article.doi}
                             </a>
                         </p>
+
+                        {/* Preprint badge — surfaced when the platform Article
+                            record carries a ``preprint_doi`` (or an explicit
+                            ``preprint_url`` override). The mock CMS
+                            ``ArticleEntry`` type does not declare these
+                            fields, so we read them off a runtime-widened
+                            view — the block collapses cleanly when neither
+                            is present. Indigo + emerald pill palette to keep
+                            it distinct from the primary DOI link. */}
+                        {(() => {
+                            const preprint = article as ArticleEntry & {
+                                preprint_doi?: string | null;
+                                preprint_url?: string | null;
+                            };
+                            const href = preprint.preprint_url
+                                || (preprint.preprint_doi
+                                    ? `https://doi.org/${preprint.preprint_doi}`
+                                    : null);
+                            if (!href) return null;
+                            return (
+                                <div className="mt-3">
+                                    <a
+                                        href={href}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-indigo-500/20 border border-indigo-300/50 text-indigo-100 hover:bg-emerald-500/25 hover:border-emerald-300/60 hover:text-emerald-100 transition no-underline"
+                                        title="Open the preprint version"
+                                    >
+                                        <span aria-hidden="true">🔗</span>
+                                        <span className="uppercase tracking-widest text-[10px]">
+                                            Preprint
+                                        </span>
+                                        {preprint.preprint_doi && (
+                                            <span className="font-mono normal-case tracking-normal opacity-90">
+                                                {preprint.preprint_doi}
+                                            </span>
+                                        )}
+                                    </a>
+                                </div>
+                            );
+                        })()}
                     </div>
                 </section>
 

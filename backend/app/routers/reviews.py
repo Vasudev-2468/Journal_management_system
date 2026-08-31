@@ -6,6 +6,7 @@ from jose import ExpiredSignatureError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.models.audit_log import AuditLog
 from app.services.auth_service import get_current_user
 from app.services.editor_auth import require_editor_mfa
 from app.services.review_service import (
@@ -150,12 +151,49 @@ def get_reviews_for_submission(
 def make_decision(
     submission_id: uuid.UUID,
     body: DecisionRequest,
+    request: Request,
     db: Session = Depends(get_db),
-    _editor=Depends(require_editor_mfa),
+    editor=Depends(require_editor_mfa),
 ):
     submission = record_decision(db, submission_id, body.decision)
     if submission is None:
         raise HTTPException(status_code=404, detail="Submission not found.")
+
+    # JG — structured reject-reason. Only meaningful when the decision is
+    # ``rejected``; for anything else we ignore the field entirely so
+    # ``format_check_report`` stays untouched. That column is unstructured
+    # today so a best-effort key-merge is safe — we never delete existing
+    # keys, just set our own.
+    reject_reason_code = body.reject_reason_code if body.decision == "rejected" else None
+    if reject_reason_code is not None:
+        current = submission.format_check_report or {}
+        # SQLAlchemy JSON change tracking is opt-in per column. Since this
+        # model doesn't use MutableDict, we must reassign the attribute for
+        # the merged dict to be persisted on commit.
+        if isinstance(current, dict):
+            merged = {**current, "reject_reason_code": reject_reason_code}
+        else:
+            merged = {"reject_reason_code": reject_reason_code}
+        submission.format_check_report = merged
+        db.commit()
+        db.refresh(submission)
+
+    # Structured audit log entry — the reason code lives in ``meta`` so
+    # analytics can group rejections by reason without parsing free text.
+    audit = AuditLog(
+        actor_id=editor.id if editor else None,
+        actor_email=editor.email if editor else None,
+        action="reviews.decision",
+        target_type="submission",
+        target_id=str(submission.id),
+        ip_address=request.client.host if request.client else None,
+        meta={
+            "decision": body.decision,
+            "reject_reason_code": reject_reason_code,
+        },
+    )
+    db.add(audit)
+    db.commit()
 
     # Trigger author notification
     send_decision_to_author.delay(

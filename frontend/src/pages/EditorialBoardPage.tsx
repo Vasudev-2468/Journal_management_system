@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import Header from '../components/layout/Header';
 import Footer from '../components/layout/Footer';
 import JournalLogo from '../components/common/JournalLogo';
@@ -479,17 +480,37 @@ const EditorialBoardPage: React.FC = () => {
                                         </div>
 
                                         {isSolo ? (
-                                            <MemberCard member={list[0]} variant="featured" />
+                                            <Link
+                                                to={`/editorial-board/${list[0].id}`}
+                                                className="block no-underline text-inherit hover:no-underline focus:outline-none focus:ring-2 focus:ring-brand-400 focus:ring-offset-2 rounded-3xl"
+                                                aria-label={`View profile of ${list[0].name}`}
+                                            >
+                                                <MemberCard member={list[0]} variant="featured" />
+                                            </Link>
                                         ) : isCompact ? (
                                             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                                                 {list.map((m) => (
-                                                    <MemberCard key={m.id} member={m} variant="compact" />
+                                                    <Link
+                                                        key={m.id}
+                                                        to={`/editorial-board/${m.id}`}
+                                                        className="block no-underline text-inherit hover:no-underline focus:outline-none focus:ring-2 focus:ring-brand-400 focus:ring-offset-2 rounded-2xl"
+                                                        aria-label={`View profile of ${m.name}`}
+                                                    >
+                                                        <MemberCard member={m} variant="compact" />
+                                                    </Link>
                                                 ))}
                                             </div>
                                         ) : (
                                             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                                                 {list.map((m) => (
-                                                    <MemberCard key={m.id} member={m} variant="default" />
+                                                    <Link
+                                                        key={m.id}
+                                                        to={`/editorial-board/${m.id}`}
+                                                        className="block no-underline text-inherit hover:no-underline focus:outline-none focus:ring-2 focus:ring-brand-400 focus:ring-offset-2 rounded-2xl"
+                                                        aria-label={`View profile of ${m.name}`}
+                                                    >
+                                                        <MemberCard member={m} variant="default" />
+                                                    </Link>
                                                 ))}
                                             </div>
                                         )}

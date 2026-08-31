@@ -1,4 +1,5 @@
 import React from 'react';
+import { captureException } from '../../lib/errorReporting';
 
 interface ErrorBoundaryProps {
     children: React.ReactNode;
@@ -20,6 +21,9 @@ class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundarySta
     componentDidCatch(error: Error, info: React.ErrorInfo) {
         // eslint-disable-next-line no-console
         console.error('Uncaught error in component tree:', error, info);
+        // Forward the error to the reporting layer. When the Sentry
+        // DSN isn't configured this is a no-op.
+        captureException(error, { componentStack: info.componentStack });
     }
 
     handleReset = () => {

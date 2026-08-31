@@ -1,8 +1,10 @@
+import hashlib
 from sqlalchemy.orm import Session
-from fastapi import HTTPException, Depends
+from fastapi import HTTPException, Depends, Request
 from fastapi.security import OAuth2PasswordBearer
 from pydantic import BaseModel
 from app.models.user import User
+from app.models.user_session import UserSession
 from app.schemas.user import UserCreate
 from app.utils.helpers import hash_password, verify_password
 from app.database import get_db
@@ -62,7 +64,104 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
     return encoded_jwt
 
-def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+
+def _hash_token(token: str) -> str:
+    """SHA-256 hex of the raw JWT string.
+
+    Kept as a module-level helper so the sessions router can reuse the
+    exact same digest scheme to match the incoming Authorization header
+    against a stored row.
+    """
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _touch_session(
+    db: Session,
+    user: User,
+    token: str,
+    request: Optional[Request],
+) -> None:
+    """Record/refresh the per-token session row.
+
+    Called from ``get_current_user`` after the JWT has been decoded and
+    the user resolved. Also enforces the soft-revocation flag: if the
+    row exists and ``revoked_at`` is set we raise 401 so the client
+    drops the stale token even though it hasn't expired yet.
+
+    Failures here MUST NOT break authentication for otherwise-valid
+    requests — the tracking is additive. We rollback on unexpected
+    errors and fall through; the only path that intentionally raises
+    is the revoked-session check above.
+    """
+    token_hash = _hash_token(token)
+    ip: Optional[str] = None
+    ua: Optional[str] = None
+    if request is not None:
+        try:
+            if request.client is not None:
+                ip = request.client.host
+        except Exception:
+            ip = None
+        try:
+            ua = request.headers.get("user-agent")
+        except Exception:
+            ua = None
+        # Enforced column width — truncate rather than 500 on very long UAs.
+        if ua and len(ua) > 500:
+            ua = ua[:500]
+        if ip and len(ip) > 50:
+            ip = ip[:50]
+
+    try:
+        row = (
+            db.query(UserSession)
+            .filter(UserSession.token_hash == token_hash)
+            .first()
+        )
+        now = datetime.utcnow()
+        if row is None:
+            row = UserSession(
+                user_id=user.id,
+                token_hash=token_hash,
+                created_at=now,
+                last_seen_at=now,
+                ip_address=ip,
+                user_agent=ua,
+            )
+            db.add(row)
+            db.commit()
+            return
+
+        if row.revoked_at is not None:
+            # Revoked but not yet expired — force the client to drop it.
+            raise HTTPException(
+                status_code=401,
+                detail="Session revoked",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        row.last_seen_at = now
+        if ip:
+            row.ip_address = ip
+        if ua:
+            row.user_agent = ua
+        db.commit()
+    except HTTPException:
+        raise
+    except Exception:
+        # Best-effort tracking — never let a bookkeeping error deny a
+        # request whose JWT has already verified.
+        try:
+            db.rollback()
+        except Exception:
+            pass
+
+
+def get_current_user(
+    request: Request = None,
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db),
+):
     credentials_exception = HTTPException(
         status_code=401,
         detail="Could not validate credentials",
@@ -90,5 +189,8 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     user = db.query(User).filter(User.email == token_data.email).first()
     if user is None:
         raise credentials_exception
+    # Per-device session tracking. Additive: never denies a request the
+    # JWT verification already accepted, except when the session has
+    # been explicitly revoked by its owner (soft-revocation flag).
+    _touch_session(db, user, token, request)
     return user
-

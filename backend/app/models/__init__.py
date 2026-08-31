@@ -23,3 +23,4 @@ from .production_stage import ProductionRecord
 from .plagiarism_check import PlagiarismCheck
 from .submission_message import SubmissionMessage
 from .article_event import ArticleEvent
+from .user_session import UserSession

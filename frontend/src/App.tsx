@@ -43,6 +43,11 @@ import ReviewerInvitePage from './pages/ReviewerInvitePage';
 import ForgotPasswordPage from './pages/ForgotPasswordPage';
 import ResetPasswordPage from './pages/ResetPasswordPage';
 import RecoveryCodesPage from './pages/RecoveryCodesPage';
+import SessionsPage from './pages/SessionsPage';
+import AuthorProfileEditPage from './pages/AuthorProfileEditPage';
+import EditorialBoardMemberPage from './pages/EditorialBoardMemberPage';
+import EditorArticleReferencesPage from './pages/EditorArticleReferencesPage';
+import PrivacyControlsPage from './pages/PrivacyControlsPage';
 import ReviewerDashboardPage from './pages/ReviewerDashboardPage';
 import AuthorRevisionPage from './pages/AuthorRevisionPage';
 import EditorUsersAdmin from './pages/EditorUsersAdmin';
@@ -162,6 +167,15 @@ const App: React.FC = () => {
                     <Route path="/forgot-password" element={<ForgotPasswordPage />} />
                     <Route path="/reset-password" element={<ResetPasswordPage />} />
                     <Route path="/recovery-codes" element={<RecoveryCodesPage />} />
+                    <Route path="/sessions" element={<SessionsPage />} />
+                    <Route path="/author-profile" element={<AuthorProfileEditPage />} />
+                    <Route path="/editorial-board/:memberId" element={<EditorialBoardMemberPage />} />
+                    <Route path="/privacy-controls" element={<PrivacyControlsPage />} />
+                    <Route path="/editor/articles/:articleId/references" element={
+                        <ProtectedEditorRoute>
+                            <EditorArticleReferencesPage />
+                        </ProtectedEditorRoute>
+                    } />
                     <Route path="/reviewer-dashboard" element={<ReviewerDashboardPage />} />
 
                     {/* Public informational pages — statistics, search, author profile, APC, manuscript prep */}

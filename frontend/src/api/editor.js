@@ -74,3 +74,58 @@ export const fetchOverdueReviews = () =>
 
 export const fetchEditorBadges = () =>
   client.get('/editor-badges/counts').then((r) => r.data);
+
+// ── Bulk operations & CSV export ────────────────────────
+//
+// These endpoints live at /bulk-ops/* and /csv-export/* — outside the
+// /editor-* prefix that client.ts's tokenForUrl routes to the editor
+// token. We attach the editor Bearer explicitly so both calls authenticate
+// without needing to broaden the client's URL routing.
+
+const editorAuthHeader = () => {
+  const t = localStorage.getItem('editor_token');
+  return t ? { Authorization: `Bearer ${t}` } : {};
+};
+
+export const bulkUpdateSubmissions = (ids, patch) =>
+  client
+    .post('/bulk-ops/submissions/update', { ids, patch }, { headers: editorAuthHeader() })
+    .then((r) => r.data);
+
+export const bulkPublishAnnouncements = (ids, is_published) =>
+  client
+    .post(
+      '/bulk-ops/announcements/publish',
+      { ids, is_published },
+      { headers: editorAuthHeader() },
+    )
+    .then((r) => r.data);
+
+export const bulkDeleteAnnouncements = (ids) =>
+  client
+    .post('/bulk-ops/announcements/delete', { ids }, { headers: editorAuthHeader() })
+    .then((r) => r.data);
+
+// CSV export — fetches the file as a blob and pushes it through an
+// invisible <a download> so the browser saves it. Filename comes from
+// the Content-Disposition header the backend sets.
+export const exportCsv = async (kind) => {
+  const response = await client.get(`/csv-export/${kind}`, {
+    responseType: 'blob',
+    headers: editorAuthHeader(),
+  });
+  const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const cd = response.headers?.['content-disposition'] || '';
+  const match = /filename="?([^"]+)"?/i.exec(cd);
+  const filename = match ? match[1] : `${kind}-${stamp}.csv`;
+  const blob = new Blob([response.data], { type: 'text/csv' });
+  const url = window.URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  window.URL.revokeObjectURL(url);
+  return { filename };
+};

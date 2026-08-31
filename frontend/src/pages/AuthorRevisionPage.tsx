@@ -4,6 +4,7 @@ import Header from '../components/layout/Header';
 import Footer from '../components/layout/Footer';
 import Loading from '../components/common/Loading';
 import FileDropzone, { UploadedFile } from '../components/common/FileDropzone';
+import useFilePreview from '../hooks/useFilePreview';
 import {
     FileKind,
     ManuscriptVersion,
@@ -68,6 +69,10 @@ const AuthorRevisionPage: React.FC = () => {
     // Remount key: forces FileDropzone to reset its internal state after a
     // successful submission so the next revision starts from a clean slate.
     const [dropzoneKey, setDropzoneKey] = useState(0);
+
+    // Inline preview for prior-version files — click a filename to view
+    // it in a modal without leaving the revision workflow.
+    const { open: openPreview, PreviewNode } = useFilePreview();
 
     const load = () => {
         setLoading(true);
@@ -300,6 +305,14 @@ const AuthorRevisionPage: React.FC = () => {
                                                                 href={f.stored_url}
                                                                 target="_blank"
                                                                 rel="noreferrer"
+                                                                onClick={(e) =>
+                                                                    openPreview({
+                                                                        url: f.stored_url,
+                                                                        filename: f.original_filename,
+                                                                        mimeType: f.mime_type || undefined,
+                                                                        event: e,
+                                                                    })
+                                                                }
                                                                 className="text-brand-700 truncate hover:underline"
                                                             >
                                                                 {f.original_filename}
@@ -318,6 +331,7 @@ const AuthorRevisionPage: React.FC = () => {
             </main>
 
             <Footer />
+            {PreviewNode}
         </div>
     );
 };

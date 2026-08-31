@@ -6,6 +6,7 @@ import { STATUS_META } from './AuthorDashboard';
 import ReviewerCommentsCard from '../components/authors/ReviewerCommentsCard';
 import DecisionLetterCard from '../components/authors/DecisionLetterCard';
 import SubmissionThread from '../components/authors/SubmissionThread';
+import SubmissionTimeline from '../components/authors/SubmissionTimeline';
 
 /* ─── Styles ─────────────────────────────────────────── */
 const CSS = `
@@ -390,6 +391,13 @@ export default function AuthorSubmissionDetail() {
             submissionId={sub.id}
             status={sub.status}
           />
+          {/* Aggregated per-manuscript event stream — submissions +
+              review assignments/completions + decisions + revisions +
+              production stages, stitched together server-side. Sits
+              directly under the reviewer-comments / decision-letter
+              cards so the reader has full editorial context in one
+              scroll. */}
+          <SubmissionTimeline submissionId={sub.id} />
           <SubmissionThread submissionId={sub.id} viewerRole="author" />
 
           {/* ── Hero card ─────────────────────────────── */}
