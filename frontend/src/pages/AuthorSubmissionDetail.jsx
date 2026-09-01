@@ -29,12 +29,16 @@ const MILESTONES = [
   { label: 'Published',      icon: '🌍' },
 ];
 
-/* ─── Mock reviewer data (blind review — names hidden) ── */
-const MOCK_REVIEWERS = [
-  { initials: 'R1', status: 'completed',   label: 'Review completed',   ring: 'ring-green-400',  bg: 'bg-green-500',  comment: '"Well-structured paper with strong experimental results. Minor revisions suggested on the methodology section."' },
-  { initials: 'R2', status: 'in-progress', label: 'Review in progress', ring: 'ring-yellow-400', bg: 'bg-yellow-500', comment: '"Review is currently underway. Estimated completion within 5 days."' },
-  { initials: 'R3', status: 'declined',    label: 'Reviewer declined',  ring: 'ring-red-400',    bg: 'bg-red-400',    comment: '"Reviewer declined due to conflict of interest. A replacement has been contacted."' },
-];
+/* ─── Anonymised reviewer slot placeholders ────────────
+ * The author never sees reviewer identities or their comments here.
+ * Anonymised reviewer feedback is served by ReviewerCommentsCard once
+ * the editorial decision is out. This module used to ship three fake
+ * reviewer bubbles with invented comment strings — they were removed
+ * so authors don't see fabricated feedback.
+ */
+const REVIEWER_SLOT = (initials, status, label, ring, bg) => ({
+  initials, status, label, ring, bg,
+});
 
 /* ─── SVG Donut ─────────────────────────────────────── */
 function DonutChart({ reviewCount }) {
@@ -337,10 +341,18 @@ export default function AuthorSubmissionDetail() {
   const paperId   = sub.paper_id_code || sub.id.slice(0, 8).toUpperCase();
   const authorName = profile?.full_name || 'Author';
 
-  /* Reviewer count from DB; fill up to 3 visually */
-  const reviewers     = MOCK_REVIEWERS.slice(0, Math.max(sub.review_count, 1)).concat(
-    sub.review_count < 3 ? [{ initials: '?', status: 'pending', label: 'Awaiting reviewer', ring: 'ring-gray-300', bg: 'bg-gray-300', comment: '"No reviewer assigned yet."' }] : []
-  ).slice(0, 3);
+  /* Reviewer slots: assigned count from DB (anonymised), then pending
+     placeholders up to 3. No comment strings — real anonymised feedback
+     lands via ReviewerCommentsCard once the decision is out. */
+  const assigned = Math.max(0, Math.min(sub.review_count || 0, 3));
+  const reviewers = [
+    ...Array.from({ length: assigned }, (_, i) =>
+      REVIEWER_SLOT(`R${i + 1}`, 'assigned', 'Review in progress', 'ring-blue-400', 'bg-blue-500'),
+    ),
+    ...Array.from({ length: Math.max(0, 3 - assigned) }, () =>
+      REVIEWER_SLOT('?', 'pending', 'Awaiting reviewer', 'ring-gray-300', 'bg-gray-300'),
+    ),
+  ];
 
   return (
     <>
@@ -535,24 +547,23 @@ export default function AuthorSubmissionDetail() {
               </div>
               <div className="grid grid-cols-3 gap-3">
                 {reviewers.map((rv, i) => (
-                  <button
+                  <div
                     key={i}
-                    onClick={() => alert(`Reviewer ${i + 1}\n\n${rv.comment}`)}
-                    className="flex flex-col items-center gap-2 group p-2 rounded-2xl hover:bg-gray-50 transition-all"
+                    className="flex flex-col items-center gap-2 p-2 rounded-2xl"
                   >
-                    <div className={`w-14 h-14 rounded-full ${rv.bg} ring-3 ring-offset-2 ${rv.ring} flex items-center justify-center text-white text-sm font-black shadow-md group-hover:scale-105 transition-transform`}>
+                    <div className={`w-14 h-14 rounded-full ${rv.bg} ring-3 ring-offset-2 ${rv.ring} flex items-center justify-center text-white text-sm font-black shadow-md`}>
                       {rv.initials}
                     </div>
                     <div className={`text-center px-1.5 py-0.5 rounded-lg border text-xs font-semibold
-                      ${rv.status === 'completed'   ? 'bg-green-50  border-green-200  text-green-700'  : ''}
-                      ${rv.status === 'in-progress' ? 'bg-yellow-50 border-yellow-200 text-yellow-700' : ''}
-                      ${rv.status === 'declined'    ? 'bg-red-50    border-red-200    text-red-700'    : ''}
-                      ${rv.status === 'pending'     ? 'bg-gray-50   border-gray-200   text-gray-500'   : ''}
+                      ${rv.status === 'assigned' ? 'bg-blue-50 border-blue-200 text-blue-700' : ''}
+                      ${rv.status === 'pending'  ? 'bg-gray-50 border-gray-200 text-gray-500' : ''}
                     `}>{rv.label}</div>
-                  </button>
+                  </div>
                 ))}
               </div>
-              <p className="text-xs text-gray-400 text-center mt-3">Click a reviewer to view status notes</p>
+              <p className="text-xs text-gray-400 text-center mt-3">
+                Anonymised reviewer feedback appears below once the editorial decision is out.
+              </p>
             </div>
           </div>
 
