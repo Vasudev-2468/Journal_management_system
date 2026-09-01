@@ -18,6 +18,8 @@ Two endpoints, both anonymous:
     password, then clear the reset columns so the link is single-use.
 """
 
+import hashlib
+import hmac
 import logging
 from datetime import datetime, timedelta
 from typing import Optional
@@ -32,6 +34,23 @@ from app.database import get_db
 from app.models.user import User
 from app.services.email_service import _send_and_log, _wrap, _btn
 from app.utils.helpers import hash_password, verify_password
+
+
+def _digest_token(token: str) -> str:
+    """SHA-256 hex of the JWT reset token, HMAC-keyed with the app secret.
+
+    Reset tokens are JWTs — well over bcrypt's 72-byte limit — so we
+    can't bcrypt them directly. We don't need adaptive hashing here
+    because tokens are single-use, TTL-bound, and high-entropy; a
+    keyed SHA-256 is fast and gives us cheap constant-time comparison
+    plus resistance to raw-DB replay (the digest isn't useful without
+    ``SECRET_KEY``).
+    """
+    return hmac.new(
+        settings.SECRET_KEY.encode("utf-8"),
+        token.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
 
 logger = logging.getLogger(__name__)
 
@@ -157,7 +176,7 @@ def request_password_reset(
 
     if user and user.is_active:
         token = _mint_reset_token(user.id)
-        user.password_reset_token_hash = hash_password(token)
+        user.password_reset_token_hash = _digest_token(token)
         user.password_reset_expires_at = datetime.utcnow() + RESET_TOKEN_TTL
         db.commit()
 
@@ -168,14 +187,11 @@ def request_password_reset(
             # from the enumeration-safe default; log and move on.
             logger.exception("Failed to dispatch password-reset email")
     else:
-        # Slow-path a small amount of work anyway so timing analysis is
-        # useless. bcrypt is expensive; we call verify_password once on a
-        # throwaway pair to keep response times comparable to the hit
-        # path.
-        try:
-            verify_password("timing-decoy", hash_password("timing-decoy"))
-        except Exception:  # noqa: BLE001
-            pass
+        # Match the timing of the hit path so this endpoint isn't a
+        # membership oracle. We call _digest_token twice (mint + store)
+        # with a throwaway string.
+        _ = _digest_token("timing-decoy-1")
+        _ = _digest_token("timing-decoy-2")
 
     return PasswordResetResponse()
 
@@ -214,7 +230,7 @@ def verify_password_reset(
         db.commit()
         raise generic
 
-    if not verify_password(body.token, user.password_reset_token_hash):
+    if not hmac.compare_digest(_digest_token(body.token), user.password_reset_token_hash):
         raise generic
 
     # All good — rotate the password and single-use the token.

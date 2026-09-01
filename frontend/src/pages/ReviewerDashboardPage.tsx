@@ -1,28 +1,32 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import Header from '../components/layout/Header';
-import Footer from '../components/layout/Footer';
+import ReviewerPortalLayout from '../components/reviewer/ReviewerPortalLayout';
 import Loading from '../components/common/Loading';
+import { getReviewerToken } from '../api/reviewerAuth';
 import {
-    fetchMyAssignments,
-    logout as reviewerLogout,
-    getReviewerToken,
-    Assignment,
-} from '../api/reviewerAuth';
+    AssignmentSummary, Alert, DashboardResponse, fetchDashboard,
+} from '../api/reviewerPortal';
 
-/**
- * Personal reviewer dashboard.
- *
- * Fetches every review assigned to the signed-in reviewer from
- * /reviewer-auth/my-assignments and groups them into "Pending" and
- * "Completed" sections. Each row hyperlinks to the existing /review/:token
- * flow, which is left untouched.
- */
+// Reviewer dashboard — the landing page for the reviewer portal.
+// Uses the shared /reviewer-portal/dashboard endpoint so counters,
+// alerts, and the active-assignments preview are all computed
+// server-side, and every value is honest against a single source of
+// truth. See spec §2-4 for the layout.
 
-const statusPillClass = (status: string): string => {
-    if (status === 'completed') return 'bg-green-100 text-green-700';
-    if (status === 'expired') return 'bg-gray-200 text-gray-700';
-    return 'bg-amber-100 text-amber-800';
+// Status pill labels — split the "pending" concept into two distinct
+// user-visible states so the reviewer knows exactly what they owe:
+//   invited      → PENDING INVITATION  (needs accept/decline decision)
+//   accepted     → REVIEW PENDING       (accepted, hasn't started)
+//   in_progress  → IN PROGRESS          (accepted, draft saved)
+const STATUS_STYLES: Record<string, { cls: string; label: string }> = {
+    invited:     { cls: 'bg-blue-100 text-blue-700',       label: 'PENDING INVITATION' },
+    accepted:    { cls: 'bg-indigo-100 text-indigo-700',   label: 'REVIEW PENDING' },
+    in_progress: { cls: 'bg-amber-100 text-amber-800',     label: 'IN PROGRESS' },
+    submitted:   { cls: 'bg-emerald-100 text-emerald-700', label: 'SUBMITTED' },
+    overdue:     { cls: 'bg-rose-100 text-rose-700',       label: 'OVERDUE' },
+    declined:    { cls: 'bg-slate-200 text-slate-700',     label: 'DECLINED' },
+    cancelled:   { cls: 'bg-gray-200 text-gray-700',       label: 'CANCELLED' },
+    expired:     { cls: 'bg-gray-200 text-gray-600',       label: 'EXPIRED' },
 };
 
 const formatDate = (iso?: string | null): string => {
@@ -32,68 +36,136 @@ const formatDate = (iso?: string | null): string => {
     return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 };
 
-interface AssignmentRowProps {
-    assignment: Assignment;
-    variant: 'pending' | 'completed';
-}
+// ── Summary card ─────────────────────────────────────────
 
-const AssignmentRow: React.FC<AssignmentRowProps> = ({ assignment, variant }) => {
-    const canOpen = !!assignment.link_token;
-    const buttonLabel = variant === 'completed' ? 'View →' : 'Continue →';
+const TONE: Record<string, { border: string; value: string; label: string }> = {
+    blue:    { border: 'border-blue-200',    value: 'text-blue-700',    label: 'text-blue-900' },
+    amber:   { border: 'border-amber-200',   value: 'text-amber-700',   label: 'text-amber-900' },
+    rose:    { border: 'border-rose-200',    value: 'text-rose-700',    label: 'text-rose-900' },
+    emerald: { border: 'border-emerald-200', value: 'text-emerald-700', label: 'text-emerald-900' },
+};
+
+const SummaryCard: React.FC<{
+    label: string; value: number; tone: keyof typeof TONE; hint?: string;
+}> = ({ label, value, tone, hint }) => {
+    const t = TONE[tone];
     return (
-        <li className="bg-white rounded-2xl border border-gray-100 p-5 flex items-start justify-between gap-4 hover:shadow-md transition">
-            <div className="min-w-0 flex-1">
-                <p className="font-bold text-gray-900 truncate">
-                    {assignment.paper_title || 'Manuscript under review'}
-                </p>
-                <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-500">
-                    <span>
-                        <strong className="text-gray-600">Assigned:</strong>{' '}
-                        {formatDate(assignment.assigned_at)}
-                    </span>
-                    {variant === 'pending' && assignment.deadline && (
-                        <span>
-                            <strong className="text-gray-600">Deadline:</strong>{' '}
-                            {formatDate(assignment.deadline)}
-                        </span>
-                    )}
-                    {variant === 'completed' && assignment.completed_at && (
-                        <span>
-                            <strong className="text-gray-600">Submitted:</strong>{' '}
-                            {formatDate(assignment.completed_at)}
-                        </span>
-                    )}
-                    {variant === 'pending' && !assignment.link_valid && (
-                        <span className="text-red-600 font-semibold">
-                            Link expired — contact editor
-                        </span>
-                    )}
-                </div>
-            </div>
-            <div className="flex items-center gap-2 flex-shrink-0">
-                <span
-                    className={`inline-flex px-2.5 py-0.5 rounded-full text-[11px] font-bold ${statusPillClass(
-                        assignment.status,
-                    )}`}
-                >
-                    {assignment.status}
-                </span>
-                {canOpen && (
-                    <Link
-                        to={`/review/${assignment.link_token}`}
-                        className="text-xs px-4 py-1.5 rounded-lg bg-brand-600 text-white font-bold hover:bg-brand-700 no-underline"
-                    >
-                        {buttonLabel}
-                    </Link>
-                )}
-            </div>
-        </li>
+        <div className={`bg-white rounded-xl border ${t.border} p-4`}>
+            <div className={`text-xs uppercase tracking-wider font-semibold ${t.label}`}>{label}</div>
+            <div className={`mt-2 text-3xl font-bold ${t.value}`}>{value}</div>
+            {hint && <div className="mt-1 text-[11px] text-gray-500">{hint}</div>}
+        </div>
     );
 };
 
-const ReviewerDashboardPage: React.FC = () => {
+// ── Alert card ───────────────────────────────────────────
+
+const ALERT_STYLES: Record<Alert['kind'], { border: string; bg: string; icon: string }> = {
+    deadline:   { border: 'border-amber-200',   bg: 'bg-amber-50',   icon: '⚠️' },
+    new_invite: { border: 'border-blue-200',    bg: 'bg-blue-50',    icon: '📩' },
+    submitted:  { border: 'border-emerald-200', bg: 'bg-emerald-50', icon: '✅' },
+};
+
+const AlertCard: React.FC<{ alert: Alert }> = ({ alert }) => {
+    const s = ALERT_STYLES[alert.kind];
+    const label =
+        alert.kind === 'new_invite' ? 'View Invitation' :
+        alert.kind === 'deadline' ? 'Continue Review' :
+        'View Details';
+    return (
+        <div className={`flex items-start gap-3 rounded-xl border ${s.border} ${s.bg} p-4`}>
+            <span aria-hidden className="text-xl leading-none">{s.icon}</span>
+            <div className="flex-1 min-w-0">
+                <div className="font-semibold text-gray-900 text-sm">{alert.title}</div>
+                <div className="text-sm text-gray-700 mt-0.5">{alert.detail}</div>
+            </div>
+            {alert.action_url && (
+                <Link
+                    to={alert.action_url}
+                    className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-white border border-gray-300 hover:bg-gray-50 text-gray-800 whitespace-nowrap"
+                >
+                    {label}
+                </Link>
+            )}
+        </div>
+    );
+};
+
+// ── Assignments table ────────────────────────────────────
+
+const AssignmentsTable: React.FC<{ rows: AssignmentSummary[] }> = ({ rows }) => {
+    if (rows.length === 0) {
+        return (
+            <div className="bg-white rounded-xl border border-dashed border-gray-200 p-10 text-center">
+                <span className="text-3xl block mb-2" aria-hidden>📬</span>
+                <p className="text-sm text-gray-500">
+                    You have no active manuscripts right now.
+                </p>
+            </div>
+        );
+    }
+    return (
+        <div className="bg-white rounded-xl border border-gray-200 overflow-x-auto">
+            <table className="min-w-full text-sm">
+                <thead className="bg-gray-50 text-left text-xs uppercase tracking-wider text-gray-500">
+                    <tr>
+                        <th className="px-4 py-3">Manuscript</th>
+                        <th className="px-4 py-3">Title</th>
+                        <th className="px-4 py-3">Assigned</th>
+                        <th className="px-4 py-3">Deadline</th>
+                        <th className="px-4 py-3">Status</th>
+                        <th className="px-4 py-3 text-right">Action</th>
+                    </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                    {rows.map((r) => {
+                        const style = STATUS_STYLES[r.state] || STATUS_STYLES.invited;
+                        // Row action label follows the two-pending split:
+                        // invited     → "View & Respond" (leads to the COI card)
+                        // accepted    → "Start Review"   (opens the workspace)
+                        // in_progress → "Continue Review"
+                        // overdue     → "Continue Review" (still owed)
+                        // submitted   → "View Report"
+                        const actionLabel =
+                            r.state === 'invited' ? 'View & Respond' :
+                            r.state === 'accepted' ? 'Start Review' :
+                            r.state === 'in_progress' ? 'Continue Review' :
+                            r.state === 'overdue' ? 'Continue Review' :
+                            r.state === 'submitted' ? 'View Report' :
+                            'View';
+                        return (
+                            <tr key={r.review_id} className="hover:bg-gray-50">
+                                <td className="px-4 py-3 font-mono text-xs text-gray-700">{r.manuscript_id}</td>
+                                <td className="px-4 py-3 text-gray-900">
+                                    <div className="line-clamp-1">{r.paper_title}</div>
+                                </td>
+                                <td className="px-4 py-3 whitespace-nowrap text-gray-600">{formatDate(r.assigned_at)}</td>
+                                <td className="px-4 py-3 whitespace-nowrap text-gray-600">{formatDate(r.deadline)}</td>
+                                <td className="px-4 py-3">
+                                    <span className={`text-[11px] font-bold px-2 py-0.5 rounded ${style.cls}`}>{style.label}</span>
+                                </td>
+                                <td className="px-4 py-3 text-right">
+                                    <Link
+                                        to={`/reviewer/assignment/${r.review_id}`}
+                                        className="inline-block text-xs px-3 py-1.5 rounded-lg bg-blue-700 text-white font-semibold hover:bg-blue-800"
+                                    >
+                                        {actionLabel} →
+                                    </Link>
+                                </td>
+                            </tr>
+                        );
+                    })}
+                </tbody>
+            </table>
+        </div>
+    );
+};
+
+// ── Page ─────────────────────────────────────────────────
+
+export default function ReviewerDashboardPage() {
     const navigate = useNavigate();
-    const [assignments, setAssignments] = useState<Assignment[]>([]);
+    const [data, setData] = useState<DashboardResponse | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
@@ -102,142 +174,90 @@ const ReviewerDashboardPage: React.FC = () => {
             navigate('/reviewer-login', { replace: true });
             return;
         }
-        let mounted = true;
-        (async () => {
-            try {
-                const data = await fetchMyAssignments();
-                if (mounted) setAssignments(data);
-            } catch (err: any) {
+        fetchDashboard()
+            .then(setData)
+            .catch((err) => {
                 if (err?.response?.status === 401) {
-                    // client.ts already cleared the token on 401.
                     navigate('/reviewer-login', { replace: true });
                     return;
                 }
-                if (mounted) setError('Could not load your assignments. Please try again.');
-            } finally {
-                if (mounted) setLoading(false);
-            }
-        })();
-        return () => {
-            mounted = false;
-        };
+                // Surface the backend's detail (e.g. FastAPI's HTTPException
+                // string, or the SQL error message wrapped by a 500) so the
+                // user gets an actionable message instead of a generic one.
+                const detail = err?.response?.data?.detail;
+                const status = err?.response?.status;
+                const detailStr = typeof detail === 'string'
+                    ? detail
+                    : (detail && JSON.stringify(detail)) || err?.message || '';
+                setError(
+                    status
+                        ? `Could not load the dashboard (${status}): ${detailStr || 'server error'}`
+                        : `Could not load the dashboard: ${detailStr || 'network error'}`,
+                );
+            })
+            .finally(() => setLoading(false));
     }, [navigate]);
 
-    const handleSignOut = () => {
-        reviewerLogout();
-        navigate('/reviewer-login', { replace: true });
-    };
-
-    const pending = assignments.filter((a) => a.status !== 'completed');
-    const completed = assignments.filter((a) => a.status === 'completed');
-
     return (
-        <div className="min-h-screen flex flex-col bg-gray-50">
-            <Header />
-
-            <section className="relative py-16 overflow-hidden bg-gradient-to-br from-brand-950 via-brand-900 to-indigo-950">
-                <div className="absolute inset-0 opacity-30">
-                    <div className="absolute -top-24 -right-24 w-96 h-96 rounded-full bg-brand-500 blur-3xl" />
-                </div>
-                <div className="relative max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-wrap items-start justify-between gap-4">
-                    <div>
-                        <h1 className="text-4xl font-extrabold text-white tracking-tight">
-                            Reviewer Dashboard
+        <ReviewerPortalLayout active="dashboard" pendingInvites={data?.counters.invited || 0}>
+            {loading ? (
+                <Loading />
+            ) : error ? (
+                <div role="alert" className="bg-white rounded-xl border border-red-200 p-6 text-red-700">{error}</div>
+            ) : !data ? null : (
+                <>
+                    <div className="mb-6">
+                        <h1 className="text-2xl font-bold text-gray-900">
+                            Welcome, {data.reviewer_name.split(' ')[0] || 'Reviewer'}
                         </h1>
-                        <p className="mt-3 text-brand-200 max-w-2xl">
-                            Every paper on your desk, at a glance. Reviews save
-                            automatically until you submit.
-                        </p>
+                        <p className="text-sm text-gray-500 mt-1">Here's what needs your attention today.</p>
                     </div>
-                    <button
-                        type="button"
-                        onClick={handleSignOut}
-                        className="text-sm bg-white/10 hover:bg-white/20 text-white font-semibold px-4 py-2 rounded-lg border border-white/20"
-                    >
-                        Sign out
-                    </button>
-                </div>
-            </section>
 
-            <main className="flex-1 py-12">
-                <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 space-y-10">
-                    {loading ? (
-                        <Loading />
-                    ) : error ? (
-                        <div role="alert" className="bg-white rounded-2xl border border-red-200 p-8 text-center">
-                            <p className="text-red-700 font-semibold">{error}</p>
-                        </div>
-                    ) : assignments.length === 0 ? (
-                        <div className="bg-white rounded-2xl border border-dashed border-gray-200 p-12 text-center">
-                            <span className="text-4xl block mb-3" aria-hidden="true">📬</span>
-                            <h2 className="text-lg font-bold text-gray-900">No assignments yet</h2>
-                            <p className="mt-2 text-gray-500 max-w-md mx-auto">
-                                When an editor invites you to review a manuscript, it will appear here.
-                            </p>
-                        </div>
-                    ) : (
-                        <>
-                            <section aria-labelledby="pending-heading">
-                                <div className="flex items-center justify-between mb-4">
-                                    <h2 id="pending-heading" className="text-xl font-bold text-gray-900">
-                                        Pending reviews
-                                        {pending.length > 0 && (
-                                            <span className="ml-2 text-sm font-normal text-gray-500">
-                                                ({pending.length})
-                                            </span>
-                                        )}
-                                    </h2>
-                                </div>
-                                {pending.length === 0 ? (
-                                    <p className="bg-white rounded-2xl border border-gray-100 p-6 text-sm text-gray-500 text-center">
-                                        Nothing outstanding.
-                                    </p>
-                                ) : (
-                                    <ul className="grid gap-3">
-                                        {pending.map((a) => (
-                                            <AssignmentRow
-                                                key={a.review_id}
-                                                assignment={a}
-                                                variant="pending"
-                                            />
-                                        ))}
-                                    </ul>
-                                )}
-                            </section>
+                    <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-8">
+                        <SummaryCard
+                            label="New Invitations" tone="blue"
+                            value={data.counters.invited}
+                            hint="Needs response"
+                        />
+                        <SummaryCard
+                            label="Pending Reviews" tone="amber"
+                            value={data.counters.pending_reviews}
+                            hint="Needs completion"
+                        />
+                        <SummaryCard
+                            label="Due Soon" tone="amber"
+                            value={data.counters.due_soon}
+                            hint="Within 7 days"
+                        />
+                        <SummaryCard
+                            label="Completed" tone="emerald"
+                            value={data.counters.completed_this_year}
+                            hint="This year"
+                        />
+                        <SummaryCard
+                            label="Overdue" tone="rose"
+                            value={data.counters.overdue}
+                            hint={data.counters.overdue === 0 ? 'Nothing overdue' : 'Action required'}
+                        />
+                    </div>
 
-                            <section aria-labelledby="completed-heading">
-                                <h2 id="completed-heading" className="text-xl font-bold text-gray-900 mb-4">
-                                    Completed reviews
-                                    {completed.length > 0 && (
-                                        <span className="ml-2 text-sm font-normal text-gray-500">
-                                            ({completed.length})
-                                        </span>
-                                    )}
-                                </h2>
-                                {completed.length === 0 ? (
-                                    <p className="bg-white rounded-2xl border border-gray-100 p-6 text-sm text-gray-500 text-center">
-                                        No completed reviews yet — thanks in advance for your service.
-                                    </p>
-                                ) : (
-                                    <ul className="grid gap-3">
-                                        {completed.map((a) => (
-                                            <AssignmentRow
-                                                key={a.review_id}
-                                                assignment={a}
-                                                variant="completed"
-                                            />
-                                        ))}
-                                    </ul>
-                                )}
-                            </section>
-                        </>
+                    {data.alerts.length > 0 && (
+                        <div className="space-y-2 mb-8">
+                            {data.alerts.map((a, i) => <AlertCard key={`${a.kind}-${i}`} alert={a} />)}
+                        </div>
                     )}
-                </div>
-            </main>
 
-            <Footer />
-        </div>
+                    <section className="mb-4">
+                        <div className="flex items-center justify-between mb-3">
+                            <h2 className="text-lg font-bold text-gray-900">Assigned Manuscripts</h2>
+                            <Link to="/reviewer/assignments" className="text-sm text-blue-700 hover:underline">
+                                View all →
+                            </Link>
+                        </div>
+                        <AssignmentsTable rows={data.active} />
+                    </section>
+                </>
+            )}
+        </ReviewerPortalLayout>
     );
-};
-
-export default ReviewerDashboardPage;
+}

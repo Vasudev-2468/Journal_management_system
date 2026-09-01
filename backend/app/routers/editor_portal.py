@@ -473,6 +473,34 @@ class NotificationLogEntry(BaseModel):
     sent_at: Optional[datetime] = None
     error_message: Optional[str] = None
     preview: Optional[str] = None
+    body_html: Optional[str] = None
+    # Full rendered HTML for the expand-in-modal view. Kept separate from
+    # ``preview`` so the log table stays plain-text and the frontend only
+    # renders the raw HTML in an intentionally-sandboxed surface.
+
+
+import re
+
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_WS_RE = re.compile(r"\s+")
+
+
+def _plaintext_preview(html: str, limit: int = 180) -> Optional[str]:
+    """Strip HTML tags and collapse whitespace so the notification-log
+    table shows a readable snippet instead of raw markup."""
+    if not html:
+        return None
+    text = _HTML_TAG_RE.sub(" ", html)
+    text = _WS_RE.sub(" ", text).strip()
+    if not text:
+        return None
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    space = cut.rfind(" ")
+    if space > limit - 60:
+        cut = cut[:space]
+    return cut.rstrip() + "…"
 
 
 class NotificationLogResponse(BaseModel):
@@ -517,7 +545,8 @@ def list_notifications(
             status=row.status.value if row.status else "pending",
             sent_at=row.sent_at,
             error_message=row.error_message,
-            preview=(row.message_body or "")[:180] or None,
+            preview=_plaintext_preview(row.message_body or ""),
+            body_html=row.message_body or None,
         )
         for row in rows
     ]
@@ -546,3 +575,338 @@ def get_overdue_reviews(
         count=count_overdue_reviews(db),
         submission_ids=ids,
     )
+
+
+# ── Round-N automation (spec §19) ──────────────────────
+#
+# When the editor decides Major or Minor Revision on a manuscript,
+# the author submits a revised version and the editorial workflow
+# needs to re-open the review with fresh Review rows. Rather than
+# re-invite reviewers manually, this endpoint spawns one Review row
+# per reviewer who submitted in the current round, incremented to
+# ``round + 1`` and set to state=invited. Reviewer selection can be
+# widened later by the editor (invite new reviewer, decline old).
+
+@router.post("/submissions/{submission_id}/open-round")
+def open_review_round(
+    submission_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _editor=Depends(require_editor_mfa),
+):
+    """Create round+1 Review rows for every reviewer who submitted the
+    current round. Returns the new round number and the new
+    review_ids so the editor UI can jump straight to the reviewer
+    roster."""
+    from datetime import timedelta
+    from app.config import settings
+    from app.models.review import Review, ReviewState, ReviewStatus
+    from app.utils.link_tokens import create_review_link_token
+    import uuid as _uuid
+
+    submission = db.query(Submission).filter(Submission.id == submission_id).first()
+    if submission is None:
+        raise HTTPException(status_code=404, detail="Submission not found.")
+
+    reviews = list(submission.reviews or [])
+    if not reviews:
+        raise HTTPException(
+            status_code=409,
+            detail="No prior reviewer rows on this submission — invite reviewers instead of opening a round.",
+        )
+    current_round = max((r.round_number or 1) for r in reviews)
+    next_round = current_round + 1
+
+    # If a next-round row already exists, refuse — the editor should
+    # cancel or complete the existing round before spawning another.
+    if any((r.round_number or 1) == next_round for r in reviews):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Round {next_round} is already open on this submission.",
+        )
+
+    seed_reviews = [r for r in reviews if (r.round_number or 1) == current_round]
+    submitted_seed = [r for r in seed_reviews if r.state == ReviewState.submitted]
+    if not submitted_seed:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "No submitted reviewer reports from the current round to seed the "
+                "next round from. Either wait for reviewers to submit or invite "
+                "fresh reviewers manually."
+            ),
+        )
+
+    ttl_days = getattr(settings, "JWT_EXPIRE_DAYS", None) or 21
+    new_reviews: list[Review] = []
+    for src in submitted_seed:
+        new_id = _uuid.uuid4()
+        row = Review(
+            id=new_id,
+            submission_id=src.submission_id,
+            reviewer_id=src.reviewer_id,
+            link_token=create_review_link_token(new_id),
+            link_expires_at=datetime.utcnow() + timedelta(days=ttl_days),
+            status=ReviewStatus.pending,
+            state=ReviewState.invited,
+            round_number=next_round,
+            assigned_at=datetime.utcnow(),
+        )
+        db.add(row)
+        new_reviews.append(row)
+
+    submission.status = SubmissionStatus.under_review
+    db.commit()
+    for r in new_reviews:
+        db.refresh(r)
+
+    return {
+        "submission_id": str(submission.id),
+        "round": next_round,
+        "review_ids": [str(r.id) for r in new_reviews],
+        "message": f"Round {next_round} opened with {len(new_reviews)} reviewer(s).",
+    }
+
+
+# ── Editor Reviewer Report views (spec §7-14) ──────────
+#
+# The reviewer submits a structured Reviewer Report; the editor needs
+# to (a) read one full report and (b) see every reviewer's report on
+# a single submission side-by-side. Both endpoints reuse the same
+# report projection the reviewer sees at /reviewer-portal/report so
+# there's a single source of truth.
+
+@router.get("/reviews/{review_id}/report")
+def editor_reviewer_report(
+    review_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _editor=Depends(require_editor_mfa),
+):
+    """Return the full structured Reviewer Report for a review.
+
+    Reviewers stay anonymous — the display name is
+    ``Anonymous Reviewer #N`` where N is the reviewer's 1-indexed
+    position on the paper's reviewer roster.
+    """
+    from app.routers.reviewer_portal import _report_from_review
+    from app.models.review import Review, ReviewState
+
+    review = db.query(Review).filter(Review.id == review_id).first()
+    if review is None:
+        raise HTTPException(status_code=404, detail="Review not found.")
+    if review.state != ReviewState.submitted:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Review is not submitted yet (state={review.state.value if review.state else 'unknown'}).",
+        )
+    return _report_from_review(review)
+
+
+@router.get("/submissions/{submission_id}/reviewer-reports")
+def editor_reviewer_reports(
+    submission_id: uuid.UUID,
+    round: Optional[int] = Query(None, description="Filter by review round; defaults to the max round on the submission."),
+    db: Session = Depends(get_db),
+    _editor=Depends(require_editor_mfa),
+):
+    """Multi-reviewer panel (spec §14).
+
+    Returns per-reviewer summary rows for a submission — one card per
+    reviewer with recommendation, confidence, submitted timestamp,
+    counts, and the review_id the editor clicks through to open the
+    full report.
+    """
+    from app.models.review import Review, ReviewState
+    import json as _json
+
+    submission = db.query(Submission).filter(Submission.id == submission_id).first()
+    if submission is None:
+        raise HTTPException(status_code=404, detail="Submission not found.")
+
+    reviews = sorted(
+        submission.reviews or [], key=lambda r: r.assigned_at or datetime.min,
+    )
+    target_round = round if round is not None else max(
+        (r.round_number or 1 for r in reviews), default=1,
+    )
+
+    def _count(raw):
+        try:
+            v = _json.loads(raw or "")
+            return len(v) if isinstance(v, list) else 0
+        except Exception:  # noqa: BLE001
+            return 0
+
+    rows = []
+    for idx, r in enumerate(reviews, start=1):
+        if (r.round_number or 1) != target_round:
+            continue
+        rows.append({
+            "review_id": str(r.id),
+            "reviewer_display_name": f"Anonymous Reviewer #{idx}",
+            "state": r.state.value if r.state else "unknown",
+            "recommendation": r.overall_recommendation.value if r.overall_recommendation else None,
+            "confidence": r.confidence,
+            "submitted_at": r.completed_at.isoformat() if r.completed_at else None,
+            "counts": {
+                "major": _count(r.major_comments),
+                "minor": _count(r.minor_comments),
+                "suggestions": _count(r.suggestions_to_authors),
+                "annotations": _count(r.page_annotations),
+            },
+            "ethics_flag": bool(r.ethics_flag),
+            "editor_summary": r.editor_summary or "",
+        })
+
+    return {
+        "submission_id": str(submission.id),
+        "round": target_round,
+        "reviews": rows,
+    }
+
+
+# ── Reviewer Consensus Agent (spec §15) ────────────────
+
+@router.get("/submissions/{submission_id}/reviewer-consensus")
+def editor_reviewer_consensus(
+    submission_id: uuid.UUID,
+    round: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+    _editor=Depends(require_editor_mfa),
+):
+    """Cross-reviewer AI summary (spec §15).
+
+    Consolidates every submitted reviewer report on this submission's
+    current round into:
+      * recommendation tally
+      * consensus recommendation (most common)
+      * shared / conflicting concerns
+      * common positive signals
+
+    Never rewrites reviewer prose — buckets carry the reviewer's own
+    first-sentence excerpts and the raw report ids so the editor can
+    always click through to the original.
+    """
+    from app.agents.reviewer_agents import run_reviewer_consensus_agent
+    from app.routers.reviewer_portal import _report_from_review
+    from app.models.review import Review, ReviewState
+
+    submission = db.query(Submission).filter(Submission.id == submission_id).first()
+    if submission is None:
+        raise HTTPException(status_code=404, detail="Submission not found.")
+
+    reviews = sorted(
+        submission.reviews or [], key=lambda r: r.assigned_at or datetime.min,
+    )
+    target_round = round if round is not None else max(
+        (r.round_number or 1 for r in reviews), default=1,
+    )
+    submitted = [
+        r for r in reviews
+        if r.state == ReviewState.submitted and (r.round_number or 1) == target_round
+    ]
+    reports = [_report_from_review(r).model_dump() for r in submitted]
+    consensus = run_reviewer_consensus_agent(reports)
+    return {
+        "submission_id": str(submission.id),
+        "round": target_round,
+        "reviewer_count": len(reports),
+        **consensus,
+    }
+
+
+# ── Author Revision Checklist (spec §19) ────────────────
+#
+# When the editor's decision on a paper is Major or Minor Revision,
+# the reviewer's Major + Minor comments are the raw material for the
+# author's revision. Aggregating them into a single checklist ensures
+# the author addresses every reviewer point rather than reading three
+# separate reports and inferring what to do.
+
+@router.get("/submissions/{submission_id}/revision-checklist")
+def revision_checklist(
+    submission_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _editor=Depends(require_editor_mfa),
+):
+    """Emit an aggregated revision checklist across every submitted
+    reviewer report on this submission's current round.
+
+    Response shape::
+
+      {
+        "submission_id": "...",
+        "round": 1,
+        "reviewers": [
+          {
+            "reviewer_display_name": "Anonymous Reviewer #1",
+            "recommendation": "major_revision",
+            "items": [
+              {"kind": "major", "page": "7", "section": "3.2",
+               "line": "", "comment": "Explain dataset splitting"},
+              ...
+            ]
+          },
+          ...
+        ]
+      }
+    """
+    import json as _json
+    from app.models.review import Review, ReviewState
+
+    submission = db.query(Submission).filter(Submission.id == submission_id).first()
+    if submission is None:
+        raise HTTPException(status_code=404, detail="Submission not found.")
+
+    ordered = sorted(
+        submission.reviews or [], key=lambda r: r.assigned_at or 0,
+    )
+    reviewers_out = []
+    round_number = max((r.round_number or 1) for r in ordered) if ordered else 1
+
+    for idx, review in enumerate(ordered, start=1):
+        if review.state != ReviewState.submitted:
+            continue
+
+        def _load(raw):
+            try:
+                v = _json.loads(raw or "")
+                return v if isinstance(v, list) else []
+            except Exception:  # noqa: BLE001
+                return []
+
+        items = []
+        for kind, raw in (
+            ("major", review.major_comments),
+            ("minor", review.minor_comments),
+        ):
+            for row in _load(raw):
+                if isinstance(row, str):
+                    text = row.strip()
+                    if text:
+                        items.append({
+                            "kind": kind, "page": "", "section": "",
+                            "line": "", "comment": text,
+                        })
+                elif isinstance(row, dict) and str(row.get("comment") or "").strip():
+                    items.append({
+                        "kind": kind,
+                        "page": str(row.get("page") or ""),
+                        "section": str(row.get("section") or ""),
+                        "line": str(row.get("line") or ""),
+                        "comment": str(row.get("comment")).strip(),
+                    })
+
+        reviewers_out.append({
+            "reviewer_display_name": f"Anonymous Reviewer #{idx}",
+            "recommendation": (
+                review.overall_recommendation.value if review.overall_recommendation else None
+            ),
+            "confidence": review.confidence,
+            "items": items,
+        })
+
+    return {
+        "submission_id": str(submission.id),
+        "round": round_number,
+        "reviewers": reviewers_out,
+    }

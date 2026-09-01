@@ -1,7 +1,9 @@
 from .user import User
 from .journal import Journal
 from .article import Article
-from .review import Review
+from .review import Review, ReviewState, ReviewStatus, OverallRecommendation
+from .review_draft import ReviewDraft
+from .revision_response import RevisionResponse
 from .ai_analysis import AIAnalysis
 from .submission import Submission
 from .reviewer import Reviewer

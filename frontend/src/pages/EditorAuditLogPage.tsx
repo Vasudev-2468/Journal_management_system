@@ -1,6 +1,23 @@
 import React, { useEffect, useState } from 'react';
 import Loading from '../components/common/Loading';
 import { AuditLogEntry, fetchAuditLog } from '../api/platform';
+import BackButton from '../components/common/BackButton';
+import PageActionBar from '../components/common/PageActionBar';
+
+const AUDIT_COLUMNS = [
+    { header: 'Timestamp', accessor: (e: AuditLogEntry) => new Date(e.created_at).toLocaleString() },
+    { header: 'Action', accessor: (e: AuditLogEntry) => e.action },
+    { header: 'Actor', accessor: (e: AuditLogEntry) => e.actor_email || 'system' },
+    {
+        header: 'Target',
+        accessor: (e: AuditLogEntry) => (e.target_type ? `${e.target_type}#${e.target_id}` : ''),
+    },
+    { header: 'IP', accessor: (e: AuditLogEntry) => e.ip_address || '' },
+    {
+        header: 'Meta',
+        accessor: (e: AuditLogEntry) => (e.meta ? JSON.stringify(e.meta) : ''),
+    },
+];
 
 const EditorAuditLogPage: React.FC = () => {
     const [entries, setEntries] = useState<AuditLogEntry[]>([]);
@@ -22,32 +39,65 @@ const EditorAuditLogPage: React.FC = () => {
     return (
         <div className="min-h-screen bg-gray-50 p-8">
             <div className="max-w-6xl mx-auto">
-                <h1 className="text-2xl font-bold text-gray-900 mb-2">Audit Log</h1>
+                <BackButton className="mb-4" />
+                <div className="flex items-start justify-between gap-4 mb-2">
+                    <h1 className="text-2xl font-bold text-gray-900">Audit Log</h1>
+                    <PageActionBar
+                        download={{
+                            filenameBase: 'audit-log',
+                            rows: entries,
+                            columns: AUDIT_COLUMNS,
+                            pdfTitle: 'Audit Log',
+                        }}
+                        share={{ subject: 'Audit Log — Journal Editor' }}
+                        filters={
+                            <div className="space-y-3">
+                                <label className="block text-sm">
+                                    <span className="block text-gray-600 mb-1">Search</span>
+                                    <input
+                                        value={q}
+                                        onChange={(e) => setQ(e.target.value)}
+                                        onKeyDown={(e) => e.key === 'Enter' && load()}
+                                        placeholder="Search action, actor, or target…"
+                                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                                    />
+                                </label>
+                                <label className="block text-sm">
+                                    <span className="block text-gray-600 mb-1">Exact action</span>
+                                    <input
+                                        value={action}
+                                        onChange={(e) => setAction(e.target.value)}
+                                        placeholder="e.g. special_issue.updated"
+                                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                                    />
+                                </label>
+                                <div className="flex justify-end gap-2 pt-1">
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setQ('');
+                                            setAction('');
+                                            load();
+                                        }}
+                                        className="px-3 py-1.5 rounded border border-gray-200 text-sm"
+                                    >
+                                        Reset
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={load}
+                                        className="px-3 py-1.5 rounded bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700"
+                                    >
+                                        Apply
+                                    </button>
+                                </div>
+                            </div>
+                        }
+                    />
+                </div>
                 <p className="text-sm text-gray-500 mb-6">
                     Structured trail of editor and admin actions. Read-only.
                 </p>
-
-                <div className="flex flex-wrap gap-2 mb-4">
-                    <input
-                        value={q}
-                        onChange={(e) => setQ(e.target.value)}
-                        onKeyDown={(e) => e.key === 'Enter' && load()}
-                        placeholder="Search action, actor, or target…"
-                        className="flex-1 min-w-[240px] px-3 py-2 border border-gray-300 rounded-lg text-sm"
-                    />
-                    <input
-                        value={action}
-                        onChange={(e) => setAction(e.target.value)}
-                        placeholder="Exact action (e.g. special_issue.updated)"
-                        className="w-80 px-3 py-2 border border-gray-300 rounded-lg text-sm"
-                    />
-                    <button
-                        onClick={load}
-                        className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-semibold hover:bg-brand-700"
-                    >
-                        Filter
-                    </button>
-                </div>
 
                 {error && (
                     <div role="alert" className="mb-3 text-red-600 bg-red-50 border border-red-200 rounded p-3">

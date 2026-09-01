@@ -30,6 +30,51 @@ class Reviewer(Base):
     email_verified_at = Column(DateTime, nullable=True)
     last_login_at = Column(DateTime, nullable=True)
 
+    # Editor-driven invitation lifecycle.
+    #
+    # The panel invitation flow is: editor invites → system generates a
+    # random password, stamps ``invitation_sent_at`` + a 21-day
+    # ``invitation_expires_at`` and emails the credentials + Accept /
+    # Reject links → reviewer clicks Accept (``invitation_accepted_at``
+    # stamped, login unlocked) or Reject (``invitation_declined_at``
+    # stamped, ``invitation_revoked_at`` also stamped) → if no response
+    # inside the window, the scheduled auto-revoke agent stamps
+    # ``invitation_revoked_at`` on its next run.
+    #
+    # ``invitation_sent_at`` — most recent send/resend; also serves as
+    # the freshness cursor for stale-token rejection.
+    # ``invitation_expires_at`` — the 21-day deadline. After this the
+    # scheduled agent revokes the invite unless the reviewer accepted
+    # or declined in time.
+    # ``invitation_accepted_at`` — reviewer clicked Accept; login is
+    # allowed from this point.
+    # ``invitation_declined_at`` — reviewer clicked Reject; the row
+    # remains for audit but login is refused.
+    # ``invitation_revoked_at`` — invitation invalidated (by editor
+    # revoke, reviewer decline, or auto-revoke agent).
+    invitation_sent_at = Column(DateTime, nullable=True)
+    invitation_expires_at = Column(DateTime, nullable=True)
+    invitation_accepted_at = Column(DateTime, nullable=True)
+    invitation_declined_at = Column(DateTime, nullable=True)
+    invitation_revoked_at = Column(DateTime, nullable=True)
+
+    # Reviewer-portal profile fields (spec §18-19). All nullable — new
+    # reviewers get the panel with everything blank and complete their
+    # profile from the Profile page.
+    phone = Column(String(50))
+    country = Column(String(120))
+    department = Column(String(255))
+    designation = Column(String(255))
+    orcid = Column(String(64))
+    scopus_id = Column(String(64))
+    google_scholar = Column(String(500))
+
+    # Reviewer availability (spec §19). ``unavailable_from`` /
+    # ``unavailable_until`` drive the editor's assignment logic so
+    # invitations are held during a declared unavailable window.
+    unavailable_from = Column(DateTime, nullable=True)
+    unavailable_until = Column(DateTime, nullable=True)
+
     # Bridge to the unified ``users`` identity surface. A Reviewer row is
     # kept as the operational record for peer-review (load counters, tags,
     # embedding vector, per-review token flow); the linked User row
@@ -55,6 +100,13 @@ class Reviewer(Base):
     journal_id = Column(Integer, ForeignKey("journals.id"), nullable=True, index=True)
 
     reviews = relationship("Review", back_populates="reviewer")
+
+    @property
+    def has_password(self) -> bool:
+        """Whether the reviewer has completed the activation flow. Used
+        by the editor Reviewers panel to distinguish "activated" from
+        "pending activation" without exposing the password hash."""
+        return bool(self.password_hash)
 
     def __repr__(self):
         return f"<Reviewer(id={self.id}, name='{self.name}', load={self.current_load}/{self.max_assignments})>"

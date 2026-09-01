@@ -34,6 +34,9 @@ from app.routers import article_pdf as article_pdf_router
 from app.routers import feeds as feeds_router
 from app.routers import kbart as kbart_router
 from app.routers import reviewer_invite as reviewer_invite_router
+from app.routers import reviewer_membership as reviewer_membership_router
+from app.routers import reviewer_portal as reviewer_portal_router
+from app.routers import author_revision as author_revision_router
 from app.routers import editor_badges as editor_badges_router
 from app.routers import authors_notifications as authors_notifications_router
 from app.routers import csp_report as csp_report_router
@@ -233,6 +236,9 @@ app.include_router(article_pdf_router.router, prefix="/articles", tags=["article
 app.include_router(feeds_router.router, tags=["feeds"])
 app.include_router(kbart_router.router, tags=["kbart"])
 app.include_router(reviewer_invite_router.router, prefix="/reviewer-invite", tags=["reviewer-invite"])
+app.include_router(reviewer_membership_router.router, prefix="/reviewer-membership-invite", tags=["reviewer-membership-invite"])
+app.include_router(reviewer_portal_router.router, prefix="/reviewer-portal", tags=["reviewer-portal"])
+app.include_router(author_revision_router.router, prefix="/author-revision", tags=["author-revision"])
 app.include_router(editor_badges_router.router, prefix="/editor-badges", tags=["editor-badges"])
 app.include_router(authors_notifications_router.router, prefix="/authors-notifications", tags=["authors-notifications"])
 app.include_router(csp_report_router.router, tags=["csp-report"])
@@ -297,6 +303,9 @@ _V1_ALIASES = [
     (article_render_router.router, "/articles"),
     (article_pdf_router.router, "/articles"),
     (reviewer_invite_router.router, "/reviewer-invite"),
+    (reviewer_membership_router.router, "/reviewer-membership-invite"),
+    (reviewer_portal_router.router, "/reviewer-portal"),
+    (author_revision_router.router, "/author-revision"),
     (editor_badges_router.router, "/editor-badges"),
     (authors_notifications_router.router, "/authors-notifications"),
     (password_reset_router.router, "/password-reset"),

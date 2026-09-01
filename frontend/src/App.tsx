@@ -17,6 +17,7 @@ import IssuesArchivesPage from './pages/IssuesArchivesPage';
 import IssueDetailPage from './pages/IssueDetailPage';
 import ConsultPartyDashboard from './pages/ConsultPartyDashboard';
 import EditorLoginPage from './pages/EditorLoginPage';
+import EditorRecoveryVerifyPage from './pages/EditorRecoveryVerifyPage';
 import AuthorLoginPage from './pages/AuthorLoginPage';
 import AuthorRegisterPage from './pages/AuthorRegisterPage';
 import AuthorDashboard from './pages/AuthorDashboard';
@@ -39,6 +40,7 @@ import SpecialIssuesPage from './pages/SpecialIssuesPage';
 import SpecialIssueDetailPage from './pages/SpecialIssueDetailPage';
 import ReviewerLoginPage from './pages/ReviewerLoginPage';
 import ReviewerSetPasswordPage from './pages/ReviewerSetPasswordPage';
+import BoardCompleteProfilePage from './pages/BoardCompleteProfilePage';
 import ReviewerInvitePage from './pages/ReviewerInvitePage';
 import ForgotPasswordPage from './pages/ForgotPasswordPage';
 import ResetPasswordPage from './pages/ResetPasswordPage';
@@ -49,7 +51,19 @@ import EditorialBoardMemberPage from './pages/EditorialBoardMemberPage';
 import EditorArticleReferencesPage from './pages/EditorArticleReferencesPage';
 import PrivacyControlsPage from './pages/PrivacyControlsPage';
 import ReviewerDashboardPage from './pages/ReviewerDashboardPage';
+import AssignmentsListPage from './pages/reviewer/AssignmentsListPage';
+import AssignmentDetailsPage from './pages/reviewer/AssignmentDetailsPage';
+import ReviewFormPage from './pages/reviewer/ReviewFormPage';
+import ReviewHistoryPage from './pages/reviewer/ReviewHistoryPage';
+import NotificationsPage from './pages/reviewer/NotificationsPage';
+import ProfilePage from './pages/reviewer/ProfilePage';
+import AvailabilityPage from './pages/reviewer/AvailabilityPage';
+import SecurityPage from './pages/reviewer/SecurityPage';
+import GuidelinesPage from './pages/reviewer/GuidelinesPage';
+import EditorReviewerReportPage from './pages/editor/EditorReviewerReportPage';
+import EditorReviewerReportsPage from './pages/editor/EditorReviewerReportsPage';
 import AuthorRevisionPage from './pages/AuthorRevisionPage';
+import AuthorRevisionResponsePage from './pages/AuthorRevisionResponsePage';
 import EditorUsersAdmin from './pages/EditorUsersAdmin';
 import EditorAuditLogPage from './pages/EditorAuditLogPage';
 import EditorEmailTemplatesPage from './pages/EditorEmailTemplatesPage';
@@ -80,6 +94,7 @@ const App: React.FC = () => {
                     <Route path="/ai-insights" element={<AIInsightsPage />} />
                     <Route path="/login" element={<LoginPage />} />
                     <Route path="/editor-login" element={<EditorLoginPage />} />
+                    <Route path="/editor-recovery-verify" element={<EditorRecoveryVerifyPage />} />
                     <Route path="/author-login" element={<AuthorLoginPage />} />
                     <Route path="/author-register" element={<AuthorRegisterPage />} />
                     <Route path="/editor" element={
@@ -163,6 +178,7 @@ const App: React.FC = () => {
                     <Route path="/accessibility-statement" element={<PolicyPageView slug="accessibility-statement" />} />
                     <Route path="/reviewer-login" element={<ReviewerLoginPage />} />
                     <Route path="/reviewer-set-password" element={<ReviewerSetPasswordPage />} />
+                    <Route path="/board/complete-profile/:token" element={<BoardCompleteProfilePage />} />
                     <Route path="/reviewer-invite/:token" element={<ReviewerInvitePage />} />
                     <Route path="/forgot-password" element={<ForgotPasswordPage />} />
                     <Route path="/reset-password" element={<ResetPasswordPage />} />
@@ -177,6 +193,25 @@ const App: React.FC = () => {
                         </ProtectedEditorRoute>
                     } />
                     <Route path="/reviewer-dashboard" element={<ReviewerDashboardPage />} />
+                    <Route path="/reviewer/assignments" element={<AssignmentsListPage />} />
+                    <Route path="/reviewer/assignment/:reviewId" element={<AssignmentDetailsPage />} />
+                    <Route path="/reviewer/assignment/:reviewId/review" element={<ReviewFormPage />} />
+                    <Route path="/reviewer/history" element={<ReviewHistoryPage />} />
+                    <Route path="/reviewer/notifications" element={<NotificationsPage />} />
+                    <Route path="/reviewer/profile" element={<ProfilePage />} />
+                    <Route path="/reviewer/availability" element={<AvailabilityPage />} />
+                    <Route path="/reviewer/security" element={<SecurityPage />} />
+                    <Route path="/editor/reviewer-report/:reviewId" element={
+                        <ProtectedEditorRoute>
+                            <EditorReviewerReportPage />
+                        </ProtectedEditorRoute>
+                    } />
+                    <Route path="/editor/reviewer-reports/:submissionId" element={
+                        <ProtectedEditorRoute>
+                            <EditorReviewerReportsPage />
+                        </ProtectedEditorRoute>
+                    } />
+                    <Route path="/reviewer/guidelines" element={<GuidelinesPage />} />
 
                     {/* Public informational pages — statistics, search, author profile, APC, manuscript prep */}
                     <Route path="/statistics" element={<StatisticsPage />} />
@@ -189,6 +224,11 @@ const App: React.FC = () => {
                     <Route path="/author-dashboard/:submissionId/revise" element={
                         <ProtectedAuthorRoute>
                             <AuthorRevisionPage />
+                        </ProtectedAuthorRoute>
+                    } />
+                    <Route path="/author-dashboard/:submissionId/respond" element={
+                        <ProtectedAuthorRoute>
+                            <AuthorRevisionResponsePage />
                         </ProtectedAuthorRoute>
                     } />
 

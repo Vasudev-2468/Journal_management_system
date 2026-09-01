@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import Loading from '../components/common/Loading';
+import BackButton from '../components/common/BackButton';
 import {
     SpecialIssue,
     createSpecialIssue,
@@ -87,6 +88,7 @@ const EditorSpecialIssuesAdmin: React.FC = () => {
         <div className="min-h-screen bg-gray-50 p-8">
             <div className="max-w-6xl mx-auto">
                 <div className="flex items-center justify-between mb-6">
+                    <BackButton className="mb-4" />
                     <h1 className="text-2xl font-bold text-gray-900">Special Issues</h1>
                     <button
                         onClick={openCreate}

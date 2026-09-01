@@ -18,6 +18,10 @@ export default function EditorLoginPage() {
   const [devOtp, setDevOtp] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  // Set after a successful "Lost your recovery codes?" request so the
+  // OTP screen switches to a "check your inbox" confirmation state
+  // rather than showing the OTP form beneath a stale success banner.
+  const [fallbackSent, setFallbackSent] = useState(false);
 
   const handleCredentials = async (e) => {
     e.preventDefault();
@@ -81,6 +85,28 @@ export default function EditorLoginPage() {
     }
   };
 
+  // "Lost your recovery codes?" — sends a signed magic link to the
+  // editor's registered email so they can verify by email and get a
+  // fresh set of recovery codes. Gated on the pre-auth token so a
+  // bare email cannot trigger the mail.
+  const handleRecoveryFallback = async () => {
+    setError('');
+    setLoading(true);
+    try {
+      await client.post(
+        '/editor-auth/recovery-fallback/request',
+        {},
+        { headers: { Authorization: `Bearer ${preAuthToken}` } }
+      );
+      setFallbackSent(true);
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      setError(detail || 'Could not start email verification.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-950 to-slate-900 flex items-center justify-center p-4">
       <div className="w-full max-w-md">
@@ -138,13 +164,33 @@ export default function EditorLoginPage() {
                   {loading ? 'Signing in…' : 'Continue'}
                 </button>
               </form>
+            ) : fallbackSent ? (
+              <div className="space-y-4 text-center">
+                <div className="mx-auto w-12 h-12 bg-emerald-100 rounded-full flex items-center justify-center">
+                  <span className="text-2xl">📧</span>
+                </div>
+                <h2 className="text-lg font-semibold text-gray-900">Check your inbox</h2>
+                <p className="text-sm text-gray-600">
+                  If an editor account matches, a verification email is on
+                  its way. Click the link inside to sign in and receive a
+                  fresh set of recovery codes. The link stays valid for
+                  <strong> 2 hours</strong>.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => { setFallbackSent(false); setError(''); }}
+                  className="text-xs text-blue-700 hover:underline"
+                >
+                  ← Back to the code entry screen
+                </button>
+              </div>
             ) : (
               <form onSubmit={handleOtp} className="space-y-5">
                 <div className="text-center mb-2">
                   <h2 className="text-lg font-semibold text-gray-900">Verify code</h2>
                   <p className="text-sm text-gray-500">
                     We sent a 6-digit code to <span className="font-mono">{maskedDest}</span>{' '}
-                    ({channel}).
+                    ({channel}). You can also paste one of your recovery codes.
                   </p>
                   {devOtp && (
                     <p className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 inline-block">
@@ -153,23 +199,23 @@ export default function EditorLoginPage() {
                   )}
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">One-time code</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    One-time code or recovery code
+                  </label>
                   <input
                     type="text"
-                    inputMode="numeric"
-                    pattern="[0-9]{6}"
-                    maxLength={6}
                     value={otp}
-                    onChange={(e) => setOtp(e.target.value.replace(/\D/g, ''))}
+                    onChange={(e) => setOtp(e.target.value)}
                     className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm tracking-widest text-center font-mono"
                     required
                     autoFocus
                     autoComplete="one-time-code"
+                    placeholder="123456 or xxxx-xxxx-xxxx"
                   />
                 </div>
                 <button
                   type="submit"
-                  disabled={loading || otp.length !== 6}
+                  disabled={loading || otp.length < 6}
                   className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg text-sm disabled:opacity-50 transition-colors"
                 >
                   {loading ? 'Verifying…' : 'Verify & Sign In'}
@@ -180,6 +226,16 @@ export default function EditorLoginPage() {
                   </button>
                   <button type="button" onClick={handleResendOtp} disabled={loading} className="text-blue-700 hover:underline disabled:opacity-50">
                     Resend code
+                  </button>
+                </div>
+                <div className="pt-3 border-t border-gray-100 text-center">
+                  <button
+                    type="button"
+                    onClick={handleRecoveryFallback}
+                    disabled={loading}
+                    className="text-xs text-gray-600 hover:text-blue-700 hover:underline disabled:opacity-50"
+                  >
+                    Lost your recovery codes? Verify by email instead
                   </button>
                 </div>
               </form>

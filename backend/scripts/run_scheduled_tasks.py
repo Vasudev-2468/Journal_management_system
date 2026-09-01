@@ -377,6 +377,33 @@ def _task_expire_dead_sessions() -> int:
     return deleted
 
 
+# ── Task 5: revoke stale reviewer-membership invitations ──
+
+
+def _task_auto_revoke_expired_invitations() -> int:
+    """Revoke every reviewer-panel invitation whose 21-day window has
+    elapsed without an Accept or Reject click.
+
+    The reviewer row stays in the panel so the editor can see the
+    outcome; ``invitation_revoked_at`` is stamped so login is refused
+    and the panel status pill shows "revoked". Editors can resend
+    from the Reviewers panel at any time — a resend regenerates the
+    password, resets every timestamp, and re-arms a fresh 21-day
+    window.
+    """
+    from app.services.reviewer_service import auto_revoke_expired_invitations
+
+    db = SessionLocal()
+    try:
+        return auto_revoke_expired_invitations(db)
+    except Exception:
+        db.rollback()
+        logger.exception("auto_revoke_expired_invitations task failed")
+        return 0
+    finally:
+        db.close()
+
+
 # ── Orchestrator ──────────────────────────────────────────
 
 
@@ -394,6 +421,7 @@ def main() -> Dict[str, Any]:
     links_expired = 0
     proof_nudges = 0
     sessions_deleted = 0
+    invitations_auto_revoked = 0
 
     try:
         reminders_sent = _task_send_deadline_reminders()
@@ -411,6 +439,10 @@ def main() -> Dict[str, Any]:
         sessions_deleted = _task_expire_dead_sessions()
     except Exception:
         logger.exception("scheduled task 'expire_dead_sessions' crashed")
+    try:
+        invitations_auto_revoked = _task_auto_revoke_expired_invitations()
+    except Exception:
+        logger.exception("scheduled task 'auto_revoke_expired_invitations' crashed")
 
     duration_ms = int((time.perf_counter() - started) * 1000)
     summary = {
@@ -418,6 +450,7 @@ def main() -> Dict[str, Any]:
         "links_expired": links_expired,
         "proof_nudges": proof_nudges,
         "sessions_deleted": sessions_deleted,
+        "invitations_auto_revoked": invitations_auto_revoked,
         "duration_ms": duration_ms,
     }
     print(json.dumps(summary))

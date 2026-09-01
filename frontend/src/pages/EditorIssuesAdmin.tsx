@@ -10,6 +10,7 @@ import {
     updateIssue,
 } from '../api/publication';
 import Loading from '../components/common/Loading';
+import BackButton from '../components/common/BackButton';
 
 const EditorIssuesAdmin: React.FC = () => {
     const [volumes, setVolumes] = useState<VolumeSummary[]>([]);
@@ -115,6 +116,7 @@ const EditorIssuesAdmin: React.FC = () => {
     return (
         <div className="min-h-screen bg-gray-50 p-8">
             <div className="max-w-6xl mx-auto">
+                <BackButton className="mb-4" />
                 <h1 className="text-2xl font-bold text-gray-900 mb-6">Volumes & Issues</h1>
 
                 {error && (

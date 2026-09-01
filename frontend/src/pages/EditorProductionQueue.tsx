@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import Loading from '../components/common/Loading';
 import useFilePreview from '../hooks/useFilePreview';
+import BackButton from '../components/common/BackButton';
 import {
     ProductionRecord,
     ProductionStage,
@@ -96,6 +97,7 @@ const EditorProductionQueue: React.FC = () => {
     return (
         <div className="min-h-screen bg-gray-50 p-8">
             <div className="max-w-7xl mx-auto">
+                <BackButton className="mb-4" />
                 <h1 className="text-2xl font-bold text-gray-900 mb-2">Production Queue</h1>
                 <p className="text-sm text-gray-500 mb-6">
                     Everything after acceptance — copy editing, typesetting, proof, DOI assignment, publication.

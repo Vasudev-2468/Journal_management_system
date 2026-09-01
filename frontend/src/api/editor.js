@@ -22,6 +22,62 @@ export const suggestReviewers = (submissionId) =>
 export const assignReviewers = (data) =>
   client.post('/reviewers/assign', data).then((r) => r.data);
 
+export const inviteReviewer = (data) =>
+  client.post('/reviewers/invite', data).then((r) => r.data);
+
+// Editor Reviewers panel — per-row invitation lifecycle.
+//
+// ``getReviewerInvitationLink`` mints a fresh 48-hour activation URL
+// the editor can copy; ``resendReviewerInvitation`` re-dispatches the
+// activation email (also clearing any prior revoke);
+// ``revokeReviewerInvitation`` invalidates outstanding activation
+// tokens without deleting the reviewer row; ``deleteReviewer`` hard-
+// deletes a reviewer that carries no review history (409 otherwise).
+
+export const getReviewerInvitationLink = (reviewerId) =>
+  client
+    .get(`/reviewers/${reviewerId}/invitation-link`)
+    .then((r) => r.data);
+
+export const resendReviewerInvitation = (reviewerId) =>
+  client
+    .post(`/reviewers/${reviewerId}/resend-invitation`)
+    .then((r) => r.data);
+
+export const revokeReviewerInvitation = (reviewerId) =>
+  client
+    .post(`/reviewers/${reviewerId}/revoke-invitation`)
+    .then((r) => r.data);
+
+export const deleteReviewer = (reviewerId) =>
+  client.delete(`/reviewers/${reviewerId}`).then((r) => r.data);
+
+// ── Structured Reviewer Report + multi-reviewer views ───
+
+export const fetchReviewerReport = (reviewId) =>
+  client.get(`/editor-portal/reviews/${reviewId}/report`).then((r) => r.data);
+
+export const fetchReviewerReports = (submissionId, params = {}) =>
+  client
+    .get(`/editor-portal/submissions/${submissionId}/reviewer-reports`, { params })
+    .then((r) => r.data);
+
+export const fetchReviewerConsensus = (submissionId, params = {}) =>
+  client
+    .get(`/editor-portal/submissions/${submissionId}/reviewer-consensus`, { params })
+    .then((r) => r.data);
+
+export const fetchRevisionChecklist = (submissionId) =>
+  client
+    .get(`/editor-portal/submissions/${submissionId}/revision-checklist`)
+    .then((r) => r.data);
+
+// Round-N automation — opens a new review round on a submission.
+export const openReviewRound = (submissionId) =>
+  client
+    .post(`/editor-portal/submissions/${submissionId}/open-round`)
+    .then((r) => r.data);
+
 // ── Reviews ─────────────────────────────────────────────
 
 export const fetchSubmissionReviews = (submissionId) =>

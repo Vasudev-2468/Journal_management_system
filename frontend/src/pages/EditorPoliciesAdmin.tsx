@@ -7,6 +7,7 @@ import {
     fetchPolicies,
     updatePolicy,
 } from '../api/policies';
+import BackButton from '../components/common/BackButton';
 import Loading from '../components/common/Loading';
 
 const emptySection = (id: number): PolicySection => ({
@@ -122,6 +123,7 @@ const EditorPoliciesAdmin: React.FC = () => {
     return (
         <div className="min-h-screen bg-gray-50 p-8">
             <div className="max-w-6xl mx-auto">
+                <BackButton className="mb-4" />
                 <h1 className="text-2xl font-bold text-gray-900 mb-6">Policy Pages</h1>
 
                 {error && (

@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
+import BackButton from '../components/common/BackButton';
 import {
     ArticleReference,
     deleteReference,
@@ -151,6 +152,7 @@ const EditorArticleReferencesPage: React.FC = () => {
                         Editor tools
                     </p>
                     <div className="flex items-baseline justify-between flex-wrap gap-3 mt-1">
+                        <BackButton className="mb-4" />
                         <h1 className="text-2xl font-extrabold text-gray-900 tracking-tight">
                             Article #{numericId} — References
                         </h1>

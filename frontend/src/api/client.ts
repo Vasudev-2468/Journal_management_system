@@ -25,12 +25,32 @@ function tokenForUrl(url: string | undefined): string | null {
     if (u.startsWith('/editor-') || u.startsWith('/editor/')) {
         return localStorage.getItem('editor_token');
     }
+    // Editor-managed reviewer directory (POST /reviewers/invite, PATCH
+    // /reviewers/:id, GET /reviewers/suggest/…). All of these require an
+    // editor session; the sole public route is POST /reviewers/register
+    // which happily ignores an attached Bearer.
+    // Routed BEFORE the /reviewer prefixes below so the plural form is
+    // not intercepted by the reviewer-token branch.
+    if (u.startsWith('/reviewers/') || u === '/reviewers') {
+        return localStorage.getItem('editor_token');
+    }
+    // Editorial board CRUD lives at /board/*. GET is public (used by
+    // the marketing /editorial-board page) but POST/PATCH/DELETE
+    // require editor MFA — attach the editor token on every /board
+    // call and let the backend ignore it on the public GETs.
+    if (u.startsWith('/board/') || u === '/board') {
+        return localStorage.getItem('editor_token');
+    }
     // Reviewer session: persistent reviewer account (JG reviewer-auth).
     // Routed BEFORE the /author- branch so /reviewer-auth/* is never
     // reached by the author fallthrough. /reviewer/* covers any future
     // reviewer-scoped endpoints. The per-review token flow at
     // /reviews/access/:token stays anonymous — it does not match here.
-    if (u.startsWith('/reviewer-auth') || u.startsWith('/reviewer/')) {
+    if (
+        u.startsWith('/reviewer-auth') ||
+        u.startsWith('/reviewer/') ||
+        u.startsWith('/reviewer-portal')
+    ) {
         return localStorage.getItem('reviewer_token');
     }
     // R9 — /articles POST/PUT is authenticated: authors POST to publish
@@ -40,7 +60,11 @@ function tokenForUrl(url: string | undefined): string | null {
     // most consumers expect), else fall back to the editor token so
     // editor-only mutations still authenticate. Legacy /submissions/* and
     // /author-*/ stay author-only.
-    if (u.startsWith('/author-') || u.startsWith('/submissions')) {
+    if (
+        u.startsWith('/author-') ||
+        u.startsWith('/author-revision') ||
+        u.startsWith('/submissions')
+    ) {
         return localStorage.getItem('author_token');
     }
     // JG-U — /uploads/* is a generic authenticated upload endpoint used by
@@ -90,10 +114,21 @@ client.interceptors.response.use(
         }
         if (error.response?.status === 401) {
             const url = error.config?.url || '';
-            if (url.startsWith('/editor-') || url.startsWith('/editor/')) {
+            if (
+                url.startsWith('/editor-') ||
+                url.startsWith('/editor/') ||
+                url.startsWith('/reviewers/') ||
+                url === '/reviewers' ||
+                url.startsWith('/board/') ||
+                url === '/board'
+            ) {
                 localStorage.removeItem('editor_token');
                 localStorage.removeItem('editor_mfa_verified');
-            } else if (url.startsWith('/reviewer-auth') || url.startsWith('/reviewer/')) {
+            } else if (
+                url.startsWith('/reviewer-auth') ||
+                url.startsWith('/reviewer/') ||
+                url.startsWith('/reviewer-portal')
+            ) {
                 localStorage.removeItem('reviewer_token');
             } else if (url.startsWith('/author-') || url.startsWith('/submissions')) {
                 localStorage.removeItem('author_token');

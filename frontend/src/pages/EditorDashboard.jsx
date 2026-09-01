@@ -14,14 +14,19 @@ import {
   fetchAnalyticsOverview,
   fetchNotificationLog,
   fetchReviewers,
+  inviteReviewer,
+  getReviewerInvitationLink,
+  resendReviewerInvitation,
+  revokeReviewerInvitation,
+  deleteReviewer,
   fetchOverdueReviews,
   requestAdditionalReview,
   fetchEditorBadges,
   bulkUpdateSubmissions,
-  exportCsv,
 } from '../api/editor';
 import { useJournal } from '../context/JournalContext';
 import NotificationBell from '../components/editor/NotificationBell';
+import PageActionBar from '../components/common/PageActionBar';
 
 // Canonical, human-readable labels for the structured reject-reason codes
 // the backend accepts. Kept next to the top-level imports so both the
@@ -745,23 +750,31 @@ function SubmissionsPanel({
     }
   };
 
-  const doExportCsv = async () => {
-    setBulkBusy(true);
-    setBulkError(null);
-    try {
-      await exportCsv('submissions');
-    } catch (e) {
-      setBulkError(
-        e?.response?.data?.detail || e?.message || 'CSV export failed.',
-      );
-    } finally {
-      setBulkBusy(false);
-    }
-  };
+  const submissionColumns = [
+    { header: 'Paper ID', accessor: (s) => s.paper_id_code || s.id },
+    { header: 'Title', accessor: (s) => s.paper_title },
+    { header: 'Author', accessor: (s) => s.author_name },
+    { header: 'Email', accessor: (s) => s.author_email },
+    { header: 'Status', accessor: (s) => (s.status || '').replace(/_/g, ' ') },
+    { header: 'Field', accessor: (s) => s.classified_field || '' },
+    { header: 'Submitted', accessor: (s) => new Date(s.submitted_at).toLocaleDateString() },
+    { header: 'Reviews', accessor: (s) => s.reviewer_count ?? 0 },
+  ];
 
   return (
     <div>
-      <h2 className="text-2xl font-bold text-gray-900 mb-6">{title}</h2>
+      <div className="flex items-start justify-between gap-4 mb-6">
+        <h2 className="text-2xl font-bold text-gray-900">{title}</h2>
+        <PageActionBar
+          download={{
+            filenameBase: title.toLowerCase().replace(/\s+/g, '-'),
+            rows: filtered,
+            columns: submissionColumns,
+            pdfTitle: title,
+          }}
+          share={{ subject: `${title} — Journal Editor` }}
+        />
+      </div>
 
       {/* Filters */}
       <div className="flex flex-wrap gap-3 mb-4">
@@ -933,14 +946,6 @@ function SubmissionsPanel({
               {bulkBusy ? '…' : 'Apply'}
             </button>
           </div>
-          <button
-            type="button"
-            onClick={doExportCsv}
-            disabled={bulkBusy}
-            className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded disabled:opacity-50"
-          >
-            Export CSV
-          </button>
           <button
             type="button"
             onClick={clearSelection}
@@ -1554,17 +1559,438 @@ function DetailRow({ label, children }) {
    Reviewers Panel
    ═══════════════════════════════════════════════════════════ */
 
+function InviteReviewerModal({ onClose, onSuccess }) {
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [institution, setInstitution] = useState('');
+  const [whatsapp, setWhatsapp] = useState('');
+  const [expertise, setExpertise] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+
+  const canSubmit =
+    name.trim().length >= 2 &&
+    /.+@.+\..+/.test(email.trim()) &&
+    expertise.trim().length > 0 &&
+    !submitting;
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError('');
+    setSuccess('');
+    setSubmitting(true);
+    try {
+      const tags = expertise
+        .split(',')
+        .map((t) => t.trim())
+        .filter(Boolean);
+      const result = await inviteReviewer({
+        name: name.trim(),
+        email: email.trim(),
+        institution: institution.trim() || null,
+        whatsapp_number: whatsapp.trim() || null,
+        expertise_tags: tags,
+      });
+      setSuccess(result?.message || 'Invitation sent.');
+      // Give the editor a beat to see the confirmation before the list refreshes.
+      setTimeout(onSuccess, 900);
+    } catch (err) {
+      setError(
+        err?.response?.data?.detail ||
+          err?.message ||
+          'Could not send the invitation.',
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="invite-reviewer-title"
+    >
+      <div className="bg-white rounded-xl shadow-xl max-w-lg w-full p-6">
+        <div className="flex items-start justify-between mb-4">
+          <div>
+            <h3 id="invite-reviewer-title" className="text-lg font-bold text-gray-900">
+              Invite reviewer
+            </h3>
+            <p className="text-xs text-gray-500 mt-1">
+              The reviewer receives an email with auto-generated login
+              credentials and Accept / Reject buttons. They have 21 days
+              to respond — after that, the agent auto-revokes the invite.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-gray-400 hover:text-gray-600 text-2xl leading-none"
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-3">
+          <label className="block">
+            <span className="text-xs font-semibold text-gray-700">Full name *</span>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+              required
+              minLength={2}
+              autoFocus
+            />
+          </label>
+          <label className="block">
+            <span className="text-xs font-semibold text-gray-700">Email *</span>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+              required
+            />
+          </label>
+          <label className="block">
+            <span className="text-xs font-semibold text-gray-700">Institution</span>
+            <input
+              type="text"
+              value={institution}
+              onChange={(e) => setInstitution(e.target.value)}
+              className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+            />
+          </label>
+          <label className="block">
+            <span className="text-xs font-semibold text-gray-700">
+              WhatsApp number (optional, E.164)
+            </span>
+            <input
+              type="tel"
+              value={whatsapp}
+              onChange={(e) => setWhatsapp(e.target.value)}
+              placeholder="+919876543210"
+              className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+            />
+          </label>
+          <label className="block">
+            <span className="text-xs font-semibold text-gray-700">
+              Expertise tags * (comma-separated)
+            </span>
+            <input
+              type="text"
+              value={expertise}
+              onChange={(e) => setExpertise(e.target.value)}
+              placeholder="machine learning, computer vision, remote sensing"
+              className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+              required
+            />
+            <span className="mt-1 block text-[11px] text-gray-500">
+              Used for expertise-based reviewer suggestions on new submissions.
+            </span>
+          </label>
+
+          {error && (
+            <div role="alert" className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+              {error}
+            </div>
+          )}
+          {success && (
+            <div role="status" className="text-sm text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-2">
+              {success}
+            </div>
+          )}
+
+          <div className="flex justify-end gap-2 pt-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 rounded-lg text-sm font-semibold text-gray-700 hover:bg-gray-100"
+              disabled={submitting}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={!canSubmit}
+              className="px-4 py-2 rounded-lg text-sm font-semibold text-white bg-blue-700 hover:bg-blue-800 disabled:bg-gray-300 disabled:cursor-not-allowed"
+            >
+              {submitting ? 'Sending…' : 'Send invitation'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+/* ── Status pill for a Reviewer row ────────────────────
+ *
+ * Collapses the new panel-membership lifecycle into the pill shown in
+ * the Reviewers table. The invitation flow is:
+ *   editor invites → reviewer receives email with credentials +
+ *   Accept/Reject buttons → 21-day window → auto-revoke agent runs.
+ *
+ *   inactive  — editor deactivated the reviewer entirely.
+ *   declined  — reviewer clicked Reject; row parked for the audit trail.
+ *   revoked   — invitation invalidated (editor revoke or auto-revoke
+ *               agent after 21 days).
+ *   accepted  — reviewer clicked Accept; login is unlocked.
+ *   pending   — invited but no response yet; window still open.
+ *   active    — legacy row (self-registered or pre-migration) with no
+ *               formal invitation-flow footprint.
+ */
+function reviewerStatus(r) {
+  if (!r.is_active) return 'inactive';
+  if (r.invitation_declined_at) return 'declined';
+  if (r.invitation_revoked_at) return 'revoked';
+  if (r.invitation_accepted_at) return 'accepted';
+  if (r.invitation_expires_at || r.invitation_sent_at) return 'pending';
+  return 'active';
+}
+
+const REVIEWER_STATUS_STYLES = {
+  active:   { cls: 'bg-green-100 text-green-700',       label: 'active' },
+  accepted: { cls: 'bg-emerald-100 text-emerald-700',   label: 'accepted' },
+  pending:  { cls: 'bg-amber-100 text-amber-800',       label: 'pending' },
+  revoked:  { cls: 'bg-rose-100 text-rose-700',         label: 'revoked' },
+  declined: { cls: 'bg-slate-200 text-slate-700',       label: 'declined' },
+  inactive: { cls: 'bg-gray-200 text-gray-600',         label: 'inactive' },
+};
+
+function ReviewerStatusPill({ status }) {
+  const style = REVIEWER_STATUS_STYLES[status] || REVIEWER_STATUS_STYLES.active;
+  return (
+    <span className={`text-xs px-2 py-0.5 rounded ${style.cls}`}>{style.label}</span>
+  );
+}
+
+// Copyable invitation link modal. Rendered when the editor clicks
+// "Show invite link" on a pending or revoked reviewer.
+function InvitationLinkModal({ reviewer, url, expiresAt, onClose }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1600);
+    } catch {
+      // clipboard blocked — user can still select the field and copy.
+    }
+  };
+  const expires = expiresAt
+    ? new Date(expiresAt).toLocaleString(undefined, {
+        month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+      })
+    : null;
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      role="dialog" aria-modal="true" aria-labelledby="invite-link-title"
+    >
+      <div className="bg-white rounded-xl shadow-xl max-w-lg w-full p-6">
+        <div className="flex items-start justify-between mb-3">
+          <div>
+            <h3 id="invite-link-title" className="text-lg font-bold text-gray-900">
+              Accept link for {reviewer.name}
+            </h3>
+            <p className="text-xs text-gray-500 mt-1">
+              Share this link out-of-band (chat, phone). Opening it
+              records the reviewer's Accept — after that they sign in
+              with the credentials from their invitation email.
+              {expires ? <> Expires <strong>{expires}</strong>.</> : null}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-gray-400 hover:text-gray-600 text-2xl leading-none"
+            aria-label="Close"
+          >×</button>
+        </div>
+        <div className="flex items-stretch gap-2">
+          <input
+            type="text"
+            readOnly
+            value={url}
+            onFocus={(e) => e.target.select()}
+            className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-xs font-mono bg-gray-50"
+            aria-label="Activation URL"
+          />
+          <button
+            type="button"
+            onClick={handleCopy}
+            className="px-3 py-2 rounded-lg bg-blue-700 text-white text-sm font-semibold hover:bg-blue-800"
+          >
+            {copied ? 'Copied' : 'Copy'}
+          </button>
+        </div>
+        <div className="mt-4 flex justify-end">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-4 py-2 rounded-lg text-sm font-semibold text-gray-700 hover:bg-gray-100"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Confirmation modal for delete / revoke. Small and single-purpose so
+// each destructive action gets its own explicit review step.
+function ConfirmModal({ title, body, confirmLabel, confirmClass, onCancel, onConfirm, busy }) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      role="dialog" aria-modal="true"
+    >
+      <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6">
+        <h3 className="text-lg font-bold text-gray-900 mb-2">{title}</h3>
+        <div className="text-sm text-gray-600 mb-5">{body}</div>
+        <div className="flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="px-4 py-2 rounded-lg text-sm font-semibold text-gray-700 hover:bg-gray-100"
+            disabled={busy}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={busy}
+            className={`px-4 py-2 rounded-lg text-sm font-semibold text-white ${confirmClass} disabled:bg-gray-300 disabled:cursor-not-allowed`}
+          >
+            {busy ? 'Working…' : confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Per-row inline action buttons. Rendered as small text pills so
+// every available action is visible at a glance — a kebab menu hides
+// the surface area and, worse, the popover gets clipped by the
+// table wrapper's rounded-corner overflow. Options adapt to the
+// reviewer's status: any reviewer that has NOT yet set a password
+// still lives in the invitation flow (pending, revoked, or a legacy
+// "active" row without a stamped invitation_sent_at) and gets the
+// invite-link / resend controls; only currently-pending reviewers can
+// be revoked; delete is hidden when the reviewer has any current load
+// (server also enforces).
+function ReviewerRowActions({ reviewer, busy, onAction }) {
+  const status = reviewerStatus(reviewer);
+  // Invite-flow actions are meaningful while the reviewer has not yet
+  // accepted. Once the reviewer accepts, they own the account and the
+  // panel switches to deactivate/delete controls.
+  const canInviteOps = !reviewer.invitation_accepted_at;
+  const canRevoke = status === 'pending';
+  const canDelete = reviewer.current_load === 0;
+
+  const btn = (label, action, extraCls) => (
+    <button
+      type="button"
+      onClick={() => onAction(action)}
+      disabled={busy}
+      className={
+        'px-2 py-1 text-xs font-semibold rounded border transition-colors ' +
+        'disabled:opacity-50 disabled:cursor-not-allowed ' +
+        extraCls
+      }
+    >
+      {label}
+    </button>
+  );
+
+  return (
+    <div className="flex flex-wrap justify-end gap-1.5">
+      {canInviteOps && btn(
+        'Show link',
+        'link',
+        'border-blue-200 text-blue-700 bg-blue-50 hover:bg-blue-100',
+      )}
+      {canInviteOps && btn(
+        'Resend',
+        'resend',
+        'border-indigo-200 text-indigo-700 bg-indigo-50 hover:bg-indigo-100',
+      )}
+      {canRevoke && btn(
+        'Revoke',
+        'revoke',
+        'border-amber-200 text-amber-800 bg-amber-50 hover:bg-amber-100',
+      )}
+      {canDelete
+        ? btn(
+            'Delete',
+            'delete',
+            'border-rose-200 text-rose-700 bg-rose-50 hover:bg-rose-100',
+          )
+        : (
+          <span
+            className="px-2 py-1 text-xs text-gray-400"
+            title="Delete disabled — reviewer has active assignments."
+          >
+            Delete —
+          </span>
+        )}
+    </div>
+  );
+}
+
+const STATUS_FILTER_OPTIONS = [
+  { value: 'all',      label: 'All' },
+  { value: 'pending',  label: 'Pending response' },
+  { value: 'accepted', label: 'Accepted' },
+  { value: 'declined', label: 'Declined' },
+  { value: 'revoked',  label: 'Revoked' },
+  { value: 'inactive', label: 'Inactive' },
+];
+
 function ReviewersPanel() {
   const [reviewers, setReviewers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [search, setSearch] = useState('');
-  const [showInactive, setShowInactive] = useState(false);
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [inviteOpen, setInviteOpen] = useState(false);
+  const [reloadTick, setReloadTick] = useState(0);
+  // Row-level UI state — the invite-link modal, a pending confirm
+  // dialog (revoke / delete), and per-row transient "working…" flags
+  // so the kebab menu can disable itself while a request is in flight.
+  const [linkModal, setLinkModal] = useState(null);
+  const [confirm, setConfirm] = useState(null);
+  const [busyId, setBusyId] = useState(null);
+  const [toast, setToast] = useState(null);
 
+  // The status pill is derived client-side too so the filter can
+  // remain snappy even before the next server round-trip lands.
+  // ``inactive`` and ``revoked`` are still sent as a server-side
+  // filter (backend supports it) so the count stays honest for
+  // filtered exports.
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    fetchReviewers(showInactive ? undefined : { is_active: true })
+    // The default view hides inactive — legacy behaviour. Passing
+    // ``status`` narrows to the exact pill; ``all`` still hides
+    // inactive so the panel doesn't grow noisy over time.
+    const params =
+      statusFilter === 'all'
+        ? { is_active: true }
+        : statusFilter === 'inactive'
+        ? { is_active: false }
+        : { status: statusFilter };
+    fetchReviewers(params)
       .then((data) => {
         if (!cancelled) setReviewers(Array.isArray(data) ? data : []);
       })
@@ -1581,7 +2007,7 @@ function ReviewersPanel() {
     return () => {
       cancelled = true;
     };
-  }, [showInactive]);
+  }, [statusFilter, reloadTick]);
 
   const filtered = reviewers.filter((r) => {
     if (!search.trim()) return true;
@@ -1594,9 +2020,118 @@ function ReviewersPanel() {
     );
   });
 
+  const showToast = (message, tone = 'success') => {
+    setToast({ message, tone });
+    setTimeout(() => setToast(null), 3200);
+  };
+
+  const handleShowLink = async (reviewer) => {
+    setBusyId(reviewer.id);
+    try {
+      const data = await getReviewerInvitationLink(reviewer.id);
+      setLinkModal({
+        reviewer,
+        url: data.invitation_url,
+        expiresAt: data.expires_at,
+      });
+    } catch (err) {
+      showToast(
+        err?.response?.data?.detail || 'Could not fetch invitation link.',
+        'error',
+      );
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const handleResend = async (reviewer) => {
+    setBusyId(reviewer.id);
+    try {
+      const data = await resendReviewerInvitation(reviewer.id);
+      showToast(data.message || 'Invitation resent.');
+      setReloadTick((t) => t + 1);
+    } catch (err) {
+      showToast(
+        err?.response?.data?.detail || 'Could not resend invitation.',
+        'error',
+      );
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const handleRevoke = (reviewer) => {
+    setConfirm({
+      kind: 'revoke',
+      reviewer,
+      title: `Revoke invitation for ${reviewer.name}?`,
+      body:
+        'The activation link in their inbox will stop working. You can resend a fresh invitation later — the reviewer row stays on the list.',
+      confirmLabel: 'Revoke invitation',
+      confirmClass: 'bg-amber-600 hover:bg-amber-700',
+    });
+  };
+
+  const handleDelete = (reviewer) => {
+    setConfirm({
+      kind: 'delete',
+      reviewer,
+      title: `Delete ${reviewer.name}?`,
+      body:
+        'This removes the reviewer from the panel. Reviewers with review history cannot be deleted — deactivate them instead.',
+      confirmLabel: 'Delete reviewer',
+      confirmClass: 'bg-rose-600 hover:bg-rose-700',
+    });
+  };
+
+  const runConfirm = async () => {
+    if (!confirm) return;
+    const { reviewer, kind } = confirm;
+    setBusyId(reviewer.id);
+    try {
+      if (kind === 'revoke') {
+        await revokeReviewerInvitation(reviewer.id);
+        showToast('Invitation revoked.');
+      } else if (kind === 'delete') {
+        await deleteReviewer(reviewer.id);
+        showToast('Reviewer deleted.');
+      }
+      setConfirm(null);
+      setReloadTick((t) => t + 1);
+    } catch (err) {
+      showToast(
+        err?.response?.data?.detail ||
+          (kind === 'delete'
+            ? 'Could not delete reviewer.'
+            : 'Could not revoke invitation.'),
+        'error',
+      );
+      setConfirm(null);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const dispatchRowAction = (reviewer, action) => {
+    if (action === 'link') return handleShowLink(reviewer);
+    if (action === 'resend') return handleResend(reviewer);
+    if (action === 'revoke') return handleRevoke(reviewer);
+    if (action === 'delete') return handleDelete(reviewer);
+    return undefined;
+  };
+
   return (
     <div>
-      <h2 className="text-2xl font-bold text-gray-900 mb-6">Reviewers</h2>
+      <div className="flex items-center justify-between mb-6">
+        <h2 className="text-2xl font-bold text-gray-900">Reviewers</h2>
+        <button
+          type="button"
+          onClick={() => setInviteOpen(true)}
+          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-700 text-white text-sm font-semibold hover:bg-blue-800"
+        >
+          <span aria-hidden>+</span> Invite reviewer
+        </button>
+      </div>
       <div className="flex flex-wrap items-center gap-3 mb-4">
         <input
           type="search"
@@ -1607,14 +2142,63 @@ function ReviewersPanel() {
           aria-label="Search reviewers"
         />
         <label className="flex items-center gap-2 text-sm text-gray-700">
-          <input
-            type="checkbox"
-            checked={showInactive}
-            onChange={(e) => setShowInactive(e.target.checked)}
-          />
-          Include inactive
+          <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Status</span>
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white"
+            aria-label="Filter reviewers by status"
+          >
+            {STATUS_FILTER_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
+          </select>
         </label>
       </div>
+
+      {toast && (
+        <div
+          role="status"
+          className={`mb-3 px-3 py-2 rounded-lg text-sm border ${
+            toast.tone === 'error'
+              ? 'bg-red-50 text-red-700 border-red-200'
+              : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+          }`}
+        >
+          {toast.message}
+        </div>
+      )}
+
+      {inviteOpen && (
+        <InviteReviewerModal
+          onClose={() => setInviteOpen(false)}
+          onSuccess={() => {
+            setInviteOpen(false);
+            setReloadTick((t) => t + 1);
+          }}
+        />
+      )}
+
+      {linkModal && (
+        <InvitationLinkModal
+          reviewer={linkModal.reviewer}
+          url={linkModal.url}
+          expiresAt={linkModal.expiresAt}
+          onClose={() => setLinkModal(null)}
+        />
+      )}
+
+      {confirm && (
+        <ConfirmModal
+          title={confirm.title}
+          body={confirm.body}
+          confirmLabel={confirm.confirmLabel}
+          confirmClass={confirm.confirmClass}
+          onCancel={() => setConfirm(null)}
+          onConfirm={runConfirm}
+          busy={busyId === confirm.reviewer.id}
+        />
+      )}
 
       {loading ? (
         <SkeletonRows rows={5} />
@@ -1625,19 +2209,20 @@ function ReviewersPanel() {
       ) : filtered.length === 0 ? (
         <div className="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-500 text-sm">
           {reviewers.length === 0
-            ? 'No reviewers registered yet.'
+            ? 'No reviewers match this filter yet.'
             : 'No reviewers match your search.'}
         </div>
       ) : (
-        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+        <div className="bg-white rounded-xl border border-gray-200">
           <table className="min-w-full text-sm">
             <thead className="bg-gray-50 text-left text-xs uppercase tracking-wider text-gray-500">
               <tr>
-                <th className="px-4 py-3">Name</th>
+                <th className="px-4 py-3 rounded-tl-xl">Name</th>
                 <th className="px-4 py-3">Institution</th>
                 <th className="px-4 py-3">Expertise</th>
                 <th className="px-4 py-3">Load</th>
                 <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3 text-right rounded-tr-xl">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
@@ -1669,15 +2254,14 @@ function ReviewersPanel() {
                     {r.current_load}/{r.max_assignments}
                   </td>
                   <td className="px-4 py-3">
-                    <span
-                      className={
-                        r.is_active
-                          ? 'text-xs px-2 py-0.5 rounded bg-green-100 text-green-700'
-                          : 'text-xs px-2 py-0.5 rounded bg-gray-200 text-gray-600'
-                      }
-                    >
-                      {r.is_active ? 'active' : 'inactive'}
-                    </span>
+                    <ReviewerStatusPill status={reviewerStatus(r)} />
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    <ReviewerRowActions
+                      reviewer={r}
+                      busy={busyId === r.id}
+                      onAction={(action) => dispatchRowAction(r, action)}
+                    />
                   </td>
                 </tr>
               ))}
@@ -1693,6 +2277,83 @@ function ReviewersPanel() {
    Notifications Log Panel
    ═══════════════════════════════════════════════════════════ */
 
+// ── Notification event catalog ──────────────────────────
+// Maps the backend's snake_case trigger_event codes to a designer-facing
+// label, an emoji-icon glyph, and a Tailwind color family. Anything not
+// listed falls back to a neutral "Notification" card so an unknown event
+// name still renders cleanly.
+const NOTIF_EVENT_CATALOG = {
+  editor_mfa_otp_email:    { label: 'Editor sign-in code',      icon: '🔐', color: 'indigo' },
+  author_mfa_otp_email:    { label: 'Author sign-in code',      icon: '🔐', color: 'indigo' },
+  reviewer_mfa_otp_email:  { label: 'Reviewer sign-in code',    icon: '🔐', color: 'indigo' },
+  password_reset_request:  { label: 'Password reset link',      icon: '🔑', color: 'slate' },
+  reviewer_invitation:     { label: 'Reviewer invitation',      icon: '📨', color: 'blue' },
+  reviewer_welcome:        { label: 'Reviewer welcome',         icon: '✨', color: 'emerald' },
+  reviewer_reminder:       { label: 'Reviewer reminder',        icon: '⏰', color: 'amber' },
+  author_acknowledgment:   { label: 'Submission received',      icon: '✅', color: 'emerald' },
+  editor_new_submission:   { label: 'New submission',           icon: '📄', color: 'blue' },
+  editor_escalation:       { label: 'Escalation',               icon: '⚠️', color: 'rose' },
+  decision_to_author:      { label: 'Decision sent to author',  icon: '⚖️', color: 'purple' },
+  contact_message:         { label: 'Contact message',          icon: '💬', color: 'cyan' },
+};
+
+const NOTIF_COLOR_STYLES = {
+  indigo:  { chip: 'bg-indigo-50 text-indigo-700 border-indigo-200',   icon: 'bg-indigo-100 text-indigo-700' },
+  slate:   { chip: 'bg-slate-50 text-slate-700 border-slate-200',      icon: 'bg-slate-100 text-slate-700' },
+  blue:    { chip: 'bg-blue-50 text-blue-700 border-blue-200',         icon: 'bg-blue-100 text-blue-700' },
+  emerald: { chip: 'bg-emerald-50 text-emerald-700 border-emerald-200',icon: 'bg-emerald-100 text-emerald-700' },
+  amber:   { chip: 'bg-amber-50 text-amber-800 border-amber-200',      icon: 'bg-amber-100 text-amber-700' },
+  rose:    { chip: 'bg-rose-50 text-rose-700 border-rose-200',         icon: 'bg-rose-100 text-rose-700' },
+  purple:  { chip: 'bg-purple-50 text-purple-700 border-purple-200',   icon: 'bg-purple-100 text-purple-700' },
+  cyan:    { chip: 'bg-cyan-50 text-cyan-700 border-cyan-200',         icon: 'bg-cyan-100 text-cyan-700' },
+  gray:    { chip: 'bg-gray-50 text-gray-700 border-gray-200',         icon: 'bg-gray-100 text-gray-700' },
+};
+
+function describeEvent(code) {
+  if (!code) return { label: 'Notification', icon: '📬', color: 'gray' };
+  if (NOTIF_EVENT_CATALOG[code]) return NOTIF_EVENT_CATALOG[code];
+  // Prettify an unknown snake_case code as a fallback: "some_event" → "Some event".
+  const pretty = code.charAt(0).toUpperCase() + code.slice(1).replace(/_/g, ' ');
+  return { label: pretty, icon: '📬', color: 'gray' };
+}
+
+function relativeTime(iso) {
+  if (!iso) return '—';
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return '—';
+  const diffSec = Math.round((Date.now() - then) / 1000);
+  if (diffSec < 45) return 'just now';
+  if (diffSec < 90) return '1 min ago';
+  const diffMin = Math.round(diffSec / 60);
+  if (diffMin < 60) return `${diffMin} min ago`;
+  const diffHr = Math.round(diffMin / 60);
+  if (diffHr < 24) return `${diffHr} hr${diffHr === 1 ? '' : 's'} ago`;
+  const diffDay = Math.round(diffHr / 24);
+  if (diffDay === 1) return 'yesterday';
+  if (diffDay < 7) return `${diffDay} days ago`;
+  return new Date(iso).toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: new Date(iso).getFullYear() === new Date().getFullYear() ? undefined : 'numeric',
+  });
+}
+
+function NotificationStatusPill({ status }) {
+  const s = String(status || '').toLowerCase();
+  const map = {
+    sent:    { cls: 'bg-emerald-100 text-emerald-800 ring-emerald-200', dot: 'bg-emerald-500', label: 'Delivered' },
+    failed:  { cls: 'bg-rose-100 text-rose-800 ring-rose-200',          dot: 'bg-rose-500',    label: 'Failed' },
+    pending: { cls: 'bg-amber-100 text-amber-800 ring-amber-200',       dot: 'bg-amber-500 animate-pulse', label: 'Pending' },
+  };
+  const spec = map[s] || { cls: 'bg-gray-100 text-gray-700 ring-gray-200', dot: 'bg-gray-400', label: s || 'unknown' };
+  return (
+    <span className={`inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-full ring-1 ring-inset ${spec.cls}`}>
+      <span className={`w-1.5 h-1.5 rounded-full ${spec.dot}`} aria-hidden />
+      {spec.label}
+    </span>
+  );
+}
+
 function NotificationsLogPanel() {
   const [entries, setEntries] = useState([]);
   const [total, setTotal] = useState(0);
@@ -1700,6 +2361,10 @@ function NotificationsLogPanel() {
   const [error, setError] = useState(null);
   const [channelFilter, setChannelFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
+  const [eventFilter, setEventFilter] = useState('');
+  const [search, setSearch] = useState('');
+  const [selected, setSelected] = useState(null); // full-message modal
+  const [reloadTick, setReloadTick] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -1727,84 +2392,284 @@ function NotificationsLogPanel() {
     return () => {
       cancelled = true;
     };
-  }, [channelFilter, statusFilter]);
+  }, [channelFilter, statusFilter, reloadTick]);
+
+  // Derive the event-code choices from what's in view so the filter
+  // dropdown never advertises an event the current dataset can't show.
+  const uniqueEvents = React.useMemo(() => {
+    const seen = new Set();
+    for (const e of entries) if (e.trigger_event) seen.add(e.trigger_event);
+    return Array.from(seen).sort();
+  }, [entries]);
+
+  const filtered = React.useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return entries.filter((e) => {
+      if (eventFilter && e.trigger_event !== eventFilter) return false;
+      if (!q) return true;
+      return (
+        (e.recipient || '').toLowerCase().includes(q) ||
+        (e.trigger_event || '').toLowerCase().includes(q) ||
+        (describeEvent(e.trigger_event).label || '').toLowerCase().includes(q) ||
+        (e.preview || '').toLowerCase().includes(q)
+      );
+    });
+  }, [entries, search, eventFilter]);
+
+  const counts = React.useMemo(() => {
+    const acc = { sent: 0, failed: 0, pending: 0 };
+    for (const e of entries) if (acc[e.status] !== undefined) acc[e.status] += 1;
+    return acc;
+  }, [entries]);
 
   return (
     <div>
-      <h2 className="text-2xl font-bold text-gray-900 mb-6">
-        Notifications Log
-        {total > 0 && (
-          <span className="ml-2 text-sm font-normal text-gray-500">
-            ({entries.length} of {total})
-          </span>
-        )}
-      </h2>
-      <div className="flex flex-wrap gap-3 mb-4">
-        <select
-          value={channelFilter}
-          onChange={(e) => setChannelFilter(e.target.value)}
-          className="px-3 py-2 border border-gray-300 rounded-lg text-sm"
-          aria-label="Filter by channel"
+      {/* ── Header + summary tiles ─────────────────────── */}
+      <div className="flex items-start justify-between mb-6 gap-4">
+        <div>
+          <h2 className="text-2xl font-bold text-gray-900">Notifications</h2>
+          <p className="text-sm text-gray-500 mt-1">
+            Every automated email and message sent from JGAIR, newest first.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setReloadTick((t) => t + 1)}
+          className="inline-flex items-center gap-2 text-sm font-medium text-gray-700 hover:text-gray-900 border border-gray-300 bg-white rounded-lg px-3 py-2"
+          aria-label="Reload notifications"
         >
-          <option value="">All channels</option>
-          <option value="email">Email</option>
-          <option value="whatsapp">WhatsApp</option>
-        </select>
-        <select
-          value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value)}
-          className="px-3 py-2 border border-gray-300 rounded-lg text-sm"
-          aria-label="Filter by status"
-        >
-          <option value="">All statuses</option>
-          <option value="pending">Pending</option>
-          <option value="sent">Sent</option>
-          <option value="failed">Failed</option>
-        </select>
+          <span aria-hidden>↻</span> Reload
+        </button>
       </div>
 
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+        <SummaryTile label="Total" value={total} tone="gray" />
+        <SummaryTile label="Delivered" value={counts.sent} tone="emerald" />
+        <SummaryTile label="Failed" value={counts.failed} tone="rose" />
+        <SummaryTile label="Pending" value={counts.pending} tone="amber" />
+      </div>
+
+      {/* ── Filter bar ─────────────────────────────────── */}
+      <div className="bg-white border border-gray-200 rounded-xl p-3 mb-4">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="relative flex-1 min-w-[240px]">
+            <span aria-hidden className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">🔍</span>
+            <input
+              type="search"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search recipient, event, or message…"
+              className="w-full pl-9 pr-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              aria-label="Search notifications"
+            />
+          </div>
+          <select
+            value={eventFilter}
+            onChange={(e) => setEventFilter(e.target.value)}
+            className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white"
+            aria-label="Filter by event"
+          >
+            <option value="">All events</option>
+            {uniqueEvents.map((code) => (
+              <option key={code} value={code}>
+                {describeEvent(code).label}
+              </option>
+            ))}
+          </select>
+          <select
+            value={channelFilter}
+            onChange={(e) => setChannelFilter(e.target.value)}
+            className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white"
+            aria-label="Filter by channel"
+          >
+            <option value="">All channels</option>
+            <option value="email">Email</option>
+            <option value="whatsapp">WhatsApp</option>
+          </select>
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white"
+            aria-label="Filter by status"
+          >
+            <option value="">All statuses</option>
+            <option value="sent">Delivered</option>
+            <option value="failed">Failed</option>
+            <option value="pending">Pending</option>
+          </select>
+        </div>
+      </div>
+
+      {/* ── List ───────────────────────────────────────── */}
       {loading ? (
         <SkeletonRows rows={6} />
       ) : error ? (
-        <div role="alert" className="bg-white rounded-xl border border-red-200 p-6 text-sm text-red-600">
+        <div role="alert" className="bg-white rounded-xl border border-rose-200 p-6 text-sm text-rose-700">
           {error}
         </div>
-      ) : entries.length === 0 ? (
-        <div className="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-500 text-sm">
-          No notifications match the current filters.
+      ) : filtered.length === 0 ? (
+        <div className="bg-white rounded-xl border border-gray-200 p-10 text-center">
+          <div className="text-4xl mb-2" aria-hidden>📭</div>
+          <p className="text-gray-600 font-medium">No notifications match the current filters.</p>
+          <p className="text-xs text-gray-400 mt-1">Try clearing the search or filter selections above.</p>
         </div>
       ) : (
-        <div className="bg-white rounded-xl border border-gray-200 divide-y divide-gray-100">
-          {entries.map((entry) => (
-            <div key={entry.id} className="px-4 py-3 text-sm">
-              <div className="flex items-center justify-between">
-                <span className="font-medium text-gray-800">{entry.trigger_event}</span>
-                <span
-                  className={
-                    entry.status === 'sent'
-                      ? 'text-xs px-2 py-0.5 rounded bg-green-100 text-green-700'
-                      : entry.status === 'failed'
-                      ? 'text-xs px-2 py-0.5 rounded bg-red-100 text-red-700'
-                      : 'text-xs px-2 py-0.5 rounded bg-gray-100 text-gray-700'
-                  }
-                >
-                  {entry.status}
-                </span>
-              </div>
-              <div className="text-xs text-gray-500 mt-1">
-                {entry.channel} · {entry.recipient || 'unknown recipient'}
-                {entry.sent_at ? ` · ${new Date(entry.sent_at).toLocaleString()}` : ''}
-              </div>
-              {entry.preview && (
-                <p className="mt-1 text-gray-600">{entry.preview}</p>
-              )}
-              {entry.error_message && (
-                <p className="mt-1 text-red-600 text-xs">Error: {entry.error_message}</p>
-              )}
-            </div>
-          ))}
+        <div className="space-y-2">
+          {filtered.map((entry) => {
+            const meta = describeEvent(entry.trigger_event);
+            const styles = NOTIF_COLOR_STYLES[meta.color] || NOTIF_COLOR_STYLES.gray;
+            return (
+              <button
+                type="button"
+                key={entry.id}
+                onClick={() => setSelected(entry)}
+                className="w-full text-left bg-white border border-gray-200 rounded-xl px-4 py-3 hover:border-blue-300 hover:shadow-sm transition"
+              >
+                <div className="flex items-start gap-3">
+                  <div
+                    className={`flex-none w-10 h-10 rounded-lg flex items-center justify-center text-lg ${styles.icon}`}
+                    aria-hidden
+                  >
+                    {meta.icon}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                      <span className="font-semibold text-gray-900">{meta.label}</span>
+                      <span className={`inline-flex text-[11px] font-medium px-2 py-0.5 rounded border ${styles.chip}`}>
+                        {entry.channel}
+                      </span>
+                      <NotificationStatusPill status={entry.status} />
+                      <span
+                        className="text-xs text-gray-400 ml-auto"
+                        title={entry.sent_at ? new Date(entry.sent_at).toLocaleString() : ''}
+                      >
+                        {relativeTime(entry.sent_at)}
+                      </span>
+                    </div>
+                    <div className="mt-1 text-sm text-gray-700 truncate">
+                      <span className="text-gray-500">To:</span>{' '}
+                      <span className="font-medium">{entry.recipient || '—'}</span>
+                    </div>
+                    {entry.preview && (
+                      <p className="mt-1 text-sm text-gray-600 line-clamp-2">
+                        {entry.preview}
+                      </p>
+                    )}
+                    {entry.error_message && (
+                      <p className="mt-1 text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded px-2 py-1 inline-block">
+                        Delivery error: {entry.error_message}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </button>
+            );
+          })}
         </div>
       )}
+
+      {selected && (
+        <NotificationDetailModal
+          entry={selected}
+          onClose={() => setSelected(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function SummaryTile({ label, value, tone }) {
+  const bg = {
+    gray:    'bg-gray-50 border-gray-200 text-gray-800',
+    emerald: 'bg-emerald-50 border-emerald-200 text-emerald-900',
+    rose:    'bg-rose-50 border-rose-200 text-rose-900',
+    amber:   'bg-amber-50 border-amber-200 text-amber-900',
+  }[tone] || 'bg-gray-50 border-gray-200 text-gray-800';
+  return (
+    <div className={`rounded-xl border p-4 ${bg}`}>
+      <div className="text-xs font-semibold uppercase tracking-wider opacity-70">{label}</div>
+      <div className="text-2xl font-bold mt-1">{value}</div>
+    </div>
+  );
+}
+
+function NotificationDetailModal({ entry, onClose }) {
+  const meta = describeEvent(entry.trigger_event);
+  const styles = NOTIF_COLOR_STYLES[meta.color] || NOTIF_COLOR_STYLES.gray;
+  // Render the raw HTML in a sandboxed iframe so its inline CSS cannot
+  // leak into the dashboard's own styling. srcdoc keeps everything
+  // self-contained — no network requests, no scripts.
+  const srcDoc = React.useMemo(() => {
+    const html = entry.body_html || entry.preview || '';
+    return `<!doctype html><html><head><meta charset="utf-8"><style>body{margin:0;font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:#f5f5f5;padding:12px;}</style></head><body>${html}</body></html>`;
+  }, [entry]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      role="dialog"
+      aria-modal="true"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-xl shadow-2xl max-w-3xl w-full max-h-[90vh] overflow-hidden flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start gap-3 px-5 py-4 border-b border-gray-100">
+          <div className={`flex-none w-10 h-10 rounded-lg flex items-center justify-center text-lg ${styles.icon}`} aria-hidden>
+            {meta.icon}
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h3 className="text-lg font-bold text-gray-900">{meta.label}</h3>
+              <NotificationStatusPill status={entry.status} />
+              <span className={`inline-flex text-[11px] font-medium px-2 py-0.5 rounded border ${styles.chip}`}>
+                {entry.channel}
+              </span>
+            </div>
+            <div className="mt-1 text-sm text-gray-600">
+              <span className="text-gray-500">To </span>
+              <span className="font-medium">{entry.recipient || '—'}</span>
+              <span className="text-gray-400"> · </span>
+              <span title={entry.sent_at ? new Date(entry.sent_at).toLocaleString() : ''}>
+                {entry.sent_at ? new Date(entry.sent_at).toLocaleString() : 'not sent'}
+              </span>
+            </div>
+            <div className="text-[11px] text-gray-400 mt-0.5 font-mono">
+              event: {entry.trigger_event}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-gray-400 hover:text-gray-600 text-2xl leading-none px-2"
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+
+        {entry.error_message && (
+          <div className="mx-5 mt-4 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800">
+            <span className="font-semibold">Delivery error: </span>
+            {entry.error_message}
+          </div>
+        )}
+
+        <div className="flex-1 overflow-hidden p-5">
+          <div className="text-xs font-semibold uppercase tracking-wider text-gray-500 mb-2">
+            Message
+          </div>
+          <div className="border border-gray-200 rounded-lg overflow-hidden bg-white">
+            <iframe
+              title="Notification message body"
+              sandbox=""
+              srcDoc={srcDoc}
+              className="w-full h-[55vh] block bg-white"
+            />
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

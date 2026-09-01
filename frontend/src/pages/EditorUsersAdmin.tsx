@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import Loading from '../components/common/Loading';
+import BackButton from '../components/common/BackButton';
+import PageActionBar from '../components/common/PageActionBar';
 import {
     AdminRole,
     AdminUser,
@@ -7,6 +9,15 @@ import {
     fetchAdminUsers,
     updateAdminUser,
 } from '../api/platform';
+
+const USER_COLUMNS = [
+    { header: 'Name', accessor: (u: AdminUser) => u.full_name || u.username || '' },
+    { header: 'Email', accessor: (u: AdminUser) => u.email },
+    { header: 'Role', accessor: (u: AdminUser) => u.role.replace('_', ' ') },
+    { header: 'Institution', accessor: (u: AdminUser) => u.institution || '' },
+    { header: 'Country', accessor: (u: AdminUser) => u.country || '' },
+    { header: 'Status', accessor: (u: AdminUser) => (u.is_active ? 'active' : 'inactive') },
+];
 
 const ROLE_COLOR: Record<AdminRole, string> = {
     author: 'bg-blue-100 text-blue-700',
@@ -73,7 +84,19 @@ const EditorUsersAdmin: React.FC = () => {
     return (
         <div className="min-h-screen bg-gray-50 p-8">
             <div className="max-w-6xl mx-auto">
-                <h1 className="text-2xl font-bold text-gray-900 mb-2">User Management</h1>
+                <BackButton className="mb-4" />
+                <div className="flex items-start justify-between gap-4 mb-2">
+                    <h1 className="text-2xl font-bold text-gray-900">User Management</h1>
+                    <PageActionBar
+                        download={{
+                            filenameBase: 'users',
+                            rows: users,
+                            columns: USER_COLUMNS,
+                            pdfTitle: 'User Management',
+                        }}
+                        share={{ subject: 'User Management — Journal Editor' }}
+                    />
+                </div>
                 <p className="text-sm text-gray-500 mb-6">
                     Manage authors, editors, and administrators. Deactivation is soft — the account keeps
                     its history but can't sign in.

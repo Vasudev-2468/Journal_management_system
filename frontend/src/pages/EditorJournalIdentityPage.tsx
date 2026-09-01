@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useJournal } from '../context/JournalContext';
 import type { JournalIdentityPatch } from '../api/journal';
+import BackButton from '../components/common/BackButton';
 
 // JG-101 — editor-only form for maintaining the journal's publication identity.
 // Gated by the parent ProtectedEditorRoute (which enforces the editor tier).
@@ -197,6 +198,7 @@ const EditorJournalIdentityPage: React.FC = () => {
                 </div>
 
                 <div className="mb-8">
+                    <BackButton className="mb-4" />
                     <h1 className="text-3xl font-bold text-gray-900 tracking-tight">Journal identity</h1>
                     <p className="mt-2 text-gray-600 max-w-2xl">
                         One source of truth for the masthead, DOI metadata, citation export, footer,

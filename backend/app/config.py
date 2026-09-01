@@ -23,7 +23,23 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str = ""
     VOYAGE_API_KEY: str = ""
 
-    # ── Email (SendGrid / Brevo) ────────────────────────
+    # ── Email (Gmail SMTP primary, Brevo/SendGrid fallback) ─
+    # Preference order in email_service._send_and_log:
+    #   1. Gmail SMTP (GMAIL_SMTP_PASSWORD set)  — recommended for dev,
+    #      avoids Gmail's DMARC reject on From: @gmail.com through
+    #      third-party relays.
+    #   2. Brevo SMTP (BREVO_SMTP_KEY set)       — 300 mails/day free tier.
+    #   3. SendGrid HTTP API                     — legacy fallback.
+    GMAIL_SMTP_HOST: str = "smtp.gmail.com"
+    GMAIL_SMTP_PORT: int = 587
+    GMAIL_SMTP_USER: str = ""
+    GMAIL_SMTP_PASSWORD: str = ""
+
+    BREVO_SMTP_HOST: str = "smtp-relay.brevo.com"
+    BREVO_SMTP_PORT: int = 587
+    BREVO_SMTP_USER: str = ""
+    BREVO_SMTP_KEY: str = ""
+
     SENDGRID_API_KEY: str = ""
     SENDGRID_FROM_EMAIL: str = ""
 

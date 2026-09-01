@@ -62,26 +62,149 @@ def _btn(label: str, url: str, color: str = "#1e40af") -> str:
 
 # ── Low-level send + log ────────────────────────────────
 
+def _from_address() -> str:
+    """The address every outgoing email is stamped with.
+
+    Preference order: GMAIL_SMTP_USER (must match the sending Gmail
+    account for DMARC alignment) → SENDGRID_FROM_EMAIL → BREVO_SMTP_USER.
+    Falls back to a placeholder so message construction never breaks.
+    """
+    return (
+        settings.GMAIL_SMTP_USER
+        or settings.SENDGRID_FROM_EMAIL
+        or settings.BREVO_SMTP_USER
+        or "no-reply@example.invalid"
+    )
+
+
+def _send_via_gmail(to_email: str, subject: str, html: str) -> tuple[bool, str]:
+    """Send an HTML email via Gmail's SMTP relay using stdlib smtplib.
+
+    Uses a Google App Password (not the account password). Because the
+    ``From:`` address IS the sending Gmail account, DMARC/SPF/DKIM all
+    align at Google, so messages don't hit the p=reject cliff that
+    third-party relays run into when forging @gmail.com senders.
+    """
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+
+    from_addr = _from_address()
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = from_addr
+    msg["To"] = to_email
+    msg.attach(MIMEText(html, "html", "utf-8"))
+
+    try:
+        with smtplib.SMTP(settings.GMAIL_SMTP_HOST, settings.GMAIL_SMTP_PORT, timeout=15) as smtp:
+            smtp.ehlo()
+            smtp.starttls()
+            smtp.ehlo()
+            smtp.login(settings.GMAIL_SMTP_USER, settings.GMAIL_SMTP_PASSWORD)
+            smtp.sendmail(from_addr, [to_email], msg.as_string())
+        return True, "sent via Gmail"
+    except Exception as exc:  # noqa: BLE001
+        return False, f"Gmail SMTP: {exc}"
+
+
+def _send_via_brevo(to_email: str, subject: str, html: str) -> tuple[bool, str]:
+    """Send an HTML email via Brevo's SMTP relay using stdlib smtplib.
+
+    Returns ``(success, detail)``. On failure ``detail`` carries the
+    exception message so ``_send_and_log`` can persist it into
+    ``notifications.error_message``.
+    """
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+
+    from_addr = _from_address()
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = from_addr
+    msg["To"] = to_email
+    msg.attach(MIMEText(html, "html", "utf-8"))
+
+    try:
+        with smtplib.SMTP(settings.BREVO_SMTP_HOST, settings.BREVO_SMTP_PORT, timeout=15) as smtp:
+            smtp.ehlo()
+            smtp.starttls()
+            smtp.ehlo()
+            smtp.login(settings.BREVO_SMTP_USER, settings.BREVO_SMTP_KEY)
+            smtp.sendmail(from_addr, [to_email], msg.as_string())
+        return True, "sent via Brevo"
+    except Exception as exc:  # noqa: BLE001
+        return False, f"Brevo SMTP: {exc}"
+
+
 def _send_and_log(
     to_email: str,
     subject: str,
     html: str,
     trigger_event: str,
 ) -> bool:
-    """Send via SendGrid and persist a Notification row. Returns success."""
-    if not settings.SENDGRID_API_KEY:
-        logger.warning("SENDGRID_API_KEY not set — skipping email to %s", to_email)
-        return False
-
-    message = Mail(
-        from_email=settings.SENDGRID_FROM_EMAIL,
-        to_emails=to_email,
-        subject=subject,
-        html_content=html,
-    )
-
+    """Route the send through Gmail SMTP (preferred) → Brevo SMTP →
+    SendGrid HTTP API. Persists a Notification row either way.
+    """
     db = SessionLocal()
     try:
+        # ── Primary: Gmail SMTP ────────────────────────
+        if settings.GMAIL_SMTP_PASSWORD and settings.GMAIL_SMTP_USER:
+            success, detail = _send_via_gmail(to_email, subject, html)
+            db.add(
+                Notification(
+                    recipient_email=to_email,
+                    channel=NotificationChannel.email,
+                    trigger_event=trigger_event,
+                    message_body=html,
+                    status=NotificationStatus.sent if success else NotificationStatus.failed,
+                    sent_at=datetime.utcnow() if success else None,
+                    error_message=None if success else detail,
+                )
+            )
+            db.commit()
+            if success:
+                logger.info("Email to %s — %s (Gmail)", to_email, trigger_event)
+            else:
+                logger.error("Email to %s — %s failed: %s", to_email, trigger_event, detail)
+            return success
+
+        # ── Secondary: Brevo SMTP ──────────────────────
+        if settings.BREVO_SMTP_KEY and settings.BREVO_SMTP_USER:
+            success, detail = _send_via_brevo(to_email, subject, html)
+            db.add(
+                Notification(
+                    recipient_email=to_email,
+                    channel=NotificationChannel.email,
+                    trigger_event=trigger_event,
+                    message_body=html,
+                    status=NotificationStatus.sent if success else NotificationStatus.failed,
+                    sent_at=datetime.utcnow() if success else None,
+                    error_message=None if success else detail,
+                )
+            )
+            db.commit()
+            if success:
+                logger.info("Email to %s — %s (Brevo)", to_email, trigger_event)
+            else:
+                logger.error("Email to %s — %s failed: %s", to_email, trigger_event, detail)
+            return success
+
+        # ── Fallback: SendGrid HTTP API ────────────────
+        if not settings.SENDGRID_API_KEY:
+            logger.warning(
+                "No email provider configured (Brevo + SendGrid both empty) — skipping to %s",
+                to_email,
+            )
+            return False
+
+        message = Mail(
+            from_email=_from_address(),
+            to_emails=to_email,
+            subject=subject,
+            html_content=html,
+        )
         sg = SendGridAPIClient(settings.SENDGRID_API_KEY)
         response = sg.send(message)
         success = 200 <= response.status_code < 300
@@ -99,7 +222,7 @@ def _send_and_log(
         )
         db.commit()
 
-        logger.info("Email to %s — %s (HTTP %s)", to_email, trigger_event, response.status_code)
+        logger.info("Email to %s — %s (SendGrid HTTP %s)", to_email, trigger_event, response.status_code)
         return success
 
     except SendGridException:
@@ -269,6 +392,82 @@ def notify_editor_new_submission(
         """
     )
     return _send_and_log(editor_email, subject, body, "editor_new_submission")
+
+
+def notify_editor_new_review(
+    editor_email: str,
+    manuscript_id: str,
+    paper_title: str,
+    reviewer_display_name: str,
+    recommendation: str,
+    round_number: int,
+    portal_url: str,
+) -> bool:
+    """Editor-facing notification when a reviewer submits their report.
+
+    Deliberately carries NO reviewer prose (no comments, no
+    confidential notes). The editor is directed into the portal to
+    read the full structured Reviewer Report — that keeps
+    confidential material out of the mail system's audit trail (spec
+    §6 "the email should not contain the entire confidential review").
+    """
+    rec_label = (recommendation or "unspecified").replace("_", " ").title()
+    subject = f"New Reviewer Report — {manuscript_id}"
+    body = _wrap(
+        f"""
+        <p>Dear Editor,</p>
+
+        <p>A reviewer has submitted their report for the manuscript below.
+           Please open the editorial portal to read the full structured
+           report.</p>
+
+        <table style="width:100%;border-collapse:collapse;margin:16px 0;">
+          <tr>
+            <td style="padding:8px 12px;background:#f3f4f6;font-weight:600;
+                        border:1px solid #e5e7eb;width:40%;">Manuscript</td>
+            <td style="padding:8px 12px;border:1px solid #e5e7eb;">
+              <code>{manuscript_id}</code></td>
+          </tr>
+          <tr>
+            <td style="padding:8px 12px;background:#f3f4f6;font-weight:600;
+                        border:1px solid #e5e7eb;">Title</td>
+            <td style="padding:8px 12px;border:1px solid #e5e7eb;">
+              {paper_title}</td>
+          </tr>
+          <tr>
+            <td style="padding:8px 12px;background:#f3f4f6;font-weight:600;
+                        border:1px solid #e5e7eb;">Reviewer</td>
+            <td style="padding:8px 12px;border:1px solid #e5e7eb;">
+              {reviewer_display_name}</td>
+          </tr>
+          <tr>
+            <td style="padding:8px 12px;background:#f3f4f6;font-weight:600;
+                        border:1px solid #e5e7eb;">Recommendation</td>
+            <td style="padding:8px 12px;border:1px solid #e5e7eb;">
+              <strong>{rec_label}</strong></td>
+          </tr>
+          <tr>
+            <td style="padding:8px 12px;background:#f3f4f6;font-weight:600;
+                        border:1px solid #e5e7eb;">Review Round</td>
+            <td style="padding:8px 12px;border:1px solid #e5e7eb;">
+              Round {round_number}</td>
+          </tr>
+        </table>
+
+        <div style="text-align:center;margin:24px 0;">
+          {_btn("View Reviewer Report", portal_url)}
+        </div>
+
+        <p style="font-size:12px;color:#6b7280;">
+          Reviewer comments are not sent by email. Please read the full
+          report inside the editorial portal so confidential feedback
+          stays behind authenticated access.
+        </p>
+
+        <p>Best regards,<br><strong>Journal System</strong></p>
+        """
+    )
+    return _send_and_log(editor_email, subject, body, "editor_new_review")
 
 
 def notify_editor_escalation(

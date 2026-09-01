@@ -9,9 +9,8 @@ const STATS = [
   { value: 'Open', label: 'Access Policy' },
 ];
 
-// Author MFA — mandatory TOTP after email OTP, optional WhatsApp on top.
-// Stage lifecycle:
-//   credentials → emailOtp → (totpEnrol OR totpVerify) → (whatsappOtp?) → done
+// Author MFA — mandatory TOTP after email OTP. Stage lifecycle:
+//   credentials → emailOtp → (totpEnrol OR totpVerify) → done
 export default function AuthorLoginPage() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -149,16 +148,13 @@ export default function AuthorLoginPage() {
     else if (stage === 'whatsappOtp') setStage(totpSetup ? 'totpEnrol' : 'totpVerify');
   };
 
-  // Stage indices for the stepper. TOTP is always required; WhatsApp only
-  // when the user opted in with a number.
+  // Stage indices for the stepper. TOTP is the final factor.
   const steps = ['Credentials', 'Email code', 'Authenticator'];
-  if (hasWhatsapp) steps.push('WhatsApp code');
   const stageIdx = {
     credentials: 0,
     emailOtp: 1,
     totpEnrol: 2,
     totpVerify: 2,
-    whatsappOtp: 3,
   }[stage] ?? 0;
 
   const stepIndicator = (

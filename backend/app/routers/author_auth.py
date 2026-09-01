@@ -279,18 +279,17 @@ def author_verify_otp(
     user, payload = _require_pre_auth_or_session(authorization, db)
     totp_ok = bool(payload.get("totp_ok"))
 
-    # Determine which OTP the user is submitting right now based on the
-    # stages already cleared.
+    # This endpoint only handles email OTP verification now. TOTP is the
+    # second and final factor and lives on /verify-totp. WhatsApp OTP was
+    # removed as a required step — a stored ``whatsapp_number`` no longer
+    # forces an extra factor at sign-in.
     if user.mfa_email_verified_at is None:
         channel = "email"
     elif not totp_ok:
-        # TOTP hasn't cleared yet — reject and return the next-stage hint.
         raise HTTPException(
             status_code=409,
             detail="Authenticator code required. Call /author-auth/verify-totp.",
         )
-    elif bool(user.whatsapp_number) and user.mfa_whatsapp_verified_at is None:
-        channel = "whatsapp"
     else:
         return _finish_mfa(user, db, totp_ok=totp_ok)
 
@@ -299,32 +298,24 @@ def author_verify_otp(
         status_code = 423 if result.get("locked") else 400
         raise HTTPException(status_code=status_code, detail=result.get("error") or "OTP verification failed")
 
-    now = datetime.utcnow()
-    if channel == "email":
-        user.mfa_email_verified_at = now
-    else:
-        user.mfa_whatsapp_verified_at = now
+    user.mfa_email_verified_at = datetime.utcnow()
     db.commit()
 
-    # Next stage — after email OTP, TOTP is required (enrolment or verify).
-    if channel == "email":
-        if not totp_service.is_enrolled(user):
-            secret = totp_service.start_enrolment(db, user)
-            uri = totp_service.provisioning_uri(secret, user.email)
-            return VerifyOtpResponse(
-                stage="totp_enrolment_needed",
-                email_verified=True,
-                totp_secret=secret,
-                totp_otpauth_uri=uri,
-                totp_qr_data_uri=totp_service.qr_code_data_uri(uri),
-            )
+    # After email OTP, TOTP is required (enrolment or verify).
+    if not totp_service.is_enrolled(user):
+        secret = totp_service.start_enrolment(db, user)
+        uri = totp_service.provisioning_uri(secret, user.email)
         return VerifyOtpResponse(
-            stage="totp_needed",
+            stage="totp_enrolment_needed",
             email_verified=True,
+            totp_secret=secret,
+            totp_otpauth_uri=uri,
+            totp_qr_data_uri=totp_service.qr_code_data_uri(uri),
         )
-
-    # channel == "whatsapp" — check whether the user is fully done.
-    return _finish_mfa(user, db, totp_ok=totp_ok)
+    return VerifyOtpResponse(
+        stage="totp_needed",
+        email_verified=True,
+    )
 
 
 @router.post("/verify-totp", response_model=VerifyOtpResponse)
@@ -364,29 +355,9 @@ def author_verify_totp(
             detail="Invalid authenticator code. Check your device clock and try again.",
         )
 
-    # Mint a new pre-auth token that carries totp_ok=true so the caller can
-    # progress to WhatsApp (if enrolled) or finish.
-    new_token = _mint_pre_auth_token(user.email, totp_ok=True)
-
-    if bool(user.whatsapp_number) and user.mfa_whatsapp_verified_at is None:
-        wa = create_and_send_otp(db, user, channel="whatsapp")
-        if not wa.get("success"):
-            raise HTTPException(
-                status_code=500,
-                detail=wa.get("error") or "Could not send WhatsApp verification code",
-            )
-        return VerifyOtpResponse(
-            stage="whatsapp_needed",
-            email_verified=True,
-            totp_verified=True,
-            access_token=new_token,           # New pre-auth carrying totp_ok=true.
-            token_type="pre_auth",
-            channel=wa.get("channel", "whatsapp"),
-            masked_destination=wa.get("masked_destination", ""),
-            expires_in_seconds=wa.get("expires_in_seconds", 300),
-            dev_otp=_dev_otp_of(wa),
-        )
-
+    # TOTP is the final factor. WhatsApp OTP is intentionally not required
+    # here — the ``whatsapp_number`` on the user row is now purely a contact
+    # detail and does not add a sign-in step.
     return _finish_mfa(user, db, totp_ok=True)
 
 
@@ -423,8 +394,6 @@ def author_resend_otp(
 
     if user.mfa_email_verified_at is None:
         channel = "email"
-    elif bool(user.whatsapp_number) and user.mfa_whatsapp_verified_at is None:
-        channel = "whatsapp"
     else:
         raise HTTPException(status_code=400, detail="Nothing to verify — MFA already complete.")
 

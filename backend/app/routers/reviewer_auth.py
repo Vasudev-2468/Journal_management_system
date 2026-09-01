@@ -96,12 +96,16 @@ class MyAssignmentRow(BaseModel):
 
 # ── Token helpers ───────────────────────────────────────
 
-def _verify_invitation_token(token: str) -> UUID:
-    """Decode a reviewer-invitation JWT and return the reviewer_id.
+def _verify_invitation_token(token: str) -> tuple[UUID, Optional[datetime]]:
+    """Decode a reviewer-invitation JWT and return
+    ``(reviewer_id, issued_at)``.
 
     The token uses the same signing key/algorithm as review-link tokens
     (utils/link_tokens) but a distinct ``type`` claim so a review-link
-    token can't be reused to set a password, and vice versa.
+    token can't be reused to set a password, and vice versa. The
+    ``iat`` claim lets ``set_password`` reject tokens older than the
+    reviewer's most recent invitation (see the revoke/resend flow in
+    ``services.reviewer_service``).
     """
     try:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
@@ -113,9 +117,17 @@ def _verify_invitation_token(token: str) -> UUID:
     if not subject:
         raise HTTPException(status_code=400, detail="Malformed invitation token.")
     try:
-        return UUID(str(subject))
+        reviewer_id = UUID(str(subject))
     except (ValueError, AttributeError):
         raise HTTPException(status_code=400, detail="Malformed invitation token.")
+    iat_raw = payload.get("iat")
+    issued_at: Optional[datetime] = None
+    if isinstance(iat_raw, (int, float)):
+        try:
+            issued_at = datetime.utcfromtimestamp(int(iat_raw))
+        except (OverflowError, OSError, ValueError):
+            issued_at = None
+    return reviewer_id, issued_at
 
 
 def _mint_session_token(reviewer: Reviewer) -> str:
@@ -155,12 +167,37 @@ def set_password(body: SetPasswordRequest, db: Session = Depends(get_db)):
             status_code=422,
             detail=f"Password must be at least {MIN_PASSWORD_LEN} characters.",
         )
-    reviewer_id = _verify_invitation_token(body.token)
+    reviewer_id, token_iat = _verify_invitation_token(body.token)
     reviewer = db.query(Reviewer).filter(Reviewer.id == reviewer_id).first()
     if reviewer is None:
         raise HTTPException(status_code=404, detail="Reviewer not found.")
     if not reviewer.is_active:
         raise HTTPException(status_code=403, detail="Reviewer account is inactive.")
+    # An editor can revoke a pending invitation from the Reviewers
+    # panel. Any activation token minted before the revoke is refused
+    # here — the reviewer will see a "revoked" message and the editor
+    # can resend a fresh invite from the panel if they change their
+    # mind. Only the most recent invitation is redeemable:
+    # ``reviewer.invitation_sent_at`` is bumped on every send/resend,
+    # so a stale token (iat < invitation_sent_at) is rejected even
+    # after a subsequent resend un-revokes the reviewer.
+    if reviewer.password_hash is None:
+        if reviewer.invitation_revoked_at is not None:
+            raise HTTPException(
+                status_code=410,
+                detail="This invitation has been revoked. Contact the editorial office for a new invitation.",
+            )
+        if (
+            reviewer.invitation_sent_at is not None
+            and token_iat is not None
+            # 1s slack absorbs JWT integer-second truncation vs. the
+            # microsecond timestamp on the DB row.
+            and token_iat < reviewer.invitation_sent_at - timedelta(seconds=1)
+        ):
+            raise HTTPException(
+                status_code=410,
+                detail="This invitation link has been superseded by a newer one — check your most recent invitation email.",
+            )
 
     # Idempotent — replace an existing password if one has already been set.
     reviewer.password_hash = hash_password(body.new_password)
@@ -202,6 +239,30 @@ def login(
         raise HTTPException(status_code=403, detail="Reviewer account is inactive.")
     if not verify_password(form_data.password, reviewer.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password.")
+    # Panel-membership gating: a reviewer who was invited must click
+    # Accept in the email before their login unlocks. A revoked or
+    # declined invitation blocks login even after a correct password.
+    # Legacy self-registered reviewers (no invitation_expires_at) are
+    # unaffected — they never went through the accept flow.
+    if reviewer.invitation_declined_at is not None or reviewer.invitation_revoked_at is not None:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "This invitation has been retired. Please contact the "
+                "editorial office if you would still like to review."
+            ),
+        )
+    if (
+        reviewer.invitation_expires_at is not None
+        and reviewer.invitation_accepted_at is None
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Please open the invitation email and click Accept before "
+                "signing in."
+            ),
+        )
 
     reviewer.last_login_at = datetime.utcnow()
     db.commit()

@@ -7,7 +7,7 @@ member's name (e.g. "Section Editor — Generative AI").
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, Column, DateTime, ForeignKey, Integer, String, Text
 
 from app.database import Base
 
@@ -42,6 +42,30 @@ class EditorialBoardMember(Base):
     bio = Column(Text, nullable=True)
     expertise = Column(String(500), nullable=True)
     photo_url = Column(String(500), nullable=True)
+    # Extended profile fields (JG-BM2): added for the redesigned Add
+    # Board Member wizard so we don't rely on a JSON catch-all for the
+    # editor-assignment settings the routing layer will read directly.
+    phone = Column(String(50), nullable=True)
+    keywords = Column(Text, nullable=True)
+    years_editorial_experience = Column(Integer, nullable=True)
+    max_active_manuscripts = Column(Integer, nullable=True)
+
+    # Uploaded documents — URLs returned by storage_service.upload_manuscript_file.
+    # certification_file_ids is a JSON array of {file_url, label} entries so
+    # a member can attach multiple certifications on the self-fill page.
+    photo_file_url = Column(String(1000), nullable=True)
+    resume_file_url = Column(String(1000), nullable=True)
+    certification_files = Column(JSON, nullable=True)
+
+    # Invitation lifecycle: editor sends an invite → invitee opens the
+    # signed link → invitee submits the profile. Mirrors the reviewer
+    # onboarding shape so the two flows read the same at the DB layer.
+    invited_email = Column(String(255), nullable=True, index=True)
+    invitation_sent_at = Column(DateTime, nullable=True)
+    invitation_completed_at = Column(DateTime, nullable=True)
+    invitation_revoked_at = Column(DateTime, nullable=True)
+    invitation_token_iat = Column(DateTime, nullable=True)
+
     sort_order = Column(Integer, nullable=False, default=100)
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

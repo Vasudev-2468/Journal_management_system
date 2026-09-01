@@ -42,8 +42,32 @@ class ReviewerListItem(BaseModel):
     current_load: int
     max_assignments: int
     is_active: bool
+    # Invitation lifecycle — drives the "pending / activated / revoked"
+    # pill and the per-row action menu (Show link / Resend / Revoke).
+    # ``has_password`` is derived at serialization time from the
+    # reviewer row's ``password_hash`` column, which is intentionally
+    # never exposed.
+    has_password: bool = False
+    email_verified_at: Optional[datetime] = None
+    invitation_sent_at: Optional[datetime] = None
+    invitation_expires_at: Optional[datetime] = None
+    invitation_accepted_at: Optional[datetime] = None
+    invitation_declined_at: Optional[datetime] = None
+    invitation_revoked_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class ReviewerInvitationLinkResponse(BaseModel):
+    reviewer_id: uuid.UUID
+    invitation_url: str
+    expires_at: datetime
+
+
+class ReviewerResendResponse(BaseModel):
+    reviewer_id: uuid.UUID
+    email_sent: bool
+    message: str
 
 
 class ReviewHistoryItem(BaseModel):

@@ -6,6 +6,18 @@ import {
     updateContactMessage,
 } from '../api/contact';
 import Loading from '../components/common/Loading';
+import BackButton from '../components/common/BackButton';
+import PageActionBar from '../components/common/PageActionBar';
+
+const CONTACT_COLUMNS = [
+    { header: 'Received', accessor: (m: ContactMessage) => new Date(m.created_at).toLocaleString() },
+    { header: 'Name', accessor: (m: ContactMessage) => m.name },
+    { header: 'Email', accessor: (m: ContactMessage) => m.email },
+    { header: 'Subject', accessor: (m: ContactMessage) => m.subject },
+    { header: 'Message', accessor: (m: ContactMessage) => m.message },
+    { header: 'Read', accessor: (m: ContactMessage) => (m.is_read ? 'yes' : 'no') },
+    { header: 'Resolved', accessor: (m: ContactMessage) => (m.resolved ? 'yes' : 'no') },
+];
 
 const EditorContactInbox: React.FC = () => {
     const [messages, setMessages] = useState<ContactMessage[]>([]);
@@ -67,7 +79,19 @@ const EditorContactInbox: React.FC = () => {
     return (
         <div className="min-h-screen bg-gray-50 p-8">
             <div className="max-w-5xl mx-auto">
-                <h1 className="text-2xl font-bold text-gray-900 mb-6">Contact Inbox</h1>
+                <BackButton className="mb-4" />
+                <div className="flex items-start justify-between gap-4 mb-6">
+                    <h1 className="text-2xl font-bold text-gray-900">Contact Inbox</h1>
+                    <PageActionBar
+                        download={{
+                            filenameBase: 'contact-inbox',
+                            rows: messages,
+                            columns: CONTACT_COLUMNS,
+                            pdfTitle: 'Contact Inbox',
+                        }}
+                        share={{ subject: 'Contact Inbox — Journal Editor' }}
+                    />
+                </div>
                 <div className="flex gap-2 mb-4">
                     {(['all', 'unread', 'unresolved'] as const).map((key) => (
                         <button
