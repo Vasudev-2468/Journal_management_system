@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — editor.js has no .d.ts by design (matches the rest of the editor bundle).
 import { fetchNotificationLog } from '../../api/editor';
+import { useNotificationsStream } from '../../hooks/useNotificationsStream';
 
 // ── Types ────────────────────────────────────────────────
 //
@@ -25,7 +26,6 @@ interface NotificationEntry {
     preview?: string | null;
 }
 
-const POLL_INTERVAL_MS = 45_000;
 const LIMIT = 10;
 const READ_STORAGE_KEY = 'editor_notification_bell_last_read_at';
 
@@ -119,17 +119,29 @@ const NotificationBell: React.FC = () => {
         }
     }, []);
 
-    // Poll on mount, then every POLL_INTERVAL_MS. Reset on unmount so the
-    // interval doesn't leak across page navigations.
+    // Mount / unmount guard for the async refresh. The live subscription
+    // and its poll fallback both flow through `useNotificationsStream`
+    // below — this effect only exists to guarantee `mountedRef` matches
+    // React's lifecycle and to fetch once on mount so the tray isn't
+    // empty on first open.
     useEffect(() => {
         mountedRef.current = true;
         loadNotifications();
-        const id = window.setInterval(loadNotifications, POLL_INTERVAL_MS);
         return () => {
             mountedRef.current = false;
-            window.clearInterval(id);
         };
     }, [loadNotifications]);
+
+    // Real-time subscription (WebSocket) with automatic 60s poll
+    // fallback. Every inbound notification frame refreshes the log
+    // from the server so the tray reflects the same data shape the
+    // fallback path would have surfaced — one code path renders the
+    // list either way.
+    useNotificationsStream({
+        role: 'editor',
+        onNotification: loadNotifications,
+        onPoll: loadNotifications,
+    });
 
     // Close on outside click.
     useEffect(() => {

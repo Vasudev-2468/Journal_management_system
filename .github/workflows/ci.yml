@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Manual trigger for the opt-in Playwright e2e job. Regular pushes
+  # and PRs run only the backend + frontend jobs; the e2e job's `if`
+  # gate keys off `workflow_dispatch`.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -118,3 +122,47 @@ jobs:
         env:
           CI: 'true'
         run: npm run build
+
+  e2e:
+    name: e2e
+    runs-on: ubuntu-latest
+    # Opt-in only. Regular pushes/PRs skip this job so contributors
+    # don't wait on a 3+ minute Chromium install; trigger it manually
+    # from the Actions tab with "Run workflow".
+    if: github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Cache npm
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-node-${{ hashFiles('frontend/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+
+      - name: Install Node dependencies
+        working-directory: frontend
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Install Playwright browsers
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Playwright smoke suite
+        working-directory: frontend
+        env:
+          CI: 'true'
+        run: npm run e2e

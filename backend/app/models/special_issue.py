@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text
 
 from app.database import Base
 
@@ -23,3 +23,7 @@ class SpecialIssue(Base):
     is_published = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Multi-journal scaffolding (additive). NULL = primary journal.
+    # See app.services.tenancy.
+    journal_id = Column(Integer, ForeignKey("journals.id"), nullable=True, index=True)

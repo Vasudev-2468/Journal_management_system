@@ -47,12 +47,19 @@ from app.routers import bulk_ops as bulk_ops_router
 from app.routers import csv_export as csv_export_router
 from app.routers import reference_import as reference_import_router
 from app.routers import submission_timeline as submission_timeline_router
+from app.routers import tenancy as tenancy_router
+from app.routers import ws_notifications as ws_notifications_router
+from app.routers import system_health as system_health_router
+from app.routers import system_metrics as system_metrics_router
 from app.middleware import InMemoryRateLimiter, SecurityHeadersMiddleware
+from app.middleware.metrics import PrometheusMetricsMiddleware
+from app.utils.logging_config import configure_logging
 from app.config import settings
 from app.database import SessionLocal
 from app.models.user import User, UserRole
 from app.utils.helpers import hash_password
 
+configure_logging()
 logger = logging.getLogger(__name__)
 
 
@@ -164,6 +171,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(PrometheusMetricsMiddleware)
 if os.getenv("RATE_LIMIT_ENABLED", "1") == "1":
     app.add_middleware(
         InMemoryRateLimiter,
@@ -238,6 +246,72 @@ app.include_router(bulk_ops_router.router, prefix="/bulk-ops", tags=["bulk-ops"]
 app.include_router(csv_export_router.router, prefix="/csv-export", tags=["csv-export"])
 app.include_router(reference_import_router.router, prefix="/reference-import", tags=["reference-import"])
 app.include_router(submission_timeline_router.router, prefix="/submission-timeline", tags=["submission-timeline"])
+app.include_router(tenancy_router.router, prefix="/tenancy", tags=["tenancy"])
+app.include_router(ws_notifications_router.router, tags=["ws"])
+app.include_router(system_health_router.router, prefix="/system", tags=["system"])
+app.include_router(system_metrics_router.router, tags=["metrics"])
+
+
+# ── /v1 API version aliases ──────────────────────────────
+# Every content router above is also mounted under `/v1/*` so new clients can
+# adopt a stable versioned path without waiting for a breaking change. Old
+# unversioned paths keep working per Docs/API_VERSIONING.md. Aliases exclude
+# operational endpoints (health, metrics, sitemap.xml, robots.txt, oai-pmh,
+# discovery / WS / csp-report / scheduled-tasks) — those aren't API surface.
+_V1_ALIASES = [
+    (auth.router, "/auth"),
+    (journals.router, "/journals"),
+    (articles.router, "/articles"),
+    (reviews.router, "/reviews"),
+    (ai.router, "/ai"),
+    (submissions.router, "/submissions"),
+    (reviewers.router, "/reviewers"),
+    (editorial.router, "/editorial"),
+    (editor_portal.router, "/editor-portal"),
+    (editor_auth.router, "/editor-auth"),
+    (author_auth.router, "/author-auth"),
+    (policies.router, "/policies"),
+    (article_reviews.router, "/article-reviews"),
+    (volumes_router.router, "/publication"),
+    (contact_router.router, "/contact"),
+    (announcements_router.router, "/announcements"),
+    (board_router.router, "/board"),
+    (platform_router.revisions_router, "/revisions"),
+    (platform_router.production_router, "/production"),
+    (platform_router.special_issues_router, "/special-issues"),
+    (platform_router.email_templates_router, "/email-templates"),
+    (platform_router.audit_router, "/audit-logs"),
+    (platform_router.references_router, "/references"),
+    (platform_router.users_admin_router, "/users-admin"),
+    (uploads_router.router, "/uploads"),
+    (submission_messages_router.router, "/submission-messages"),
+    (plagiarism_admin_router.router, "/ai"),
+    (jats_router.router, "/articles"),
+    (crossref_registration_router.router, "/crossref"),
+    (authors_public_router.router, "/authors-public"),
+    (reviewer_auth_router.router, "/reviewer-auth"),
+    (search_router.router, "/search"),
+    (reviews_public_router.router, "/reviews-public"),
+    (production_public_router.router, "/production-public"),
+    (cited_by_router.router, "/cited-by"),
+    (article_render_router.router, "/articles"),
+    (article_pdf_router.router, "/articles"),
+    (reviewer_invite_router.router, "/reviewer-invite"),
+    (editor_badges_router.router, "/editor-badges"),
+    (authors_notifications_router.router, "/authors-notifications"),
+    (password_reset_router.router, "/password-reset"),
+    (recovery_codes_router.router, "/recovery-codes"),
+    (article_stats_router.router, "/article-stats"),
+    (sessions_router.router, "/sessions"),
+    (gdpr_router.router, "/gdpr"),
+    (bulk_ops_router.router, "/bulk-ops"),
+    (csv_export_router.router, "/csv-export"),
+    (reference_import_router.router, "/reference-import"),
+    (submission_timeline_router.router, "/submission-timeline"),
+    (tenancy_router.router, "/tenancy"),
+]
+for _router, _prefix in _V1_ALIASES:
+    app.include_router(_router, prefix=f"/v1{_prefix}", include_in_schema=False)
 
 # ── Static files (downloadable templates) ────────────────
 _static_dir = Path(__file__).resolve().parent / "static" / "templates"

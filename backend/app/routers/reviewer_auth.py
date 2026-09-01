@@ -34,6 +34,7 @@ from app.models.reviewer import Reviewer
 from app.models.submission import Submission
 from app.services.auth_service import create_access_token
 from app.services.reviewer_auth_service import get_current_reviewer
+from app.services.reviewer_bridge import ensure_link
 from app.utils.helpers import hash_password, verify_password
 
 
@@ -167,6 +168,15 @@ def set_password(body: SetPasswordRequest, db: Session = Depends(get_db)):
         # Signed invitation delivered to the reviewer's inbox is proof of
         # email possession.
         reviewer.email_verified_at = datetime.utcnow()
+
+    # Bridge to the unified users identity surface. Idempotent — if the
+    # link is already stamped, ensure_link is a no-op; if it is missing
+    # (either a legacy reviewer created before migration p2n7l5c6d0j1, or
+    # one that was reactivated after the backfill), a matching User row
+    # is adopted or created. The response shape below is unchanged.
+    if reviewer.linked_user_id is None:
+        ensure_link(db, reviewer)
+
     db.commit()
     return SetPasswordResponse(
         reviewer_id=str(reviewer.id),

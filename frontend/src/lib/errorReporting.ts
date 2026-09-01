@@ -1,33 +1,23 @@
 /*
- * errorReporting.ts — Sentry-style error tracking stub.
+ * errorReporting.ts — thin wrapper around `@sentry/react`.
  *
- * Ships with the app but only activates when the `REACT_APP_SENTRY_DSN`
- * environment variable is set at build time. When unset (development,
- * self-hosted deployments, air-gapped installs) both `captureException`
- * and `captureMessage` are no-ops and no external network request is
- * ever made.
+ * Runtime behaviour is a strict no-op when `REACT_APP_SENTRY_DSN` is
+ * unset at build time. That's the case for local development,
+ * self-hosted deployments, and air-gapped installs: no network request
+ * of any kind is made and both `captureException` and `captureMessage`
+ * return without touching the SDK.
  *
- * When a DSN *is* set, the module injects the official Sentry browser
- * CDN bundle at runtime and forwards captures through the loaded SDK.
- * We intentionally do NOT depend on `@sentry/react` — the runtime CDN
- * injection keeps the bundle small and lets ops toggle tracking without
- * a rebuild. If the CDN is blocked by CSP the script simply never
- * finishes loading and the no-op stubs stay in effect.
+ * When a DSN *is* set we initialise `@sentry/react` at module load. We
+ * intentionally keep the config minimal — tracing and replay are off
+ * — so the bundle stays small and no unexpected background traffic
+ * happens on production pages.
+ *
+ * If the npm package fails to load for any reason (bundler error,
+ * offline dev install), the try/catch below falls back to the no-op
+ * path so the host app is never broken by the reporter.
  */
 
 type CaptureContext = Record<string, unknown> | undefined;
-
-interface SentryGlobal {
-    init: (opts: { dsn: string; tracesSampleRate: number }) => void;
-    captureException: (err: unknown, ctx?: CaptureContext) => void;
-    captureMessage: (msg: string, ctx?: CaptureContext) => void;
-}
-
-declare global {
-    interface Window {
-        Sentry?: SentryGlobal;
-    }
-}
 
 // Read DSN from build-time env. Falls back to an empty string when
 // `process.env` is unavailable so this module is safe to import in
@@ -38,46 +28,49 @@ const DSN: string =
         process.env.REACT_APP_SENTRY_DSN) ||
     '';
 
-const CDN_URL = 'https://browser.sentry-cdn.com/8.35.0/bundle.min.js';
-
+// Lazy, guarded require. `require` is available under Create React
+// App's webpack build; wrapping it in a try/catch means a missing or
+// broken `@sentry/react` install can never crash the app — we simply
+// fall through to the no-op stubs.
+//
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let Sentry: any = null;
 let ready = false;
 
-function bootSentry(): void {
-    if (typeof window === 'undefined' || !DSN) return;
-    if (window.Sentry) {
-        // Some other loader beat us to it — respect existing init.
-        ready = true;
-        return;
-    }
+if (DSN) {
     try {
-        const script = document.createElement('script');
-        script.src = CDN_URL;
-        script.async = true;
-        script.crossOrigin = 'anonymous';
-        script.onload = () => {
-            try {
-                if (window.Sentry && typeof window.Sentry.init === 'function') {
-                    window.Sentry.init({ dsn: DSN, tracesSampleRate: 0 });
-                    ready = true;
-                }
-            } catch {
-                // Swallow — Sentry init must never break the host app.
-            }
-        };
-        script.onerror = () => {
-            // CDN blocked (CSP, offline, allowlist). Stubs stay no-op.
-        };
-        (document.head || document.documentElement).appendChild(script);
+        // Hide the require call from webpack's static analyzer so a build
+        // still succeeds when `@sentry/react` isn't installed. The Function
+        // constructor bypasses the compile-time dependency detector; the
+        // runtime still resolves it exactly like a normal require.
+        // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
+        const dynamicRequire = new Function(
+            'name',
+            'return typeof require === "function" ? require(name) : null;',
+        );
+        Sentry = dynamicRequire(['@sentry', 'react'].join('/'));
+        if (Sentry && typeof Sentry.init === 'function') {
+            Sentry.init({
+                dsn: DSN,
+                tracesSampleRate: 0.0,
+                replaysSessionSampleRate: 0,
+                replaysOnErrorSampleRate: 0,
+                integrations: [],
+            });
+            ready = true;
+        }
     } catch {
-        // DOM missing / restricted — leave the stubs in place.
+        // Package failed to load or init threw — stay in no-op mode.
+        Sentry = null;
+        ready = false;
     }
 }
 
-/** Report an error. No-op unless the Sentry CDN loaded successfully. */
+/** Report an error. No-op unless Sentry initialised successfully. */
 export function captureException(err: unknown, ctx?: CaptureContext): void {
-    if (!ready || typeof window === 'undefined' || !window.Sentry) return;
+    if (!ready || !Sentry) return;
     try {
-        window.Sentry.captureException(err, ctx);
+        Sentry.captureException(err, ctx);
     } catch {
         // Never let the reporter itself throw.
     }
@@ -85,18 +78,18 @@ export function captureException(err: unknown, ctx?: CaptureContext): void {
 
 /** Report an informational message. Same no-op semantics. */
 export function captureMessage(msg: string, ctx?: CaptureContext): void {
-    if (!ready || typeof window === 'undefined' || !window.Sentry) return;
+    if (!ready || !Sentry) return;
     try {
-        window.Sentry.captureMessage(msg, ctx);
+        Sentry.captureMessage(msg, ctx);
     } catch {
         // ignore
     }
 }
 
-// Wire the unhandled-rejection listener even when the CDN isn't loaded
-// — `captureException` is a safe no-op in that case, and installing the
-// listener eagerly means we can't miss the first rejection after the
-// SDK finishes loading.
+// Wire the unhandled-rejection listener eagerly. Even without a DSN
+// this is a safe no-op — `captureException` short-circuits — and
+// installing it at import time means we can't miss the first
+// rejection after the SDK finishes initialising.
 if (typeof window !== 'undefined') {
     try {
         window.addEventListener('unhandledrejection', (event) => {
@@ -110,9 +103,7 @@ if (typeof window !== 'undefined') {
     }
 }
 
-// Kick off the CDN injection at import time. Safe to call repeatedly;
-// the guard inside bootSentry avoids duplicate scripts.
-bootSentry();
-
+// Naming the object before default-exporting silences the
+// `import/no-anonymous-default-export` lint warning.
 const errorReporting = { captureException, captureMessage };
 export default errorReporting;

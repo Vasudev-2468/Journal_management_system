@@ -1,0 +1,72 @@
+# fly.toml — Fly.io production config for the JGAIR backend.
+#
+# Sibling `Dockerfile` in this directory is the multi-stage build Fly
+# uses when you pass `--dockerfile infra/fly/Dockerfile`.
+#
+# One-time bootstrap:
+#   flyctl launch --dockerfile infra/fly/Dockerfile \
+#                 --copy-config infra/fly/fly.toml \
+#                 --name jgair-backend --region iad --no-deploy
+#   flyctl postgres create --name jgair-db --region iad
+#   flyctl postgres attach --app jgair-backend jgair-db  # sets DATABASE_URL
+#   flyctl secrets set --app jgair-backend \
+#     SECRET_KEY="$(openssl rand -hex 32)" \
+#     ALGORITHM=HS256 \
+#     ALLOW_ORIGINS="https://jgair.example.org" \
+#     FRONTEND_URL="https://jgair.example.org" \
+#     OPENAI_API_KEY="sk-..." \
+#     SENDGRID_API_KEY="SG..." \
+#     SCHEDULED_TASKS_SECRET="$(openssl rand -hex 24)"
+#   flyctl deploy --app jgair-backend
+
+app         = "jgair-backend"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+# Non-secret env. Real secrets go through `flyctl secrets set`.
+[env]
+  PORT = "8080"
+  ALGORITHM = "HS256"
+  RUN_MIGRATIONS_ON_STARTUP = "0"
+  # PYTHONUNBUFFERED keeps uvicorn/gunicorn logs from getting buffered
+  # behind Fly's log shipper.
+  PYTHONUNBUFFERED = "1"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 1
+  max_machines_running = 3
+  processes = ["app"]
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 40
+    hard_limit = 60
+
+  # Liveness probe — Fly treats this as "should the machine be
+  # considered healthy?". A failure eventually triggers replacement.
+  [[http_service.checks]]
+    grace_period = "20s"
+    interval = "15s"
+    method = "GET"
+    timeout = "5s"
+    path = "/system/health/live"
+
+# Machine size — plenty for the API. Bump with `flyctl scale vm`.
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1
+
+[deploy]
+  strategy = "rolling"
+  # Migrations belong in a deploy hook, not lifespan startup. This runs
+  # ONCE per deploy against a machine on the new image, before traffic
+  # shifts. Requires alembic on PATH — the Dockerfile installs it.
+  release_command = "alembic upgrade head"

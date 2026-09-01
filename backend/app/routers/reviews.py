@@ -1,3 +1,4 @@
+import logging
 import uuid
 from datetime import datetime
 
@@ -7,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.audit_log import AuditLog
+from app.services import pubsub
 from app.services.auth_service import get_current_user
 from app.services.editor_auth import require_editor_mfa
 from app.services.review_service import (
@@ -27,6 +29,8 @@ from app.schemas.review import (
 )
 from app.utils.link_tokens import verify_review_link_token
 from app.tasks import notify_editor_review_complete, send_decision_to_author
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -120,6 +124,29 @@ def submit_review_endpoint(
     # the "all reviews in" message from that state, so the second delay()
     # was firing an identical email. Send the notification exactly once.
     notify_editor_review_complete.delay(str(updated.id))
+
+    # Best-effort real-time nudge to every connected editor. The
+    # submission model has no assigned-editor column, so we fan out via
+    # the editor role broadcast topics — each editor's WebSocket is
+    # subscribed to its own role. Failure never blocks the response;
+    # the poll fallback catches the update on the next tick.
+    try:
+        submission_id = str(updated.submission_id) if updated.submission_id else None
+        review_completed_payload = {
+            "kind": "review_completed",
+            "submission_id": submission_id,
+            "review_id": str(updated.id),
+        }
+        for topic in (
+            "broadcast:editor",
+            "broadcast:section_editor",
+            "broadcast:admin",
+            "broadcast:managing_editor",
+            "broadcast:super_admin",
+        ):
+            pubsub.publish_threadsafe(topic, review_completed_payload)
+    except Exception:
+        logger.debug("reviews: pubsub publish failed", exc_info=True)
 
     return ReviewSubmitResponse(
         review_id=updated.id,

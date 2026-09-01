@@ -1,0 +1,64 @@
+# Hourly scheduled-tasks tick.
+#
+# In the hosted deployment, .github/workflows fires the scheduled-tasks
+# endpoint. On a self-hosted cluster there's no GitHub Actions to lean
+# on, so a CronJob runs curl against the in-cluster Service instead.
+# The secret in the X-Scheduled-Tasks-Secret header must match the
+# SCHEDULED_TASKS_SECRET the API validates.
+
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: scheduled-tasks
+  namespace: jgair
+  labels:
+    app.kubernetes.io/name: scheduled-tasks
+    app.kubernetes.io/component: cron
+spec:
+  # Top of every hour, UTC.
+  schedule: "0 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  # If a run takes longer than 15 minutes, kill it and let the next
+  # tick pick up. The endpoint is idempotent per-hour.
+  startingDeadlineSeconds: 300
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 900
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: tick
+              image: curlimages/curl:8.10.1
+              env:
+                - name: SCHEDULED_TASKS_SECRET
+                  valueFrom:
+                    secretKeyRef:
+                      name: jgair-backend-env
+                      key: SCHEDULED_TASKS_SECRET
+              command:
+                - sh
+                - -c
+                - >-
+                  curl --fail --silent --show-error --max-time 600
+                  -X POST
+                  -H "X-Scheduled-Tasks-Secret: $SCHEDULED_TASKS_SECRET"
+                  -H "Content-Type: application/json"
+                  http://backend.jgair.svc.cluster.local:8000/scheduled-tasks/run
+              resources:
+                requests:
+                  cpu: "10m"
+                  memory: "32Mi"
+                limits:
+                  cpu: "200m"
+                  memory: "128Mi"
+              securityContext:
+                allowPrivilegeEscalation: false
+                runAsNonRoot: true
+                runAsUser: 1000
+                capabilities:
+                  drop:
+                    - ALL

@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: jgair
+  labels:
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/component: api
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: backend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: backend
+        app.kubernetes.io/component: api
+    spec:
+      # Give the pod a moment to drain in-flight requests when we
+      # rotate replicas or scale down.
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: backend
+          image: ghcr.io/vasudev-2468/journal_management_system-backend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          envFrom:
+            - secretRef:
+                name: jgair-backend-env
+          env:
+            # Belt-and-braces defaults that live outside the Secret so an
+            # operator can override them without editing credentials.
+            - name: PORT
+              value: "8000"
+            - name: RUN_MIGRATIONS_ON_STARTUP
+              value: "0"
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          # Liveness = "is the process wedged?". A failure restarts the
+          # pod. Keep it cheap and independent of the database.
+          livenessProbe:
+            httpGet:
+              path: /system/health/live
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # Readiness = "should this pod take traffic?". A failure pulls
+          # the pod out of the Service without restarting it, so we can
+          # wait out a brief DB blip without churning replicas.
+          readinessProbe:
+            httpGet:
+              path: /system/health/ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # Startup probe covers cold starts (Alembic connect, initial
+          # SQLAlchemy engine bring-up). Once it passes, liveness takes
+          # over on its normal schedule.
+          startupProbe:
+            httpGet:
+              path: /system/health/live
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 30
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL

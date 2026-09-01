@@ -5,16 +5,18 @@ import {
     markAllRead,
     AuthorNotificationItem,
 } from '../../api/authorNotifications';
+import { useNotificationsStream } from '../../hooks/useNotificationsStream';
 
 // ── Config ────────────────────────────────────────────────
 //
-// Polls every 60s per the spec. Decisions have no server-side read
-// column, so we suppress dismissed ones in `localStorage` — the same
-// pattern the editor bell uses for its "last read at" cursor. Message
-// notifications get marked read server-side via `POST /mark-all-read`,
-// so they naturally disappear from the feed once acknowledged.
+// Real-time via `useNotificationsStream`; poll fallback (60s) kicks in
+// automatically when the WebSocket can't connect. Decisions have no
+// server-side read column, so we suppress dismissed ones in
+// `localStorage` — the same pattern the editor bell uses for its
+// "last read at" cursor. Message notifications get marked read
+// server-side via `POST /mark-all-read`, so they naturally disappear
+// from the feed once acknowledged.
 
-const POLL_INTERVAL_MS = 60_000;
 const DISMISSED_DECISIONS_KEY = 'author_notification_dismissed_decisions';
 
 // ── Dismissed-decision persistence ──────────────────────────────
@@ -120,16 +122,26 @@ const AuthorNotificationBell: React.FC = () => {
         }
     }, []);
 
-    // Poll on mount, then every POLL_INTERVAL_MS.
+    // Fetch once on mount so the tray isn't empty on first open. The
+    // live subscription and its 60s poll fallback both flow through
+    // `useNotificationsStream` below.
     useEffect(() => {
         mountedRef.current = true;
         load();
-        const id = window.setInterval(load, POLL_INTERVAL_MS);
         return () => {
             mountedRef.current = false;
-            window.clearInterval(id);
         };
     }, [load]);
+
+    // Real-time subscription (WebSocket) with automatic 60s poll
+    // fallback. On every inbound notification frame — a new editor
+    // message or a decision — we refresh the feed from the server so
+    // the same computed shape drives the tray either way.
+    useNotificationsStream({
+        role: 'author',
+        onNotification: load,
+        onPoll: load,
+    });
 
     // Close on outside click.
     useEffect(() => {

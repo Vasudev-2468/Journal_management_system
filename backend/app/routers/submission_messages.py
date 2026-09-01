@@ -5,6 +5,7 @@ can view and post on every submission. Reading a message from the other
 party stamps the appropriate `read_by_*_at` column.
 """
 
+import logging
 import uuid
 from datetime import datetime
 from typing import List
@@ -20,7 +21,10 @@ from app.schemas.submission_message import (
     SubmissionMessageCreate,
     SubmissionMessageRead,
 )
+from app.services import pubsub
 from app.services.auth_service import get_current_user
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -118,6 +122,54 @@ def post_message(
     db.add(row)
     db.commit()
     db.refresh(row)
+
+    # Best-effort real-time nudge to the counterparty. Editor -> author
+    # publishes to that specific author's user_id (looked up by the
+    # submission's author_email); author -> editor fans out to every
+    # connected editor via the role broadcast topic. Any failure here is
+    # swallowed — the message is already persisted and the poll
+    # fallback will surface it within 60s.
+    try:
+        message_payload = {
+            "kind": "new_message",
+            "submission_id": str(submission_id),
+            "message_id": row.id,
+        }
+        if is_editor:
+            recipient = (
+                db.query(User)
+                .filter(User.email == (submission.author_email or "").lower())
+                .first()
+            )
+            # ``author_email`` casing on submissions isn't guaranteed to
+            # match the User row; retry with the raw string if needed.
+            if recipient is None and submission.author_email:
+                recipient = (
+                    db.query(User)
+                    .filter(User.email == submission.author_email)
+                    .first()
+                )
+            if recipient is not None:
+                pubsub.publish_threadsafe(
+                    f"user:{recipient.id}", message_payload
+                )
+        else:
+            # Fan out to every connected editor. Publishers reach the
+            # role topic; individual editors are subscribed via the
+            # WebSocket router.
+            for topic in (
+                "broadcast:editor",
+                "broadcast:section_editor",
+                "broadcast:admin",
+                "broadcast:managing_editor",
+                "broadcast:super_admin",
+            ):
+                pubsub.publish_threadsafe(topic, message_payload)
+    except Exception:
+        logger.debug(
+            "submission_messages: pubsub publish failed", exc_info=True
+        )
+
     return row
 
 

@@ -1,0 +1,120 @@
+# Postgres StatefulSet — dev / staging use only.
+#
+# Production should point DATABASE_URL at a managed Postgres (Neon, RDS,
+# Cloud SQL, Supabase). This manifest exists so you can bring up a
+# smoke-test cluster without provisioning external infra first.
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: jgair
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/component: db
+spec:
+  # Headless service — StatefulSet needs this for stable pod DNS.
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: jgair
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/component: db
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres
+        app.kubernetes.io/component: db
+    spec:
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        fsGroup: 999
+      containers:
+        - name: postgres
+          image: postgres:15
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            # Credentials come from the same jgair-backend-env Secret so
+            # DATABASE_URL there stays consistent with what Postgres
+            # actually accepts. See secrets.example.yaml.
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: jgair-backend-env
+                  key: POSTGRES_DB
+                  optional: true
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: jgair-backend-env
+                  key: POSTGRES_USER
+                  optional: true
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: jgair-backend-env
+                  key: POSTGRES_PASSWORD
+                  optional: true
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - "$(POSTGRES_USER)"
+                - -d
+                - "$(POSTGRES_DB)"
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - "$(POSTGRES_USER)"
+                - -d
+                - "$(POSTGRES_DB)"
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 20Gi

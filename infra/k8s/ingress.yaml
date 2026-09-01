@@ -1,0 +1,63 @@
+# Ingress — routes external traffic to the frontend and backend Services.
+#
+# Routing:
+#   /api/*   → backend (Service `backend` port 8000)
+#   /*.xml   → backend (feeds, sitemap, KBART etc. are served by FastAPI)
+#   /        → frontend (Service `frontend` port 80)
+#
+# The `/api/` prefix is stripped by a rewrite annotation so the FastAPI
+# app keeps its native paths (`/articles`, `/journals`, ...). If you'd
+# rather not rewrite, drop the annotation and mount the routers under
+# `/api` in `main.py`.
+#
+# TLS is delegated to cert-manager. The referenced ClusterIssuer
+# `letsencrypt-prod` is NOT created here — bring your own.
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: jgair
+  namespace: jgair
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    # Only rewrite for `/api/*` — the `/*.xml` and `/` rules keep their
+    # paths unchanged.
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - jgair.example.org
+      secretName: jgair-tls
+  rules:
+    - host: jgair.example.org
+      http:
+        paths:
+          # `/api/(anything)` → backend, `/api/` stripped.
+          - path: /api(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: backend
+                port:
+                  number: 8000
+          # XML endpoints (RSS, Atom, sitemap, KBART) live on the backend
+          # directly under `/`. Match them explicitly so the SPA doesn't
+          # swallow them.
+          - path: /()(.*\.xml)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: backend
+                port:
+                  number: 8000
+          # Everything else → the React SPA.
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 80

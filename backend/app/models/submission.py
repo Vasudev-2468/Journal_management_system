@@ -2,7 +2,7 @@ import uuid
 import enum
 from datetime import datetime
 
-from sqlalchemy import Column, String, Text, Float, DateTime, Enum, JSON
+from sqlalchemy import Column, String, Text, Float, DateTime, Enum, ForeignKey, Integer, JSON
 from sqlalchemy.dialects.postgresql import UUID, ARRAY
 from sqlalchemy.orm import relationship
 from app.database import Base
@@ -55,6 +55,12 @@ class Submission(Base):
     consult_party_comments = Column(Text)
     suggested_reviewers_data = Column(JSON)    # [{name, email, orcid, affiliation, expertise, match_score}]
     paper_id_code = Column(String(50), unique=True, index=True)  # e.g. JGAIR-2026-0001
+
+    # Multi-journal scaffolding (additive, backward-compatible). NULL means
+    # "belongs to the primary journal" — see app.services.tenancy. Populated
+    # by future multi-journal workflows; single-journal deployments keep it
+    # NULL and every existing query stays correct.
+    journal_id = Column(Integer, ForeignKey("journals.id"), nullable=True, index=True)
 
     def __repr__(self):
         return f"<Submission(id={self.id}, title='{self.paper_title}', status={self.status})>"

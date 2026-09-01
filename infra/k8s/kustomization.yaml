@@ -1,0 +1,25 @@
+# kustomization.yaml — base for `kubectl apply -k infra/k8s/`.
+#
+# The Secret is intentionally NOT listed here — it lives in
+# secrets.example.yaml as a template. Copy it, fill it in, and apply it
+# out-of-band. Kustomize should not be pointed at real credentials in a
+# repo file.
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: jgair
+
+resources:
+  - namespace.yaml
+  - backend-deployment.yaml
+  - backend-service.yaml
+  - frontend-deployment.yaml
+  - frontend-service.yaml
+  - ingress.yaml
+  - postgres-statefulset.yaml
+  - backend-cronjob-scheduled.yaml
+  - backend-cronjob-backup.yaml
+
+commonLabels:
+  app.kubernetes.io/part-of: jgair

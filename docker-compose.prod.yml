@@ -1,0 +1,176 @@
+# docker-compose.prod.yml — single-node self-host, no orchestrator.
+#
+# Suitable for a small VM (2 vCPU / 4 GB) or a homelab. Everything a
+# production journal instance needs is here: FastAPI backend under
+# gunicorn+uvicorn, static frontend behind nginx, Postgres 15 with a
+# persistent volume, a nightly pg_dump sidecar, and an hourly
+# scheduled-tasks tick.
+#
+# What this file does NOT do:
+#   - TLS termination. Front the compose stack with Caddy, Traefik, or
+#     nginx on the host, and terminate certs there.
+#   - Public DATABASE_URL exposure. `db` is not published to the host.
+#
+# Usage:
+#   cp .env.example .env      # then fill it in
+#   docker compose -f docker-compose.prod.yml up -d
+#   docker compose -f docker-compose.prod.yml exec backend alembic upgrade head
+#
+# For the dev flow with hot reload use `docker-compose.yml` (root).
+# For CI, use `docker-compose.test.yml`.
+
+services:
+  db:
+    image: postgres:15
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-journaladmin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-CHANGE_ME}
+      POSTGRES_DB: ${POSTGRES_DB:-journaldb}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "pg_isready -U ${POSTGRES_USER:-journaladmin} -d ${POSTGRES_DB:-journaldb}"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - backend_network
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      # DATABASE_URL is composed here so the compose file, not the .env,
+      # is the source of truth about how to reach the in-network db.
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-journaladmin}:${POSTGRES_PASSWORD:-CHANGE_ME}@db:5432/${POSTGRES_DB:-journaldb}"
+      # Uvicorn+gunicorn wants gunicorn installed. The backend image
+      # already ships uvicorn; add gunicorn on top with an override
+      # build arg if you want the multi-worker mode below. Without it,
+      # the CMD falls back to plain uvicorn.
+      PORT: "8000"
+      PYTHONUNBUFFERED: "1"
+    # Override the image's CMD to run gunicorn with 4 uvicorn workers.
+    # If your backend image doesn't include gunicorn (the repo's
+    # backend/Dockerfile currently doesn't), either add it via a
+    # `pip install gunicorn` build step or drop back to plain uvicorn.
+    command:
+      - "sh"
+      - "-c"
+      - "if command -v gunicorn >/dev/null 2>&1; then \
+           exec gunicorn app.main:app \
+             --bind 0.0.0.0:8000 \
+             --workers 4 \
+             --worker-class uvicorn.workers.UvicornWorker \
+             --timeout 60 \
+             --graceful-timeout 30 \
+             --forwarded-allow-ips='*' \
+             --access-logfile - \
+             --error-logfile -; \
+         else \
+           exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4; \
+         fi"
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks:
+      - backend_network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Public URL where the browser reaches the backend. Bake the
+        # public origin in at build time so the SPA doesn't need
+        # runtime config.
+        REACT_APP_API_URL: ${PUBLIC_API_URL:-http://localhost:8000}
+    restart: unless-stopped
+    environment:
+      PORT: "80"
+    ports:
+      - "80:80"
+    networks:
+      - frontend_network
+      - backend_network
+    depends_on:
+      - backend
+
+  # Nightly pg_dump. Reuses backend/scripts/backup_db.sh so the compose
+  # flow and the k8s CronJob converge on the same script.
+  backup:
+    image: postgres:15
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-journaladmin}:${POSTGRES_PASSWORD:-CHANGE_ME}@db:5432/${POSTGRES_DB:-journaldb}"
+      RETENTION_DAYS: "${BACKUP_RETENTION_DAYS:-30}"
+    volumes:
+      - db_backups:/backups
+      - ./backend/scripts:/scripts:ro
+    # Sleep-24h loop instead of cron so the container image stays
+    # stock. If the host restarts, the first run happens ~24h later —
+    # if you want an immediate first backup, run
+    # `docker compose exec backup /scripts/backup_db.sh` once.
+    command:
+      - "sh"
+      - "-c"
+      - "while true; do /scripts/backup_db.sh || echo 'backup: FAILED'; sleep 86400; done"
+    networks:
+      - backend_network
+
+  # Hourly scheduled-tasks tick. Mirrors what the k8s CronJob does but
+  # inside the compose stack, so a single-node install doesn't depend
+  # on GitHub Actions to fire the endpoint.
+  #
+  # The script inside backend/scripts/run_scheduled_tasks.py is a
+  # full Python entry point; we don't need it here because the API's
+  # /scheduled-tasks/run endpoint does the same work. curl in a loop
+  # is enough.
+  scheduled-tasks:
+    image: curlimages/curl:8.10.1
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      SCHEDULED_TASKS_SECRET: "${SCHEDULED_TASKS_SECRET:-CHANGE_ME}"
+    command:
+      - "sh"
+      - "-c"
+      - "while true; do \
+           curl --fail --silent --show-error --max-time 600 \
+             -X POST \
+             -H \"X-Scheduled-Tasks-Secret: $$SCHEDULED_TASKS_SECRET\" \
+             -H 'Content-Type: application/json' \
+             http://backend:8000/scheduled-tasks/run \
+             || echo 'scheduled-tasks: tick failed'; \
+           sleep 3600; \
+         done"
+    networks:
+      - backend_network
+
+networks:
+  backend_network:
+  frontend_network:
+
+volumes:
+  postgres_data:
+  db_backups:

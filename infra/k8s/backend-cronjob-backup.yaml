@@ -1,0 +1,71 @@
+# Nightly pg_dump.
+#
+# Runs at 02:00 UTC — quiet time for most journal workloads. Uses the
+# stock postgres:15 image because it already ships pg_dump/pg_restore.
+# Dumps land on an emptyDir volume by default; for real off-node
+# durability, replace the volume with a PVC or bake in an `aws s3 cp`
+# / `gcloud storage cp` step.
+
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: postgres-backup
+  namespace: jgair
+  labels:
+    app.kubernetes.io/name: postgres-backup
+    app.kubernetes.io/component: cron
+spec:
+  schedule: "0 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 7
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 3600
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 7200
+      backoffLimit: 1
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: pgdump
+              image: postgres:15
+              env:
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: jgair-backend-env
+                      key: DATABASE_URL
+                - name: RETENTION_DAYS
+                  value: "30"
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -eu
+                  STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+                  OUT="/backups/jgair_${STAMP}.dump"
+                  echo "backup: pg_dump -> ${OUT}"
+                  pg_dump -Fc "${DATABASE_URL}" -f "${OUT}"
+                  pg_restore --list "${OUT}" > /dev/null
+                  SIZE=$(stat -c '%s' "${OUT}")
+                  echo "backup:ok size=${SIZE}"
+                  # Retention sweep.
+                  find /backups -maxdepth 1 -type f -name 'jgair_*.dump' \
+                    -mtime +${RETENTION_DAYS} -print -delete
+              resources:
+                requests:
+                  cpu: "100m"
+                  memory: "128Mi"
+                limits:
+                  cpu: "1"
+                  memory: "512Mi"
+              volumeMounts:
+                - name: backups
+                  mountPath: /backups
+          volumes:
+            # emptyDir survives only for the job. Swap for a PVC named
+            # `postgres-backups` (or bake in an S3 upload) for real
+            # off-node durability.
+            - name: backups
+              emptyDir: {}

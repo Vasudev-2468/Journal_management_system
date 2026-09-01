@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, Integer, String, Text, Boolean, JSON
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text, Boolean, JSON
 
 from app.database import Base
 
@@ -32,3 +32,7 @@ class PolicyPage(Base):
     last_reviewed_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    # Multi-journal scaffolding (additive). NULL = primary journal.
+    # See app.services.tenancy.
+    journal_id = Column(Integer, ForeignKey("journals.id"), nullable=True, index=True)
