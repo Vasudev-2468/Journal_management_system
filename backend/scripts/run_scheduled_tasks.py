@@ -303,6 +303,80 @@ def _task_production_stage_nudge() -> int:
     return nudged
 
 
+# ── Task 4: expire dead user_sessions rows ────────────────
+
+
+def _task_expire_dead_sessions() -> int:
+    """Prune ``user_sessions`` rows that have outlived their usefulness.
+
+    Two categories are removed:
+
+    * Explicitly revoked rows whose ``revoked_at`` is older than 30 days.
+      The security-log view stops needing them after a month and keeping
+      them around only grows the table.
+    * Rows whose ``last_seen_at`` is older than 90 days regardless of
+      revocation state — dormant sessions whose JWT has almost certainly
+      expired already; the row is dead weight.
+
+    Writes a single ``sessions.cleanup`` audit_log row with the count so
+    the admin can see the housekeeping happened.
+    """
+    from app.models.audit_log import AuditLog
+    from app.models.user_session import UserSession
+
+    deleted = 0
+    db = SessionLocal()
+    try:
+        now = datetime.utcnow()
+        revoked_cutoff = now - timedelta(days=30)
+        idle_cutoff = now - timedelta(days=90)
+
+        # Two independent deletes so a partial failure in one bucket
+        # doesn't take the other out. ``synchronize_session=False`` keeps
+        # the bulk delete cheap; nothing else in this session holds refs.
+        try:
+            deleted += (
+                db.query(UserSession)
+                .filter(
+                    UserSession.revoked_at.isnot(None),
+                    UserSession.revoked_at < revoked_cutoff,
+                )
+                .delete(synchronize_session=False)
+            )
+        except Exception:
+            db.rollback()
+            logger.exception("expire_dead_sessions: revoked-cutoff delete failed")
+
+        try:
+            deleted += (
+                db.query(UserSession)
+                .filter(UserSession.last_seen_at < idle_cutoff)
+                .delete(synchronize_session=False)
+            )
+        except Exception:
+            db.rollback()
+            logger.exception("expire_dead_sessions: idle-cutoff delete failed")
+
+        try:
+            db.add(
+                AuditLog(
+                    action="sessions.cleanup",
+                    target_type="user_session",
+                    meta={"deleted": deleted},
+                )
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("expire_dead_sessions: audit-log write failed")
+    except Exception:
+        logger.exception("expire_dead_sessions task failed")
+    finally:
+        db.close()
+
+    return deleted
+
+
 # ── Orchestrator ──────────────────────────────────────────
 
 
@@ -319,6 +393,7 @@ def main() -> Dict[str, Any]:
     reminders_sent = 0
     links_expired = 0
     proof_nudges = 0
+    sessions_deleted = 0
 
     try:
         reminders_sent = _task_send_deadline_reminders()
@@ -332,12 +407,17 @@ def main() -> Dict[str, Any]:
         proof_nudges = _task_production_stage_nudge()
     except Exception:
         logger.exception("scheduled task 'production_stage_nudge' crashed")
+    try:
+        sessions_deleted = _task_expire_dead_sessions()
+    except Exception:
+        logger.exception("scheduled task 'expire_dead_sessions' crashed")
 
     duration_ms = int((time.perf_counter() - started) * 1000)
     summary = {
         "reminders_sent": reminders_sent,
         "links_expired": links_expired,
         "proof_nudges": proof_nudges,
+        "sessions_deleted": sessions_deleted,
         "duration_ms": duration_ms,
     }
     print(json.dumps(summary))

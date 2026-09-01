@@ -37,6 +37,7 @@ from sqlalchemy import and_
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.middleware.rate_limit import forget_all_for_user
 from app.models.user import User
 from app.models.user_session import UserSession
 from app.services.auth_service import get_current_user
@@ -159,6 +160,13 @@ def revoke_session(
 
     row.revoked_at = datetime.utcnow()
     db.commit()
+    # Proactively evict any cached sub-claim decoded for this user from
+    # the rate-limiter — without this, a revoked bearer would still be
+    # counted against its old bucket for up to _TOKEN_CACHE_TTL_SECONDS.
+    try:
+        forget_all_for_user(current_user.id)
+    except Exception:
+        logger.exception("rate-limit cache eviction after revoke_session failed")
     logger.info(
         "Session %s revoked by user %s (id=%s)",
         session_id,
@@ -196,6 +204,13 @@ def revoke_other_sessions(
         row.revoked_at = now
         revoked += 1
     db.commit()
+    # Same reasoning as ``revoke_session`` — clear the rate-limiter's
+    # cached ``sub`` entries for this user so a just-revoked bearer
+    # can't keep filling its old bucket for the TTL window.
+    try:
+        forget_all_for_user(current_user.id)
+    except Exception:
+        logger.exception("rate-limit cache eviction after revoke_others failed")
     logger.info(
         "Bulk-revoked %s other session(s) for user %s (id=%s)",
         revoked,

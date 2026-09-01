@@ -34,6 +34,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.article import Article
+from app.models.article_event import ArticleEvent
 from app.models.article_review import ArticleReview
 from app.models.audit_log import AuditLog
 from app.models.contact_message import ContactMessage
@@ -229,6 +230,25 @@ def _serialize_contact_message(msg: ContactMessage) -> dict:
     }
 
 
+def _serialize_article_event(event: ArticleEvent) -> dict:
+    """Per-article view/download event on one of the caller's own articles.
+
+    We deliberately withhold ``ip_hash`` — even though it's a salted
+    SHA-256 and cannot be reversed, it's still a per-visitor identifier
+    the article owner has no legitimate need to see. ``user_agent`` is
+    likewise omitted from the export payload (it's a fingerprintable
+    surface); the columns kept below are the ones that describe the
+    interaction itself — what happened to which article and when.
+    """
+    return {
+        "id": event.id,
+        "article_id": event.article_id,
+        "event_type": event.event_type,
+        "created_at": _iso(event.created_at),
+        "referrer": event.referrer,
+    }
+
+
 def _serialize_session(sess: UserSession) -> dict:
     """Best-effort session summary. ``token_hash`` MUST NOT leak — it's the
     only server-side proof-of-identity for a live JWT."""
@@ -288,6 +308,21 @@ def export_my_data(
         .order_by(Article.id.desc())
         .all()
     )
+    article_ids = [a.id for a in articles]
+
+    # article_events are keyed by IP hash, not by user, so we can only
+    # export events on articles the caller *authored* — those are their
+    # own view/download stats. ``ip_hash`` is deliberately NOT surfaced
+    # by ``_serialize_article_event`` (see its docstring).
+    if article_ids:
+        article_events = (
+            db.query(ArticleEvent)
+            .filter(ArticleEvent.article_id.in_(article_ids))
+            .order_by(ArticleEvent.created_at.desc())
+            .all()
+        )
+    else:
+        article_events = []
 
     article_reviews = (
         db.query(ArticleReview)
@@ -346,6 +381,7 @@ def export_my_data(
         "user": _serialize_user(current_user),
         "submissions": [_serialize_submission(s) for s in submissions],
         "articles": [_serialize_article(a) for a in articles],
+        "article_events": [_serialize_article_event(e) for e in article_events],
         "article_reviews": [_serialize_article_review(r) for r in article_reviews],
         "manuscript_versions": [_serialize_version(v) for v in versions],
         "manuscript_files": [_serialize_manuscript_file(f) for f in files],
@@ -440,6 +476,33 @@ def delete_my_account(
         UserSession.user_id == user_id,
         UserSession.revoked_at.is_(None),
     ).update({UserSession.revoked_at: datetime.utcnow()}, synchronize_session=False)
+
+    # Scrub analytics rows on articles the caller authored. We keep the
+    # row (so aggregate view / download counts survive), but null out
+    # every fingerprintable column:
+    #   * ``ip_hash`` — a salted SHA-256 of the visitor's IP; unreachable
+    #     from outside but still per-visitor, and a right-to-be-forgotten
+    #     request covers it as a best-effort scoped scrub.
+    #   * ``referrer`` and ``user_agent`` — both carry residual PII (query
+    #     strings, unique browser fingerprints) that the aggregate does
+    #     not need.
+    # Scope is intentionally narrow: only events on articles the user
+    # owns. article_events for content authored by other users are not
+    # this user's data to erase.
+    owned_article_ids = [
+        aid for (aid,) in db.query(Article.id).filter(Article.author_id == user_id).all()
+    ]
+    if owned_article_ids:
+        db.query(ArticleEvent).filter(
+            ArticleEvent.article_id.in_(owned_article_ids)
+        ).update(
+            {
+                ArticleEvent.ip_hash: None,
+                ArticleEvent.referrer: None,
+                ArticleEvent.user_agent: None,
+            },
+            synchronize_session=False,
+        )
 
     # Audit trail — actor is the (now-anonymised) user. We keep actor_id
     # and record only a meta flag; we do NOT log the pre-anonymisation

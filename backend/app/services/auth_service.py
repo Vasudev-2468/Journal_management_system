@@ -1,8 +1,10 @@
 import hashlib
+import logging
 from sqlalchemy.orm import Session
 from fastapi import HTTPException, Depends, Request
 from fastapi.security import OAuth2PasswordBearer
 from pydantic import BaseModel
+from app.models.audit_log import AuditLog
 from app.models.user import User
 from app.models.user_session import UserSession
 from app.schemas.user import UserCreate
@@ -12,6 +14,30 @@ from app.config import settings
 from jose import JWTError, jwt
 from datetime import datetime, timedelta
 from typing import Optional
+
+logger = logging.getLogger(__name__)
+
+
+# Sessions whose IP moves to a different /24 block are logged, but only
+# once per this cooling-off window — otherwise a mobile client bouncing
+# between two Wi-Fi/cell networks would spam the audit log on every hop.
+_HIJACK_LOG_COOLDOWN = timedelta(minutes=5)
+
+
+def _subnet24(ip: Optional[str]) -> Optional[str]:
+    """Return the first three octets of an IPv4 address, or ``None``.
+
+    IPv6 addresses (or anything else that doesn't parse as four dotted
+    octets) fall back to the raw string — the caller uses the value only
+    for equality comparison, so a non-IPv4 pair still differs correctly
+    when the raw strings do.
+    """
+    if not ip:
+        return None
+    parts = ip.split(".")
+    if len(parts) == 4 and all(p.isdigit() for p in parts):
+        return ".".join(parts[:3])
+    return ip
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
@@ -139,6 +165,46 @@ def _touch_session(
                 detail="Session revoked",
                 headers={"WWW-Authenticate": "Bearer"},
             )
+
+        # Passive hijack detection: if the session's IP has moved to a
+        # different /24 block since we last saw it, drop an audit-log
+        # row. We only log at most once every ``_HIJACK_LOG_COOLDOWN``
+        # so a mobile client hopping networks doesn't spam the log, and
+        # we never block the request — this is alerting, not enforcement.
+        prev_ip = row.ip_address
+        prev_ua = row.user_agent
+        prev_seen = row.last_seen_at
+        if (
+            ip
+            and prev_ip
+            and ip != prev_ip
+            and _subnet24(ip) != _subnet24(prev_ip)
+            and (prev_seen is None or (now - prev_seen) >= _HIJACK_LOG_COOLDOWN)
+        ):
+            try:
+                db.add(
+                    AuditLog(
+                        actor_id=user.id,
+                        actor_email=user.email,
+                        action="session.ip_change",
+                        target_type="user_session",
+                        target_id=str(row.id),
+                        ip_address=ip,
+                        meta={
+                            "old_ip": prev_ip,
+                            "new_ip": ip,
+                            "user_agent_changed": bool(
+                                ua and prev_ua and ua != prev_ua
+                            ),
+                        },
+                    )
+                )
+            except Exception:
+                # Never let audit bookkeeping deny a valid request.
+                logger.exception(
+                    "hijack-detection audit-log write failed for session %s",
+                    row.id,
+                )
 
         row.last_seen_at = now
         if ip:

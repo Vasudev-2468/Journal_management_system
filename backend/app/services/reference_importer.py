@@ -123,27 +123,42 @@ def _render_citation(fields: Dict[str, str]) -> str:
 
 
 # Match an @-entry header: ``@article{key,``. The key is optional so a
-# missing citekey still lets the entry parse.
-_BIBTEX_ENTRY = re.compile(r"@(\w+)\s*\{\s*([^,\s]*)\s*,", re.MULTILINE)
+# missing citekey still lets the entry parse. We also match the
+# non-reference entry kinds (``@string``, ``@preamble``, ``@comment``)
+# that carry no citekey/comma so the splitter can skip them intact —
+# see :func:`_split_bibtex_entries`.
+_BIBTEX_ENTRY_HEAD = re.compile(r"@(\w+)\s*\{", re.MULTILINE)
+
+# Entry kinds that are NOT bibliographic references. BibTeX allows
+# these at the top level and reference managers occasionally leave them
+# in an export. They must be recognised so the brace scanner steps over
+# their body (which may itself contain ``@string`` macros) rather than
+# trying to parse them as an ``@article``-style entry.
+_BIBTEX_NON_REFERENCE = frozenset({"string", "preamble", "comment"})
 
 
 def _split_bibtex_entries(text: str) -> List[str]:
-    """Return the raw body of each ``@entry{ ... }`` block in ``text``.
+    """Return the raw body of each bibliographic ``@entry{ ... }`` block.
 
     Uses a manual brace scan rather than a regex — BibTeX values often
     contain nested braces (protected titles), and a greedy ``.*?\\}``
     regex would happily stop at the first inner ``}``. The scan stays
     O(n) so a very long paste is still fast.
+
+    ``@string{…}``, ``@preamble{…}`` and ``@comment{…}`` blocks are
+    scanned to their matching brace and then dropped — they're macro /
+    formatting directives, not references.
     """
     entries: List[str] = []
     i = 0
     n = len(text)
     while i < n:
-        m = _BIBTEX_ENTRY.search(text, i)
+        m = _BIBTEX_ENTRY_HEAD.search(text, i)
         if not m:
             break
-        # Move to just after the opening ``{`` of the entry body.
-        body_start = m.end()  # already past the comma
+        kind = m.group(1).lower()
+        # Position just past the opening ``{`` of the entry.
+        body_start = m.end()
         depth = 1
         j = body_start
         while j < n and depth > 0:
@@ -155,7 +170,18 @@ def _split_bibtex_entries(text: str) -> List[str]:
                 if depth == 0:
                     break
             j += 1
+        # Skip ``@string`` / ``@preamble`` / ``@comment`` blocks entirely
+        # — they are not references. We still had to walk to the matching
+        # brace so ``i`` can advance past the whole block.
+        if kind in _BIBTEX_NON_REFERENCE:
+            i = j + 1 if j < n else n
+            continue
         body = text[body_start:j]
+        # Strip the citekey (up to the first comma) so the field parser
+        # doesn't see ``mykey`` masquerading as ``mykey = ...``.
+        comma = body.find(",")
+        if comma != -1:
+            body = body[comma + 1 :]
         entries.append(body)
         # Continue after the closing brace (or the end of string if the
         # entry was truncated).
@@ -163,24 +189,119 @@ def _split_bibtex_entries(text: str) -> List[str]:
     return entries
 
 
-# Match a ``tag = value,`` pair inside a BibTeX body. ``value`` may be
-# brace-delimited, quoted, or a bare token — we accept all three shapes.
-_BIBTEX_FIELD = re.compile(
-    r"(\w+)\s*=\s*(\{(?:[^{}]|\{[^{}]*\})*\}|\"[^\"]*\"|[^,\n]+)\s*,?",
-    re.MULTILINE,
-)
+def _iter_bibtex_fields(body: str):
+    """Yield ``(tag, raw_value)`` pairs from a single BibTeX entry body.
+
+    Walks the body character-by-character so nested braces in a value
+    (``{Title with {SubTitle} inside}``) are respected — the regex
+    previously used here capped nesting at one level and truncated
+    deeper titles. Multi-line values (a raw ``\\n`` inside a braced or
+    quoted value) survive intact; the caller normalises whitespace via
+    :func:`_clean`.
+    """
+    n = len(body)
+    i = 0
+    while i < n:
+        # Skip whitespace and stray separators between fields.
+        while i < n and (body[i].isspace() or body[i] == ","):
+            i += 1
+        if i >= n:
+            break
+        # Read the tag name.
+        tag_start = i
+        while i < n and (body[i].isalnum() or body[i] == "_" or body[i] == "-"):
+            i += 1
+        tag = body[tag_start:i]
+        if not tag:
+            # Unrecognised char at this position — advance and try again
+            # rather than getting stuck.
+            i += 1
+            continue
+        # Expect ``=`` next, possibly with whitespace.
+        while i < n and body[i].isspace():
+            i += 1
+        if i >= n or body[i] != "=":
+            # Malformed pair. Skip to the next comma so a bad field
+            # doesn't swallow the rest of the entry.
+            while i < n and body[i] != ",":
+                i += 1
+            continue
+        i += 1  # past ``=``
+        while i < n and body[i].isspace():
+            i += 1
+        if i >= n:
+            break
+        c = body[i]
+        if c == "{":
+            depth = 1
+            i += 1
+            val_start = i
+            while i < n and depth > 0:
+                ch = body[i]
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                i += 1
+            value = body[val_start:i]
+            if i < n:
+                i += 1  # past closing ``}``
+        elif c == '"':
+            i += 1
+            val_start = i
+            while i < n and body[i] != '"':
+                # BibTeX quoted values allow ``{``-protected substrings
+                # (rare, but valid) — skip past them so an internal ``"``
+                # inside braces doesn't terminate the value early.
+                if body[i] == "{":
+                    depth = 1
+                    i += 1
+                    while i < n and depth > 0:
+                        if body[i] == "{":
+                            depth += 1
+                        elif body[i] == "}":
+                            depth -= 1
+                        i += 1
+                    continue
+                i += 1
+            value = body[val_start:i]
+            if i < n:
+                i += 1  # past closing ``"``
+        else:
+            # Bare token: read up to the next comma or end-of-body.
+            val_start = i
+            while i < n and body[i] != ",":
+                i += 1
+            value = body[val_start:i].strip()
+        yield tag, value
 
 
 def _parse_bibtex_body(body: str) -> Dict[str, str]:
-    """Parse a single BibTeX entry body into a lower-cased field map."""
+    """Parse a single BibTeX entry body into a lower-cased field map.
+
+    Handles the awkward cases the previous regex-only parser dropped:
+
+    >>> # Nested braces in a value are kept, not truncated.
+    >>> _parse_bibtex_body('title = {Title with {SubTitle} inside}')['title']
+    'Title with SubTitle inside'
+    >>> # Multi-line values are collapsed to a single space.
+    >>> _parse_bibtex_body('title = {A\\n  wrapped\\n  title}')['title']
+    'A wrapped title'
+    >>> # Quoted values with embedded braces don't terminate early.
+    >>> _parse_bibtex_body('title = "A {quoted} title"')['title']
+    'A quoted title'
+    >>> # Bare-token values (numbers, keys) still parse.
+    >>> _parse_bibtex_body('year = 2024, volume = 12')['year']
+    '2024'
+    """
     out: Dict[str, str] = {}
-    for tag, value in _BIBTEX_FIELD.findall(body):
+    for tag, value in _iter_bibtex_fields(body):
         key = tag.strip().lower()
-        # Trim surrounding quotes if the value came in as ``"..."``.
-        v = value.strip()
-        if len(v) >= 2 and v[0] == '"' and v[-1] == '"':
-            v = v[1:-1]
-        out[key] = _clean(v)
+        if not key:
+            continue
+        out[key] = _clean(value)
     return out
 
 
@@ -189,7 +310,9 @@ def parse_bibtex(text: str) -> List[dict]:
 
     Never raises. Malformed entries (missing braces, no title, etc.) are
     dropped from the output — the count difference is the caller's cue
-    that something was skipped.
+    that something was skipped. Non-reference blocks (``@string``,
+    ``@preamble``, ``@comment``) are recognised and skipped without
+    affecting the surrounding entries.
     """
     if not text or not text.strip():
         return []
