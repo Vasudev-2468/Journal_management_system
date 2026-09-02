@@ -41,6 +41,40 @@ function tokenForUrl(url: string | undefined): string | null {
     if (u.startsWith('/board/') || u === '/board') {
         return localStorage.getItem('editor_token');
     }
+    // Production queue (/production/queue, /production/{id}, …) is
+    // fully editor-gated. The public read surface lives under
+    // /production-public/* so this prefix is safe to bind unconditionally.
+    if (u.startsWith('/production/') || u === '/production') {
+        return localStorage.getItem('editor_token');
+    }
+    // Editor-owned admin surfaces. Every prefix below has the same
+    // shape: the write side needs an editor MFA session, the public
+    // read side (when it exists) lives under a distinct
+    // *-public / marketing route. Attaching the editor Bearer on the
+    // public read paths is harmless — FastAPI ignores an unused Bearer
+    // on unauthed endpoints — so we bind the whole prefix unconditionally.
+    const EDITOR_ADMIN_PREFIXES = [
+        '/contact/',
+        '/announcements/',
+        '/policies/',
+        '/audit-logs/',
+        '/references/',
+        '/email-templates/',
+        '/special-issues/',
+        '/users-admin/',
+        '/publication/',
+        '/crossref/',
+        '/permissions/',
+    ];
+    // ``/submissions/`` is shared between authors and editors — keep
+    // the existing author-token routing for that prefix. Editor-only
+    // sub-endpoints (e.g. /submissions/{id}/decision-briefing) attach
+    // their editor Bearer at the call site.
+    for (const p of EDITOR_ADMIN_PREFIXES) {
+        if (u.startsWith(p) || u === p.slice(0, -1)) {
+            return localStorage.getItem('editor_token');
+        }
+    }
     // Reviewer session: persistent reviewer account (JG reviewer-auth).
     // Routed BEFORE the /author- branch so /reviewer-auth/* is never
     // reached by the author fallthrough. /reviewer/* covers any future
@@ -120,7 +154,31 @@ client.interceptors.response.use(
                 url.startsWith('/reviewers/') ||
                 url === '/reviewers' ||
                 url.startsWith('/board/') ||
-                url === '/board'
+                url === '/board' ||
+                url.startsWith('/production/') ||
+                url === '/production' ||
+                url.startsWith('/contact/') ||
+                url === '/contact' ||
+                url.startsWith('/announcements/') ||
+                url === '/announcements' ||
+                url.startsWith('/policies/') ||
+                url === '/policies' ||
+                url.startsWith('/audit-logs/') ||
+                url === '/audit-logs' ||
+                url.startsWith('/references/') ||
+                url === '/references' ||
+                url.startsWith('/email-templates/') ||
+                url === '/email-templates' ||
+                url.startsWith('/special-issues/') ||
+                url === '/special-issues' ||
+                url.startsWith('/users-admin/') ||
+                url === '/users-admin' ||
+                url.startsWith('/publication/') ||
+                url === '/publication' ||
+                url.startsWith('/crossref/') ||
+                url === '/crossref' ||
+                url.startsWith('/permissions/') ||
+                url === '/permissions'
             ) {
                 localStorage.removeItem('editor_token');
                 localStorage.removeItem('editor_mfa_verified');

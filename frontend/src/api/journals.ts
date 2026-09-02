@@ -9,6 +9,31 @@ const BASE = '/journals';
 
 export const fetchJournals = async (): Promise<Journal[]> => {
     const response = await client.get(`${BASE}/`);
+    // Backend now wraps the list in {journals: [...]}. Older callers
+    // received a bare array, so accept either shape.
+    if (Array.isArray(response.data)) return response.data;
+    return response.data?.journals ?? [];
+};
+
+export const activateJournal = async (id: number): Promise<Journal> => {
+    const response = await client.post(`${BASE}/${id}/activate`);
+    return response.data;
+};
+
+export interface TenancyHealthReport {
+    generated_at: string;
+    invariants: Array<{ severity: 'critical' | 'warning' | 'info'; message: string }>;
+    journals: Array<{
+        id: number;
+        title: string;
+        is_active: boolean;
+        completeness: number;
+        missing_fields: string[];
+    }>;
+}
+
+export const fetchTenancyHealth = async (): Promise<TenancyHealthReport> => {
+    const response = await client.get(`${BASE}/agent/tenancy-health`);
     return response.data;
 };
 

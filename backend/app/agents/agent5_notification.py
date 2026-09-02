@@ -41,11 +41,48 @@ class NotificationBotAgent:
         }
 
         reviews = agent4_result.get("reviews_created", [])
+        paper_id_display = (
+            agent4_result.get("paper_id_display")
+            or agent4_result.get("paper_id_code")
+            or "unassigned"
+        )
+        paper_title = agent4_result.get("paper_title") or "(untitled manuscript)"
+        article_type = agent4_result.get("article_type") or "Research Article"
+        pdf_url = agent4_result.get("manuscript_pdf_url")
+        pdf_is_redacted = agent4_result.get("manuscript_pdf_is_redacted", False)
+
+        # Fetch the manuscript PDF once and reuse across reviewers so
+        # we don't hit storage N times. Best-effort — a missing file
+        # just means the invitation goes out without the attachment
+        # (with the note omitted), matching the pre-attachment
+        # behaviour so a storage outage never blocks invitations.
+        pdf_attachments: list[dict] = []
+        if pdf_url:
+            try:
+                from app.services.storage_service import download_bytes
+                pdf_bytes = download_bytes(pdf_url)
+                filename = (
+                    f"{paper_id_display}_manuscript"
+                    f"{'_anonymized' if pdf_is_redacted else ''}.pdf"
+                ).replace("/", "-").replace("\\", "-")
+                pdf_attachments = [{
+                    "filename": filename,
+                    "content": pdf_bytes,
+                    "content_type": "application/pdf",
+                }]
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Agent 5: could not fetch manuscript PDF (%s) — sending "
+                    "invitation without attachment: %s", pdf_url, exc,
+                )
 
         for review_data in reviews:
             # Send email invitation
             try:
-                self._send_reviewer_email(review_data, agent4_result["paper_id_code"])
+                self._send_reviewer_email(
+                    review_data, paper_id_display, paper_title, article_type,
+                    pdf_attachments=pdf_attachments,
+                )
                 results["invitations_sent"].append({
                     "reviewer": review_data["reviewer_name"],
                     "channel": "email",
@@ -58,7 +95,7 @@ class NotificationBotAgent:
             # Send WhatsApp invitation
             if review_data.get("reviewer_whatsapp"):
                 try:
-                    self._send_reviewer_whatsapp(review_data, agent4_result["paper_id_code"])
+                    self._send_reviewer_whatsapp(review_data, paper_id_display)
                     results["invitations_sent"].append({
                         "reviewer": review_data["reviewer_name"],
                         "channel": "whatsapp",
@@ -153,41 +190,77 @@ class NotificationBotAgent:
 
         return results
 
-    def _send_reviewer_email(self, review_data: dict, paper_id_code: str):
-        """Send review invitation email to a reviewer."""
-        subject = f"Invitation to Review — {paper_id_code}"
-        deadline_text = review_data.get("expires_at", "21 days from now")
+    def _send_reviewer_email(
+        self,
+        review_data: dict,
+        paper_id_display: str,
+        paper_title: str,
+        article_type: str = "Research Article",
+        pdf_attachments: Optional[list] = None,
+    ):
+        """Send the per-paper review invitation using the canonical
+        JGAIR reviewer-invitation template.
 
-        body = _wrap(f"""
-        <p>Dear {review_data['reviewer_name']},</p>
-        <p>You have been invited to review a manuscript for our journal.</p>
+        **Password policy — rotate on every invitation.** The reviewer
+        gets a fresh temporary password embedded in every invitation
+        email (matches the JGAIR template spec, and the editor's
+        explicit expectation that every invitation carries credentials
+        the reviewer can act on immediately).
 
-        <table style="width:100%;border-collapse:collapse;margin:16px 0;">
-          <tr>
-            <td style="padding:8px 12px;background:#f3f4f6;font-weight:600;
-                        border:1px solid #e5e7eb;width:40%;">Paper ID</td>
-            <td style="padding:8px 12px;border:1px solid #e5e7eb;">{paper_id_code}</td>
-          </tr>
-        </table>
+        Rotation invalidates any previous password. A reviewer who
+        holds another in-flight paper simply uses the most recent
+        credentials — the *latest* invitation always wins. Editors can
+        resend from the Review Room to re-issue the same paper's
+        credentials if the reviewer misplaced the email.
 
-        <p>Your secure review link (valid for 21 days):</p>
-        {_btn("Start Review", review_data['review_url'])}
+        Accept / Decline buttons are the same credential-agnostic
+        membership-invite URLs — Accept activates the account and
+        lands on the reviewer dashboard where the assigned manuscript
+        is waiting; Decline opens the reason-capture page.
+        """
+        from app.models.reviewer import Reviewer
+        from app.services.reviewer_service import (
+            _send_membership_invitation,
+            _stamp_new_invitation,
+        )
 
-        <p><strong>Deadline:</strong> {deadline_text}</p>
+        reviewer = (
+            self.db.query(Reviewer)
+            .filter(Reviewer.id == review_data["reviewer_id"])
+            .first()
+        )
+        if reviewer is None:
+            raise RuntimeError(f"Reviewer {review_data['reviewer_id']} vanished between agents")
 
-        <h3>What to do:</h3>
-        <ol>
-          <li>Click the link above (no login required)</li>
-          <li>Download and read the manuscript</li>
-          <li>Fill out the review form (scores + comments)</li>
-          <li>Submit before the deadline</li>
-        </ol>
+        # Human-friendly deadline. Agent 4 stamps expires_at as an ISO
+        # string; format it to something a reviewer can act on.
+        deadline_iso = review_data.get("expires_at")
+        deadline_pretty = "within 21 days"
+        if deadline_iso:
+            try:
+                from datetime import datetime as _dt
+                deadline_pretty = _dt.fromisoformat(deadline_iso).strftime("%d %B %Y")
+            except Exception:  # noqa: BLE001
+                pass
 
-        <p>Questions? Contact the editorial team.</p>
-        <p>Thank you for your contribution to peer review.</p>
-        <p>Best regards,<br><strong>Editorial Team</strong></p>
-        """)
-        _send_and_log(review_data["reviewer_email"], subject, body, "agent5_reviewer_invitation_email")
+        # Rotate a fresh temporary password so the invitation carries
+        # working credentials, whether the reviewer is a first-timer
+        # or already on the panel. _stamp_new_invitation also resets
+        # accept/decline/revoke stamps so the row is a clean invite.
+        plaintext = _stamp_new_invitation(reviewer)
+        self.db.commit()
+
+        _send_membership_invitation(
+            reviewer,
+            plaintext,
+            db=self.db,
+            manuscript_id=paper_id_display,
+            manuscript_title=paper_title,
+            article_type=article_type,
+            review_deadline=deadline_pretty,
+            include_temporary_password=True,
+            attachments=pdf_attachments,
+        )
 
     def _send_reviewer_whatsapp(self, review_data: dict, paper_id_code: str):
         """Send review invitation via WhatsApp."""
@@ -202,7 +275,15 @@ class NotificationBotAgent:
 
     def _notify_editorial_team(self, agent4_result: dict):
         """Notify editorial team that invitations were sent."""
-        paper_id = agent4_result.get("paper_id_code", "N/A")
+        # Prefer the friendly paper_id_code; fall back to the truncated
+        # UUID display Agent 4 attaches, so the subject line never reads
+        # "Review Invitations Sent — None".
+        paper_id = (
+            agent4_result.get("paper_id_code")
+            or agent4_result.get("paper_id_display")
+            or "N/A"
+        )
+        paper_title = agent4_result.get("paper_title") or "(untitled manuscript)"
         count = agent4_result.get("total_created", 0)
         reviewer_names = [r["reviewer_name"] for r in agent4_result.get("reviews_created", [])]
 
@@ -220,7 +301,8 @@ class NotificationBotAgent:
         reviewers_html = "".join(f"<li>{n}</li>" for n in reviewer_names)
         subject = f"Review Invitations Sent — {paper_id}"
         body = _wrap(f"""
-        <p>Review invitations have been sent for paper <strong>{paper_id}</strong>.</p>
+        <p>Review invitations have been sent for paper <strong>{paper_id}</strong>
+           — <em>{paper_title}</em>.</p>
         <p><strong>Reviewers invited ({count}):</strong></p>
         <ul>{reviewers_html}</ul>
         {_btn("Open Dashboard", f"{settings.FRONTEND_URL}/editor")}

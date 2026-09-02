@@ -178,6 +178,56 @@ export default function AuthorRevisionResponsePage() {
                             />
                         </div>
                     </div>
+                    <div className="mt-4 flex flex-wrap gap-2">
+                        <button
+                            type="button"
+                            onClick={async () => {
+                                try {
+                                    const { data: pkg } = await client.get(`/author-revision/submissions/${submissionId}/response-letter`);
+                                    const blob = new Blob([pkg.letter_text], { type: 'text/plain' });
+                                    const url = URL.createObjectURL(blob);
+                                    const a = document.createElement('a');
+                                    a.href = url; a.download = 'response-to-reviewers.txt';
+                                    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+                                    URL.revokeObjectURL(url);
+                                } catch (err: any) {
+                                    alert(err?.response?.data?.detail || 'Could not download the response letter.');
+                                }
+                            }}
+                            className="px-3 py-1.5 text-xs font-bold rounded-lg bg-white border border-gray-300 hover:bg-gray-50 text-gray-800"
+                        >
+                            📄 Download response letter
+                        </button>
+                        <Link
+                            to={`/author-dashboard/${submissionId}/revise`}
+                            className="px-3 py-1.5 text-xs font-bold rounded-lg bg-white border border-blue-300 text-blue-700 hover:bg-blue-50"
+                        >
+                            ⬆ Upload revised manuscript
+                        </Link>
+                        <button
+                            type="button"
+                            onClick={async () => {
+                                if (data.responded < data.total) {
+                                    alert(`Please answer every reviewer comment before submitting the revision. ${data.responded}/${data.total} answered.`);
+                                    return;
+                                }
+                                if (!window.confirm('Submit the revised manuscript for editor review? The editor will open a new review round.')) return;
+                                try {
+                                    const { data: res } = await client.post(`/author-revision/submissions/${submissionId}/mark-revision-submitted`);
+                                    alert(res.message || 'Revision submitted.');
+                                    window.location.href = `/author-dashboard/${submissionId}`;
+                                } catch (err: any) {
+                                    alert(err?.response?.data?.detail || 'Could not submit the revision.');
+                                }
+                            }}
+                            className="px-3 py-1.5 text-xs font-bold rounded-lg bg-emerald-700 text-white hover:bg-emerald-800"
+                        >
+                            ✅ Submit revision to editor
+                        </button>
+                    </div>
+                    <p className="mt-2 text-[11px] text-gray-500">
+                        The three steps together — answer each comment, upload the revised file, submit — form one revision cycle.
+                    </p>
                 </div>
 
                 {data.total === 0 && (

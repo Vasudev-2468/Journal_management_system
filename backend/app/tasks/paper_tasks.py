@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from app.database import SessionLocal
 from app.config import settings
 from app.tasks.inline_task import InlineTask
+from app.services.state_machine import transition_or_direct
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +64,7 @@ def _process_new_submission(submission_id: str) -> None:
 
         submission.classified_field = classified_field
         submission.classification_confidence = confidence
-        submission.status = SubmissionStatus.pending_assignment
+        transition_or_direct(db, submission, SubmissionStatus.pending_assignment)
         db.commit()
 
         if classified_field == "NEEDS_MANUAL_REVIEW":

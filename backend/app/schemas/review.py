@@ -95,7 +95,7 @@ class DecisionRequest(BaseModel):
     # minor_revision / major_revision are the new, distinguishable values.
     decision: str = Field(
         ...,
-        pattern="^(accepted|rejected|revision_requested|minor_revision|major_revision)$",
+        pattern="^(accepted|rejected|revision_requested|minor_revision|major_revision|reject_and_resubmit)$",
     )
     editor_comments: Optional[str] = None
     # Optional structured reason for a rejected decision. Ignored when the

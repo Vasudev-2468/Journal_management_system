@@ -24,6 +24,7 @@ from app.config import settings
 from app.models.reviewer import Reviewer
 from app.models.review import Review
 from app.models.submission import Submission, SubmissionStatus
+from app.services.state_machine import transition_or_direct
 from app.services.ai_agent import rerank_reviewer_candidates
 
 logger = logging.getLogger(__name__)
@@ -73,9 +74,9 @@ class ReviewerSuggesterAgent:
         # Store on submission
         submission.suggested_reviewers_data = all_suggestions
         if not provided_reviewers or len(validated) < MIN_REVIEWERS:
-            submission.status = SubmissionStatus.awaiting_reviewer_suggestions
+            transition_or_direct(db, submission, SubmissionStatus.awaiting_reviewer_suggestions)
         else:
-            submission.status = SubmissionStatus.pending_assignment
+            transition_or_direct(db, submission, SubmissionStatus.pending_assignment)
         self.db.commit()
 
         results["total_suggestions"] = len(all_suggestions)

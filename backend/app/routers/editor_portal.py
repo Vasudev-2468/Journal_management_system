@@ -20,11 +20,15 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.services.editor_auth import require_editor_mfa
+from app.services.permissions import ACTION_ASSIGN_REVIEWERS, require_permission
+
+_require_assign_reviewers = require_permission(ACTION_ASSIGN_REVIEWERS)
 from app.services.review_service import (
     count_overdue_reviews,
     submissions_with_overdue_reviews,
 )
 from app.models.submission import Submission, SubmissionStatus
+from app.services.state_machine import transition_or_direct
 from app.models.reviewer import Reviewer
 from app.models.notification import Notification
 from app.tasks import (
@@ -59,7 +63,10 @@ class TriggerAgentPipelineRequest(BaseModel):
 
 
 class EditorAssignReviewersRequest(BaseModel):
-    reviewer_ids: List[uuid.UUID] = Field(..., min_length=2, max_length=4)
+    # No hard cap — the editor decides how many reviewers a
+    # manuscript warrants. At least one ID is required so the
+    # endpoint never fires with an empty selection.
+    reviewer_ids: List[uuid.UUID] = Field(..., min_length=1)
 
 
 class FormatCheckReportResponse(BaseModel):
@@ -161,7 +168,7 @@ def submit_consult_party_decision(
 
     if body.decision == "reject":
         # Return to author
-        submission.status = SubmissionStatus.returned_to_author
+        transition_or_direct(db, submission, SubmissionStatus.returned_to_author)
         db.commit()
         return {
             "message": "Paper returned to author for revision",
@@ -227,7 +234,10 @@ def editor_assign_reviewers(
     submission_id: uuid.UUID,
     body: EditorAssignReviewersRequest,
     db: Session = Depends(get_db),
-    user=Depends(require_editor_mfa),
+    # ASSIGN_REVIEWERS is the RBAC gate that authorises actual
+    # invitation dispatch (Agent 4 mints review links, Agent 5 emails).
+    # A user without this permission gets 403 and no invitations go out.
+    user=Depends(_require_assign_reviewers),
 ):
     """
     Editor finalizes reviewer selection.
@@ -577,6 +587,339 @@ def get_overdue_reviews(
     )
 
 
+# ── Handling-editor delegation ─────────────────────────
+
+class AssignHandlingEditorRequest(BaseModel):
+    editor_id: Optional[int] = Field(
+        None,
+        description="Editor user id, or null to unassign / clear.",
+    )
+
+
+@router.post("/submissions/{submission_id}/handling-editor")
+def assign_handling_editor(
+    submission_id: uuid.UUID,
+    body: AssignHandlingEditorRequest,
+    db: Session = Depends(get_db),
+    editor=Depends(require_editor_mfa),
+):
+    """Claim or delegate a submission to a specific handling editor.
+
+    Pass ``editor_id=<caller.id>`` to self-claim, another id to
+    delegate, or ``null`` to clear the assignment. Only users with an
+    editor role can be assigned as the handling editor."""
+    from app.models.user import User as _User
+    from app.services.editor_auth import EDITOR_ROLES
+    s = db.query(Submission).filter(Submission.id == submission_id).first()
+    if s is None:
+        raise HTTPException(status_code=404, detail="Submission not found.")
+    if body.editor_id is None:
+        s.handling_editor_id = None
+    else:
+        target = db.query(_User).filter(_User.id == body.editor_id).first()
+        if target is None or not target.is_active or target.role not in EDITOR_ROLES:
+            raise HTTPException(
+                status_code=400,
+                detail="Target user must be an active editor.",
+            )
+        s.handling_editor_id = target.id
+    db.commit()
+    return {"ok": True, "handling_editor_id": s.handling_editor_id}
+
+
+@router.get("/submissions/{submission_id}/handling-editor")
+def get_handling_editor(
+    submission_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _editor=Depends(require_editor_mfa),
+):
+    from app.models.user import User as _User
+    s = db.query(Submission).filter(Submission.id == submission_id).first()
+    if s is None:
+        raise HTTPException(status_code=404, detail="Submission not found.")
+    if not s.handling_editor_id:
+        return {"handling_editor_id": None, "handling_editor_name": None, "handling_editor_email": None}
+    editor = db.query(_User).filter(_User.id == s.handling_editor_id).first()
+    return {
+        "handling_editor_id": s.handling_editor_id,
+        "handling_editor_name": editor.full_name if editor else None,
+        "handling_editor_email": editor.email if editor else None,
+    }
+
+
+# ── Editorial analytics ────────────────────────────────
+
+@router.get("/analytics/editorial-overview")
+def editorial_analytics_overview(
+    days: int = Query(180, ge=7, le=365),
+    db: Session = Depends(get_db),
+    _editor=Depends(require_editor_mfa),
+):
+    """Editorial throughput dashboard payload.
+
+    Runs entirely off the ``submissions`` + ``editorial_decisions`` +
+    ``reviews`` tables. All numbers are honest — no smoothing, no
+    joins that would inflate counts."""
+    from datetime import datetime, timedelta
+    from app.models.editorial_decision import EditorialDecision as _EdDec
+    from app.models.review import Review as _Rev, ReviewState as _RS
+
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    subs = (
+        db.query(Submission)
+        .filter(Submission.submitted_at >= cutoff)
+        .all()
+    )
+
+    by_month: dict = {}
+    for s in subs:
+        if not s.submitted_at:
+            continue
+        key = s.submitted_at.strftime("%Y-%m")
+        by_month.setdefault(key, {"received": 0, "accepted": 0, "rejected": 0, "revision": 0})
+        by_month[key]["received"] += 1
+        if s.status == SubmissionStatus.accepted:
+            by_month[key]["accepted"] += 1
+        elif s.status in (SubmissionStatus.rejected, SubmissionStatus.reject_and_resubmit):
+            by_month[key]["rejected"] += 1
+        elif s.status == SubmissionStatus.revision_requested:
+            by_month[key]["revision"] += 1
+
+    # Decision distribution over the same window.
+    decisions = (
+        db.query(_EdDec)
+        .filter(_EdDec.decided_at >= cutoff)
+        .all()
+    )
+    from collections import Counter
+    tally: Counter = Counter(d.decision for d in decisions)
+
+    # Average review turnaround — assigned_at → completed_at for
+    # submitted reviews, in whole days.
+    submitted_reviews = (
+        db.query(_Rev)
+        .filter(
+            _Rev.state == _RS.submitted,
+            _Rev.completed_at.isnot(None),
+            _Rev.assigned_at.isnot(None),
+        )
+        .all()
+    )
+    durations = [
+        (r.completed_at - r.assigned_at).total_seconds() / 86400.0
+        for r in submitted_reviews if r.completed_at and r.assigned_at
+    ]
+    avg_review_days = round(sum(durations) / len(durations), 1) if durations else None
+
+    # Average editor turnaround — round decision made vs. last
+    # reviewer report received (across all decided rows in window).
+    editor_turnaround: list = []
+    for d in decisions:
+        matching_reviews = (
+            db.query(_Rev)
+            .filter(
+                _Rev.submission_id == d.submission_id,
+                _Rev.state == _RS.submitted,
+                _Rev.round_number == d.round_number,
+            )
+            .all()
+        )
+        if not matching_reviews:
+            continue
+        newest = max((r.completed_at for r in matching_reviews if r.completed_at), default=None)
+        if newest is None:
+            continue
+        editor_turnaround.append((d.decided_at - newest).total_seconds() / 86400.0)
+    avg_editor_decision_days = round(sum(editor_turnaround) / len(editor_turnaround), 1) if editor_turnaround else None
+
+    return {
+        "window_days": days,
+        "totals": {
+            "received": len(subs),
+            "decided": len(decisions),
+            "accepted": sum(1 for s in subs if s.status == SubmissionStatus.accepted),
+            "rejected": sum(1 for s in subs if s.status in (SubmissionStatus.rejected, SubmissionStatus.reject_and_resubmit)),
+            "under_review": sum(1 for s in subs if s.status == SubmissionStatus.under_review),
+            "in_revision": sum(1 for s in subs if s.status == SubmissionStatus.revision_requested),
+        },
+        "by_month": [
+            {"month": k, **v}
+            for k, v in sorted(by_month.items())
+        ],
+        "decision_distribution": [
+            {"decision": k, "count": v}
+            for k, v in tally.most_common()
+        ],
+        "avg_review_days": avg_review_days,
+        "avg_editor_decision_days": avg_editor_decision_days,
+    }
+
+
+# ── Editorial detection agent endpoints ────────────────
+
+@router.get("/submissions/{submission_id}/duplicate-check")
+def duplicate_check(
+    submission_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _editor=Depends(require_editor_mfa),
+):
+    """Run the Duplicate Submission Agent over the whole submissions
+    table."""
+    from app.agents.editorial_agents import run_duplicate_submission_agent
+    s = db.query(Submission).filter(Submission.id == submission_id).first()
+    if s is None:
+        raise HTTPException(status_code=404, detail="Submission not found.")
+    others = db.query(Submission).filter(Submission.id != submission_id).all()
+    report = run_duplicate_submission_agent(
+        submission_id=str(s.id),
+        title=s.paper_title or "",
+        author_name=s.author_name or "",
+        author_email=s.author_email or "",
+        other_submissions=[{
+            "id": str(o.id),
+            "paper_title": o.paper_title,
+            "author_name": o.author_name,
+            "author_email": o.author_email,
+        } for o in others],
+    )
+    return {
+        "submission_id": str(s.id),
+        "is_duplicate": report.is_duplicate,
+        "hits": [
+            {"submission_id": h.submission_id, "paper_title": h.paper_title,
+             "author_name": h.author_name, "reason": h.reason}
+            for h in report.hits
+        ],
+    }
+
+
+class ReviewerBiasRequest(BaseModel):
+    reviewer_id: uuid.UUID
+
+
+@router.post("/submissions/{submission_id}/reviewer-bias-check")
+def reviewer_bias_check(
+    submission_id: uuid.UUID,
+    body: ReviewerBiasRequest,
+    db: Session = Depends(get_db),
+    _editor=Depends(require_editor_mfa),
+):
+    """Run the Reviewer Bias Agent for a candidate reviewer against
+    the manuscript's author + affiliations."""
+    from app.agents.editorial_agents import run_reviewer_bias_agent
+    s = db.query(Submission).filter(Submission.id == submission_id).first()
+    if s is None:
+        raise HTTPException(status_code=404, detail="Submission not found.")
+    r = db.query(Reviewer).filter(Reviewer.id == body.reviewer_id).first()
+    if r is None:
+        raise HTTPException(status_code=404, detail="Reviewer not found.")
+    author_emails = [s.author_email] if s.author_email else []
+    author_institutions = [getattr(s, "author_affiliation", None) or ""]
+    verdict = run_reviewer_bias_agent(
+        reviewer_email=r.email or "",
+        reviewer_institution=r.institution or "",
+        author_emails=author_emails,
+        author_institutions=author_institutions,
+    )
+    return {
+        "reviewer_id": str(r.id),
+        "is_conflict": verdict.is_conflict,
+        "severity": verdict.severity,
+        "reasons": verdict.reasons,
+    }
+
+
+@router.get("/submissions/{submission_id}/panel-balance")
+def panel_balance_check(
+    submission_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _editor=Depends(require_editor_mfa),
+):
+    """Run the Panel Balance Agent over the current-round reviewer
+    roster."""
+    from app.agents.editorial_agents import run_panel_balance_agent
+    from app.models.review import Review, ReviewState
+    s = db.query(Submission).filter(Submission.id == submission_id).first()
+    if s is None:
+        raise HTTPException(status_code=404, detail="Submission not found.")
+    reviews = list(s.reviews or [])
+    cur_round = max((r.round_number or 1 for r in reviews), default=1)
+    reviewer_rows: list = []
+    for r in reviews:
+        if (r.round_number or 1) != cur_round or r.reviewer is None:
+            continue
+        rv = r.reviewer
+        reviewer_rows.append({
+            "email": rv.email,
+            "institution": rv.institution,
+            "country": getattr(rv, "country", None),
+        })
+    report = run_panel_balance_agent(reviewers=reviewer_rows)
+    return {
+        "submission_id": str(s.id),
+        "round": cur_round,
+        "ok": report.ok,
+        "warnings": report.warnings,
+        "dominant_country": report.dominant_country,
+        "dominant_institution": report.dominant_institution,
+    }
+
+
+@router.get("/submissions/{submission_id}/cross-round-consistency")
+def cross_round_consistency(
+    submission_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _editor=Depends(require_editor_mfa),
+):
+    """Run the Cross-Round Consistency Agent — flags current-round
+    comments whose keywords overlap heavily with a previous-round
+    comment."""
+    from app.agents.editorial_agents import run_cross_round_consistency_agent
+    from app.models.review import Review, ReviewState
+    import json as _json
+    s = db.query(Submission).filter(Submission.id == submission_id).first()
+    if s is None:
+        raise HTTPException(status_code=404, detail="Submission not found.")
+    reviews = list(s.reviews or [])
+    if not reviews:
+        return {"ok": True, "repeated_concerns": []}
+    cur_round = max((r.round_number or 1 for r in reviews), default=1)
+    if cur_round < 2:
+        return {"ok": True, "repeated_concerns": [], "message": "Only one round on record."}
+
+    def _extract(round_no: int) -> list:
+        out: list = []
+        for r in reviews:
+            if (r.round_number or 1) != round_no or r.state != ReviewState.submitted:
+                continue
+            for raw in (r.major_comments, r.minor_comments):
+                if not raw:
+                    continue
+                try:
+                    arr = _json.loads(raw)
+                    if isinstance(arr, list):
+                        for item in arr:
+                            if isinstance(item, dict) and item.get("comment"):
+                                out.append(str(item["comment"]))
+                            elif isinstance(item, str):
+                                out.append(item)
+                except Exception:  # noqa: BLE001
+                    pass
+        return out
+
+    prev = _extract(cur_round - 1)
+    cur = _extract(cur_round)
+    report = run_cross_round_consistency_agent(
+        previous_round_comments=prev, current_round_comments=cur,
+    )
+    return {
+        "submission_id": str(s.id),
+        "round": cur_round,
+        "ok": report.ok,
+        "repeated_concerns": report.repeated_concerns,
+    }
+
+
 # ── Round-N automation (spec §19) ──────────────────────
 #
 # When the editor decides Major or Minor Revision on a manuscript,
@@ -587,9 +930,21 @@ def get_overdue_reviews(
 # ``round + 1`` and set to state=invited. Reviewer selection can be
 # widened later by the editor (invite new reviewer, decline old).
 
+class OpenRoundRequest(BaseModel):
+    carry_previous: bool = Field(
+        True,
+        description="Re-invite the reviewers who submitted in the current round.",
+    )
+    new_reviewer_ids: List[uuid.UUID] = Field(
+        default_factory=list,
+        description="Additional reviewers to invite on this new round (dedup by id).",
+    )
+
+
 @router.post("/submissions/{submission_id}/open-round")
 def open_review_round(
     submission_id: uuid.UUID,
+    body: Optional[OpenRoundRequest] = None,
     db: Session = Depends(get_db),
     _editor=Depends(require_editor_mfa),
 ):
@@ -624,26 +979,42 @@ def open_review_round(
             detail=f"Round {next_round} is already open on this submission.",
         )
 
+    opts = body or OpenRoundRequest()
     seed_reviews = [r for r in reviews if (r.round_number or 1) == current_round]
     submitted_seed = [r for r in seed_reviews if r.state == ReviewState.submitted]
-    if not submitted_seed:
+
+    # Reviewer-id set for the next round — union of carried previous
+    # reviewers (opt-in) and any newly-picked ones from the editor's
+    # round-N picker. Dedup preserves the assignment order.
+    seen_reviewers: set = set()
+    next_reviewer_ids: list = []
+    if opts.carry_previous:
+        for r in submitted_seed:
+            if r.reviewer_id and r.reviewer_id not in seen_reviewers:
+                seen_reviewers.add(r.reviewer_id)
+                next_reviewer_ids.append(r.reviewer_id)
+    for rid in opts.new_reviewer_ids or []:
+        if rid not in seen_reviewers:
+            seen_reviewers.add(rid)
+            next_reviewer_ids.append(rid)
+
+    if not next_reviewer_ids:
         raise HTTPException(
             status_code=409,
             detail=(
-                "No submitted reviewer reports from the current round to seed the "
-                "next round from. Either wait for reviewers to submit or invite "
-                "fresh reviewers manually."
+                "No reviewers to seed the next round with. Either carry the "
+                "previous reviewers or provide new_reviewer_ids."
             ),
         )
 
     ttl_days = getattr(settings, "JWT_EXPIRE_DAYS", None) or 21
     new_reviews: list[Review] = []
-    for src in submitted_seed:
+    for rid in next_reviewer_ids:
         new_id = _uuid.uuid4()
         row = Review(
             id=new_id,
-            submission_id=src.submission_id,
-            reviewer_id=src.reviewer_id,
+            submission_id=submission.id,
+            reviewer_id=rid,
             link_token=create_review_link_token(new_id),
             link_expires_at=datetime.utcnow() + timedelta(days=ttl_days),
             status=ReviewStatus.pending,
@@ -654,7 +1025,7 @@ def open_review_round(
         db.add(row)
         new_reviews.append(row)
 
-    submission.status = SubmissionStatus.under_review
+    transition_or_direct(db, submission, SubmissionStatus.under_review)
     db.commit()
     for r in new_reviews:
         db.refresh(r)
@@ -665,6 +1036,182 @@ def open_review_round(
         "review_ids": [str(r.id) for r in new_reviews],
         "message": f"Round {next_round} opened with {len(new_reviews)} reviewer(s).",
     }
+
+
+# ── Editor PDF stream (spec §8 — side-by-side viewer) ──
+#
+# The editor's Full Report page embeds this via <iframe> so PDF ↔
+# reviewer report sit next to each other. iframes cannot attach an
+# Authorization header, so the editor's session JWT rides in a query
+# param — same pattern the reviewer form uses. Ownership is trivial:
+# any editor with MFA can read any manuscript's PDF.
+
+@router.get("/reviews/{review_id}/pdf")
+def editor_reviewer_pdf(
+    review_id: uuid.UUID,
+    token: Optional[str] = Query(None, description="Editor session JWT (iframes cannot send Authorization headers)"),
+    db: Session = Depends(get_db),
+):
+    from fastapi.responses import RedirectResponse
+    from jose import JWTError, jwt as _jwt
+    from app.config import settings as _s
+    from app.models.review import Review
+    from app.models.manuscript_file import ManuscriptFile
+    from app.models.manuscript_version import ManuscriptVersion
+    from app.models.user import User
+    from app.services.editor_auth import EDITOR_ROLES
+
+    unauth = HTTPException(status_code=401, detail="Not authorised.")
+    if not token:
+        raise unauth
+    try:
+        payload = _jwt.decode(token, _s.SECRET_KEY, algorithms=[_s.ALGORITHM])
+    except JWTError:
+        raise unauth
+    if not payload.get("mfa_verified"):
+        raise unauth
+    email = payload.get("sub")
+    if not email:
+        raise unauth
+    user = db.query(User).filter(User.email == email).first()
+    if user is None or not user.is_active or user.role not in EDITOR_ROLES:
+        raise unauth
+
+    review = db.query(Review).filter(Review.id == review_id).first()
+    if review is None:
+        raise HTTPException(status_code=404, detail="Review not found.")
+    version = (
+        db.query(ManuscriptVersion)
+        .filter(ManuscriptVersion.submission_id == review.submission_id)
+        .order_by(
+            ManuscriptVersion.is_current.desc(),
+            ManuscriptVersion.version_number.desc(),
+        )
+        .first()
+    )
+    if version is None:
+        raise HTTPException(status_code=404, detail="No manuscript version for this review.")
+    pdf = next(
+        (
+            f for f in version.files or []
+            if (f.mime_type or "").lower().find("pdf") >= 0
+        ),
+        None,
+    )
+    if pdf is None or not pdf.stored_url:
+        raise HTTPException(status_code=404, detail="No PDF attached to this manuscript.")
+    return RedirectResponse(pdf.stored_url, status_code=302)
+
+
+# ── Under Review manuscript list (spec §2) ─────────────
+
+@router.get("/under-review")
+def under_review_manuscripts(
+    db: Session = Depends(get_db),
+    _editor=Depends(require_editor_mfa),
+):
+    """Return every submission whose current status is ``under_review``
+    with per-submission review progress + consensus recommendation.
+
+    Columns rendered by the EditorDashboard's Under Review tab:
+      * submission_id, manuscript_id, paper_title
+      * received / total  ("3/3 Reviews Received")
+      * round
+      * consensus_recommendation (from the Consensus Agent output —
+        or the single recommendation when there's only one reviewer)
+      * ethics_flag (any reviewer marked one)
+    """
+    from app.models.review import Review, ReviewState
+    from app.routers.reviewer_portal import _manuscript_display_id
+    from app.agents.reviewer_agents import run_reviewer_consensus_agent
+    from app.routers.reviewer_portal import _report_from_review
+
+    submissions = (
+        db.query(Submission)
+        .filter(Submission.status == SubmissionStatus.under_review)
+        .order_by(Submission.submitted_at.desc())
+        .all()
+    )
+
+    from app.models.reviewer import Reviewer
+
+    out = []
+    for s in submissions:
+        reviews = list(s.reviews or [])
+        target_round = max((r.round_number or 1 for r in reviews), default=1)
+        current_round_reviews = [r for r in reviews if (r.round_number or 1) == target_round]
+        total = len(current_round_reviews)
+        submitted = [r for r in current_round_reviews if r.state == ReviewState.submitted]
+        received = len(submitted)
+
+        # Assigned reviewers on the current round. Nullable reviewer_id is
+        # tolerated — SET NULL on delete leaves an "unassigned" placeholder.
+        reviewer_ids = {r.reviewer_id for r in current_round_reviews if r.reviewer_id}
+        reviewer_lookup = {}
+        if reviewer_ids:
+            reviewer_lookup = {
+                rv.id: rv for rv in db.query(Reviewer).filter(Reviewer.id.in_(reviewer_ids)).all()
+            }
+        reviewers_out = []
+        for r in current_round_reviews:
+            rv = reviewer_lookup.get(r.reviewer_id) if r.reviewer_id else None
+            reviewers_out.append({
+                "review_id": str(r.id),
+                "reviewer_id": str(r.reviewer_id) if r.reviewer_id else None,
+                "name": rv.name if rv else "Unassigned",
+                "email": rv.email if rv else None,
+                "state": r.state.value if r.state else None,
+                "has_submitted": r.state == ReviewState.submitted,
+            })
+
+        # Cheapest possible "consensus": if all in and one clear
+        # winner, surface it. Otherwise run the same aggregation the
+        # workspace uses so the label matches.
+        consensus_rec = None
+        consensus_strength = "n/a"
+        ethics_flag = False
+        if submitted:
+            reports = [_report_from_review(r).model_dump() for r in submitted]
+            consensus = run_reviewer_consensus_agent(reports)
+            consensus_rec = consensus.get("consensus_recommendation")
+            consensus_strength = consensus.get("consensus_strength", "n/a")
+            ethics_flag = bool(consensus.get("ethics_flag_count", 0))
+
+        # Manuscript display id — derive from the newest review, else
+        # fall back to submission-id fingerprint.
+        display_id = None
+        if reviews:
+            display_id = _manuscript_display_id(reviews[0])
+        else:
+            year = s.submitted_at.year if s.submitted_at else datetime.utcnow().year
+            display_id = f"MS-{year}-{str(s.id).replace('-', '')[-4:].upper()}"
+
+        newest_submission_at = None
+        if submitted:
+            newest_submission_at = max(
+                (r.completed_at for r in submitted if r.completed_at),
+                default=None,
+            )
+        out.append({
+            "submission_id": str(s.id),
+            "manuscript_id": display_id,
+            "paper_title": s.paper_title,
+            "round": target_round,
+            "received": received,
+            "total": total,
+            "consensus_recommendation": consensus_rec,
+            "consensus_strength": consensus_strength,
+            "ethics_flag": ethics_flag,
+            "newest_review_at": newest_submission_at.isoformat() if newest_submission_at else None,
+            "reviewers": reviewers_out,
+        })
+    # Newest activity on top so the editor sees the just-completed
+    # reviewer reports without hunting.
+    out.sort(
+        key=lambda r: (r["received"] == r["total"], r["newest_review_at"] or ""),
+        reverse=True,
+    )
+    return out
 
 
 # ── Editor Reviewer Report views (spec §7-14) ──────────
@@ -812,6 +1359,51 @@ def editor_reviewer_consensus(
         "reviewer_count": len(reports),
         **consensus,
     }
+
+
+# ── Editorial Decision Letter Drafter (spec §10) ────────
+
+class DecisionLetterRequest(BaseModel):
+    editor_decision: str
+    editor_note: str = ""
+
+
+@router.post("/submissions/{submission_id}/decision-letter-draft")
+def draft_decision_letter(
+    submission_id: uuid.UUID,
+    body: DecisionLetterRequest,
+    db: Session = Depends(get_db),
+    _editor=Depends(require_editor_mfa),
+):
+    """Compose a draft decision letter from every submitted reviewer
+    report on the current round + the editor's chosen decision +
+    optional editor note. Editor reviews and edits before sending
+    (spec §10)."""
+    from app.agents.reviewer_agents import run_decision_letter_agent
+    from app.routers.reviewer_portal import _report_from_review, _manuscript_display_id
+    from app.models.review import Review, ReviewState
+
+    submission = db.query(Submission).filter(Submission.id == submission_id).first()
+    if submission is None:
+        raise HTTPException(status_code=404, detail="Submission not found.")
+    reviews = sorted(
+        submission.reviews or [], key=lambda r: r.assigned_at or datetime.min,
+    )
+    target_round = max((r.round_number or 1 for r in reviews), default=1)
+    submitted = [
+        r for r in reviews
+        if r.state == ReviewState.submitted and (r.round_number or 1) == target_round
+    ]
+    reports = [_report_from_review(r).model_dump() for r in submitted]
+    manuscript_id = _manuscript_display_id(submitted[0]) if submitted else f"MS-{datetime.utcnow().year}-{str(submission.id).replace('-', '')[-4:].upper()}"
+
+    return run_decision_letter_agent(
+        editor_decision=body.editor_decision,
+        manuscript_id=manuscript_id,
+        paper_title=submission.paper_title or "Manuscript",
+        reports=reports,
+        editor_note=body.editor_note,
+    )
 
 
 # ── Author Revision Checklist (spec §19) ────────────────

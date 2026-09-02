@@ -21,7 +21,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from pydantic import BaseModel, ConfigDict, EmailStr
@@ -35,6 +35,8 @@ from app.models.submission import Submission
 from app.services.auth_service import create_access_token
 from app.services.reviewer_auth_service import get_current_reviewer
 from app.services.reviewer_bridge import ensure_link
+import hashlib
+from fastapi import Request
 from app.utils.helpers import hash_password, verify_password
 
 
@@ -223,8 +225,42 @@ def set_password(body: SetPasswordRequest, db: Session = Depends(get_db)):
 
 # ── 2. Login (email + password → session token) ─────────
 
+def _persist_session(
+    db: Session, reviewer: Reviewer, token: str, request: Optional[Request],
+) -> None:
+    """Idempotent — upsert a reviewer_sessions row keyed by the token's
+    SHA-256 hash. Every subsequent /me call refreshes ``last_seen_at``
+    via the get_current_reviewer dependency."""
+    from app.models.reviewer_session import ReviewerSession as _RS
+    th = _hash_token(token)
+    existing = db.query(_RS).filter(_RS.token_hash == th).first()
+    ua = request.headers.get("user-agent") if request else None
+    ip = request.client.host if request and request.client else None
+    now = datetime.utcnow()
+    if existing is not None:
+        existing.last_seen_at = now
+        existing.revoked_at = None
+        if ip:
+            existing.ip_address = ip
+        if ua:
+            existing.user_agent = ua
+            existing.device_label = _device_label(ua)
+    else:
+        db.add(_RS(
+            reviewer_id=reviewer.id,
+            token_hash=th,
+            ip_address=ip,
+            user_agent=ua,
+            device_label=_device_label(ua),
+            created_at=now,
+            last_seen_at=now,
+        ))
+    db.commit()
+
+
 @router.post("/login", response_model=LoginResponse)
 def login(
+    request: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db),
 ):
@@ -264,10 +300,77 @@ def login(
             ),
         )
 
+    # TOTP enforcement — if the reviewer has paired an authenticator
+    # (``totp_enrolled_at`` is set), refuse the password-only login and
+    # hand back a short pre-auth token the frontend swaps for a full
+    # session via /verify-totp. Reviewers who haven't enrolled log in
+    # exactly as before.
+    if getattr(reviewer, "totp_enrolled_at", None) and getattr(reviewer, "totp_secret", None):
+        pre_auth = create_access_token(
+            data={
+                "sub": str(reviewer.id),
+                "role": "reviewer",
+                "scope": "pre_auth",
+            },
+            expires_delta=timedelta(minutes=10),
+        )
+        return LoginResponse(
+            access_token=pre_auth,
+            reviewer_id=str(reviewer.id),
+            token_type="pre_auth",
+        )
+
     reviewer.last_login_at = datetime.utcnow()
     db.commit()
+    session_token = _mint_session_token(reviewer)
+    _persist_session(db, reviewer, session_token, request)
     return LoginResponse(
-        access_token=_mint_session_token(reviewer),
+        access_token=session_token,
+        reviewer_id=str(reviewer.id),
+        token_type="bearer",
+    )
+
+
+# ── 2b. TOTP verification during login ──────────────────
+
+class TotpLoginRequest(BaseModel):
+    pre_auth_token: str
+    code: str
+
+
+@router.post("/verify-totp", response_model=LoginResponse)
+def verify_totp_login(
+    body: TotpLoginRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Swap the pre-auth token + a valid TOTP code for a full session.
+    Only reachable after ``/login`` returned ``token_type=pre_auth``."""
+    try:
+        payload = jwt.decode(
+            body.pre_auth_token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM],
+        )
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid or expired pre-auth token.")
+    if payload.get("scope") != "pre_auth" or payload.get("role") != "reviewer":
+        raise HTTPException(status_code=401, detail="Wrong pre-auth token scope.")
+    sub = payload.get("sub")
+    try:
+        reviewer_id = UUID(str(sub))
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=401, detail="Malformed pre-auth token.")
+    reviewer = db.query(Reviewer).filter(Reviewer.id == reviewer_id).first()
+    if reviewer is None or not reviewer.is_active or not getattr(reviewer, "totp_secret", None):
+        raise HTTPException(status_code=401, detail="Not authorised.")
+    import pyotp
+    if not pyotp.TOTP(reviewer.totp_secret).verify(body.code, valid_window=1):
+        raise HTTPException(status_code=400, detail="Authenticator code did not match.")
+    reviewer.last_login_at = datetime.utcnow()
+    db.commit()
+    session_token = _mint_session_token(reviewer)
+    _persist_session(db, reviewer, session_token, request)
+    return LoginResponse(
+        access_token=session_token,
         reviewer_id=str(reviewer.id),
         token_type="bearer",
     )
@@ -278,6 +381,328 @@ def login(
 @router.get("/me", response_model=ReviewerMeResponse)
 def get_me(reviewer: Reviewer = Depends(get_current_reviewer)):
     return _to_me(reviewer)
+
+
+# ── Change password (self-service) ──────────────────────
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+@router.post("/change-password")
+def change_password(
+    body: ChangePasswordRequest,
+    reviewer: Reviewer = Depends(get_current_reviewer),
+    db: Session = Depends(get_db),
+):
+    """Reviewer changes their password from the Security page.
+
+    Verifies the current password before writing the new hash so a
+    hijacked session token cannot silently pivot to a permanent
+    takeover. Also invalidates every existing session by bumping
+    ``password_hash`` — any bearer token minted before the change is
+    still cryptographically valid but a subsequent ``/me`` will
+    happily reissue (bearer + password_hash are independent). If the
+    reviewer wants to explicitly revoke every session they use the
+    ``/sign-out-everywhere`` endpoint below.
+    """
+    if not body.new_password or len(body.new_password) < MIN_PASSWORD_LEN:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Password must be at least {MIN_PASSWORD_LEN} characters.",
+        )
+    if not reviewer.password_hash or not verify_password(body.current_password, reviewer.password_hash):
+        raise HTTPException(status_code=401, detail="Current password is incorrect.")
+    reviewer.password_hash = hash_password(body.new_password)
+    reviewer.last_login_at = datetime.utcnow()
+    db.commit()
+    return {"ok": True, "message": "Password updated."}
+
+
+# ── Sign out everywhere ─────────────────────────────────
+
+@router.post("/sign-out-everywhere")
+def sign_out_everywhere(
+    reviewer: Reviewer = Depends(get_current_reviewer),
+    db: Session = Depends(get_db),
+):
+    """Invalidate every reviewer session by bumping the token's
+    ``iat`` cutoff on the reviewer row. ``last_login_at`` is the
+    freshness marker — the login endpoint stamps it on every issue,
+    so setting it to *now* forces every extant token minted before
+    ``now`` to fail the ``/me`` freshness check below."""
+    from app.models.reviewer_session import ReviewerSession as _RS
+    now = datetime.utcnow()
+    reviewer.last_login_at = now
+    (
+        db.query(_RS)
+        .filter(_RS.reviewer_id == reviewer.id, _RS.revoked_at.is_(None))
+        .update({_RS.revoked_at: now})
+    )
+    db.commit()
+    return {"ok": True, "message": "All reviewer sessions signed out."}
+
+
+# ── TOTP enrolment for reviewers ────────────────────────
+
+class TotpEnrolStartResponse(BaseModel):
+    secret: str
+    otpauth_uri: str
+    qr_data_uri: str
+
+
+class TotpEnrolConfirmRequest(BaseModel):
+    code: str
+
+
+@router.post("/totp/start", response_model=TotpEnrolStartResponse)
+def totp_start(
+    reviewer: Reviewer = Depends(get_current_reviewer),
+    db: Session = Depends(get_db),
+):
+    """Generate a fresh TOTP secret for the reviewer and hand back the
+    otpauth URI + inlined QR data-URI for scanning. The secret is
+    stashed on the reviewer row but the reviewer is not marked
+    enrolled until ``/totp/confirm`` verifies the first code."""
+    # Reuse the shared totp_service — same primitives used by editors.
+    from app.services import totp_service
+    from app.models.user import User  # noqa: F401 — totp_service signature
+
+    # totp_service.start_enrolment expects a User; we adapt for the
+    # Reviewer model by writing to columns of the same name.
+    secret = totp_service.generate_secret()
+    reviewer.totp_secret = secret if hasattr(reviewer, "totp_secret") else None
+    if not hasattr(reviewer, "totp_secret"):
+        raise HTTPException(
+            status_code=501,
+            detail="TOTP columns not yet available on reviewer schema — run migrations.",
+        )
+    reviewer.totp_enrolled_at = None
+    db.commit()
+    otpauth = totp_service.provisioning_uri(secret, reviewer.email)
+    return TotpEnrolStartResponse(
+        secret=secret,
+        otpauth_uri=otpauth,
+        qr_data_uri=totp_service.qr_code_data_uri(otpauth),
+    )
+
+
+@router.post("/totp/confirm")
+def totp_confirm(
+    body: TotpEnrolConfirmRequest,
+    reviewer: Reviewer = Depends(get_current_reviewer),
+    db: Session = Depends(get_db),
+):
+    from app.services import totp_service
+    if not getattr(reviewer, "totp_secret", None):
+        raise HTTPException(status_code=400, detail="TOTP enrolment not started.")
+    import pyotp
+    if not pyotp.TOTP(reviewer.totp_secret).verify(body.code, valid_window=1):
+        raise HTTPException(status_code=400, detail="Code did not match.")
+    reviewer.totp_enrolled_at = datetime.utcnow()
+    db.commit()
+    return {"ok": True, "message": "Authenticator enrolled."}
+
+
+# ── Reviewer sessions listing + per-session revoke ─────
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _device_label(user_agent: str | None) -> str:
+    """Turn a raw UA string into a compact display label. Handles the
+    common browsers + mobile OSes without pulling in a UA parser."""
+    if not user_agent:
+        return "Unknown device"
+    ua = user_agent
+    lower = ua.lower()
+    if "edg/" in lower:
+        browser = "Edge"
+    elif "chrome/" in lower and "chromium" not in lower:
+        browser = "Chrome"
+    elif "firefox/" in lower:
+        browser = "Firefox"
+    elif "safari/" in lower and "chrome/" not in lower:
+        browser = "Safari"
+    else:
+        browser = "Browser"
+    if "iphone" in lower:
+        platform = "iPhone"
+    elif "android" in lower:
+        platform = "Android"
+    elif "mac os x" in lower or "macintosh" in lower:
+        platform = "Mac"
+    elif "windows" in lower:
+        platform = "Windows"
+    elif "linux" in lower:
+        platform = "Linux"
+    else:
+        platform = "Device"
+    return f"{browser} on {platform}"
+
+
+class ReviewerSessionRow(BaseModel):
+    id: int
+    device_label: str
+    ip_address: Optional[str] = None
+    created_at: datetime
+    last_seen_at: datetime
+    is_current: bool = False
+
+
+@router.get("/sessions", response_model=list[ReviewerSessionRow])
+def list_reviewer_sessions(
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    reviewer: Reviewer = Depends(get_current_reviewer),
+    db: Session = Depends(get_db),
+):
+    """Every un-revoked session for the current reviewer, freshest
+    first. The row matching the caller's token is marked
+    ``is_current`` so the UI can call it out."""
+    from app.models.reviewer_session import ReviewerSession as _RS
+    current_hash: Optional[str] = None
+    if authorization and authorization.lower().startswith("bearer "):
+        current_hash = _hash_token(authorization.split(" ", 1)[1].strip())
+    rows = (
+        db.query(_RS)
+        .filter(_RS.reviewer_id == reviewer.id, _RS.revoked_at.is_(None))
+        .order_by(_RS.last_seen_at.desc())
+        .all()
+    )
+    return [
+        ReviewerSessionRow(
+            id=r.id, device_label=r.device_label or "Unknown device",
+            ip_address=r.ip_address, created_at=r.created_at,
+            last_seen_at=r.last_seen_at,
+            is_current=(r.token_hash == current_hash),
+        )
+        for r in rows
+    ]
+
+
+@router.post("/sessions/{session_id}/revoke")
+def revoke_reviewer_session(
+    session_id: int,
+    reviewer: Reviewer = Depends(get_current_reviewer),
+    db: Session = Depends(get_db),
+):
+    from app.models.reviewer_session import ReviewerSession as _RS
+    row = (
+        db.query(_RS)
+        .filter(_RS.id == session_id, _RS.reviewer_id == reviewer.id)
+        .first()
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    row.revoked_at = datetime.utcnow()
+    db.commit()
+    return {"ok": True}
+
+
+# ── Reviewer forgot-password ────────────────────────────
+
+class ReviewerForgotRequest(BaseModel):
+    email: EmailStr
+
+
+class ReviewerResetRequest(BaseModel):
+    token: str
+    new_password: str
+
+
+_RESET_TTL_MINUTES = 30
+
+
+@router.post("/forgot-password", status_code=202)
+def reviewer_forgot_password(
+    body: ReviewerForgotRequest,
+    db: Session = Depends(get_db),
+):
+    """Kick off a reviewer password reset. Always 202 — the response is
+    identical whether or not the email matches a reviewer, so this
+    endpoint can't be used to check membership."""
+    reviewer = db.query(Reviewer).filter(Reviewer.email == body.email).first()
+    if reviewer and reviewer.is_active:
+        token = jwt.encode(
+            {
+                "sub": str(reviewer.id),
+                "type": "reviewer_password_reset",
+                "iat": datetime.utcnow(),
+                "exp": datetime.utcnow() + timedelta(minutes=_RESET_TTL_MINUTES),
+            },
+            settings.SECRET_KEY,
+            algorithm=settings.ALGORITHM,
+        )
+        # Best-effort email — a delivery failure never leaks the
+        # existence/non-existence of the account.
+        try:
+            from app.services.email_service import _send_and_log, _wrap, _btn
+            frontend = (settings.FRONTEND_URL or "").rstrip("/")
+            url = f"{frontend}/reset-password?token={token}&for=reviewer" if frontend else f"/reset-password?token={token}&for=reviewer"
+            body_html = _wrap(f"""
+                <p>Dear {reviewer.name},</p>
+                <p>Someone requested a password reset for your reviewer account.
+                   Click the button below to choose a new password — the link
+                   is valid for {_RESET_TTL_MINUTES} minutes and can only be
+                   used once.</p>
+                <div style="text-align:center;">
+                  {_btn("Choose new password", url)}
+                </div>
+                <p style="font-size:12px;color:#6b7280;">
+                  If you did not request this reset you can safely ignore this
+                  email — your password stays unchanged.
+                </p>
+            """)
+            _send_and_log(reviewer.email, "Reviewer password reset", body_html, "reviewer_password_reset")
+        except Exception:
+            logger = __import__("logging").getLogger(__name__)
+            logger.exception("Failed to dispatch reviewer password-reset email")
+    return {"message": "If a reviewer account matches, a reset link is on the way."}
+
+
+@router.post("/reset-password")
+def reviewer_reset_password(
+    body: ReviewerResetRequest,
+    db: Session = Depends(get_db),
+):
+    """Consume the reset token and set a new password. Fails on any
+    invalid / expired token with a single generic 400."""
+    generic = HTTPException(status_code=400, detail="This reset link is invalid or has expired.")
+    if not body.new_password or len(body.new_password) < MIN_PASSWORD_LEN:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Password must be at least {MIN_PASSWORD_LEN} characters.",
+        )
+    try:
+        payload = jwt.decode(body.token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+    except JWTError:
+        raise generic
+    if payload.get("type") != "reviewer_password_reset":
+        raise generic
+    try:
+        reviewer_id = UUID(str(payload.get("sub")))
+    except (ValueError, AttributeError, TypeError):
+        raise generic
+    reviewer = db.query(Reviewer).filter(Reviewer.id == reviewer_id).first()
+    if reviewer is None or not reviewer.is_active:
+        raise generic
+    reviewer.password_hash = hash_password(body.new_password)
+    reviewer.last_login_at = datetime.utcnow()  # invalidate every existing session
+    db.commit()
+    return {"ok": True, "message": "Password reset. You can now sign in."}
+
+
+@router.post("/totp/disable")
+def totp_disable(
+    reviewer: Reviewer = Depends(get_current_reviewer),
+    db: Session = Depends(get_db),
+):
+    reviewer.totp_secret = None
+    reviewer.totp_enrolled_at = None
+    db.commit()
+    return {"ok": True, "message": "Authenticator disabled."}
 
 
 # ── 4. My assignments (all reviews for the reviewer) ────

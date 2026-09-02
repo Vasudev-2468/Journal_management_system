@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models.submission import Submission, SubmissionStatus
+from app.services.state_machine import transition_or_direct
 from app.services.email_service import _send_and_log, _wrap, _btn
 from app.services.whatsapp_service import _send_and_log as wa_send_and_log
 
@@ -79,7 +80,7 @@ class AcknowledgementAgent:
             results["errors"].append(f"editor: {exc}")
 
         # Update status for Agent 2
-        submission.status = SubmissionStatus.awaiting_format_check
+        transition_or_direct(db, submission, SubmissionStatus.awaiting_format_check)
         self.db.commit()
 
         results["next_agent"] = "FormatValidationAgent"

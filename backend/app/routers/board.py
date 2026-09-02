@@ -32,9 +32,12 @@ from app.services.board_service import (
     resolve_pending_member,
     revoke_board_invitation,
 )
+from app.agents.board_import_agent import analyse_csv, apply_rows, export_csv
 from app.services.cv_parser import CvParseError, extract_board_profile, extract_text
 from app.services.editor_auth import require_editor_mfa
 from app.services.storage_service import upload_manuscript_file
+
+from fastapi.responses import PlainTextResponse, Response
 
 # Reject anything larger than a few MB — a real editorial CV is well
 # under this. Larger files are almost certainly scanned image PDFs that
@@ -58,6 +61,62 @@ def list_members(
     return q.order_by(
         EditorialBoardMember.sort_order, EditorialBoardMember.name
     ).all()
+
+
+# ── CSV import / export (JG-BM3) ────────────────────────
+# Route order matters: /export.csv and /import must be declared BEFORE
+# GET /{member_id} so FastAPI doesn't try to coerce "export.csv" into
+# an int and 422. The Board Import Validation Agent (a deterministic
+# pre-flight in app.agents.board_import_agent) handles parsing,
+# validation, and dedup; this router just wires HTTP in and out.
+
+@router.get("/export.csv", response_class=PlainTextResponse)
+def export_board_csv(
+    db: Session = Depends(get_db),
+    _editor=Depends(require_editor_mfa),
+):
+    """Download the full editorial-board roster as CSV."""
+    rows = (
+        db.query(EditorialBoardMember)
+        .order_by(EditorialBoardMember.sort_order, EditorialBoardMember.name)
+        .all()
+    )
+    body = export_csv(rows)
+    return Response(
+        content=body,
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="editorial-board.csv"'},
+    )
+
+
+@router.post("/import")
+async def import_board_csv(
+    file: UploadFile = File(...),
+    dry_run: bool = Query(True),
+    db: Session = Depends(get_db),
+    _editor=Depends(require_editor_mfa),
+):
+    """Validate — and optionally apply — a bulk CSV of board members.
+
+    Dry-run (default) returns a per-row report the UI displays. Set
+    ``dry_run=false`` to persist. Rows with any errors are always
+    skipped, even on apply.
+    """
+    if file.content_type not in ("text/csv", "application/vnd.ms-excel", "application/csv", "text/plain", None):
+        raise HTTPException(status_code=400, detail="Upload must be a CSV file")
+
+    body = await file.read()
+    if not body:
+        raise HTTPException(status_code=400, detail="CSV file is empty")
+    if len(body) > 2 * 1024 * 1024:  # 2 MB — real board rosters are tiny
+        raise HTTPException(status_code=413, detail="CSV file too large (2 MB max)")
+
+    report = analyse_csv(db, body)
+    if dry_run:
+        return {"dry_run": True, **report}
+
+    stats = apply_rows(db, report)
+    return {"dry_run": False, "applied": stats, **report}
 
 
 @router.get("/{member_id}", response_model=EditorialBoardMemberRead)

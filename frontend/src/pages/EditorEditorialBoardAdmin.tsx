@@ -18,6 +18,7 @@ import {
 } from '../api/board';
 import Loading from '../components/common/Loading';
 import BackButton from '../components/common/BackButton';
+import BoardCsvPanel from '../components/board/BoardCsvPanel';
 
 const BLANK: Omit<BoardMember, 'id'> = {
     name: '',
@@ -190,6 +191,8 @@ const EditorEditorialBoardAdmin: React.FC = () => {
                         {error}
                     </div>
                 )}
+
+                <BoardCsvPanel onImported={load} />
 
                 {loading ? (
                     <Loading />

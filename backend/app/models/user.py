@@ -75,4 +75,7 @@ class User(Base):
     bio = Column(String)
     profile_picture_url = Column(String(1024))
 
-    articles = relationship("Article", back_populates="author")
+    # ``foreign_keys`` disambiguates from Article.doi_assigned_by, which
+    # also points at users.id — SQLAlchemy needs to know which of the
+    # two FKs backs this collection.
+    articles = relationship("Article", back_populates="author", foreign_keys="Article.author_id")

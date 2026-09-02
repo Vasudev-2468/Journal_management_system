@@ -186,6 +186,48 @@ export const uploadBoardFileAsEditor = (file: File): Promise<BoardFileUpload> =>
         .then((r) => r.data);
 };
 
+// ── CSV import / export (JG-BM3) ────────────────────────
+// The backend Board Import Validation Agent runs first as a dry-run and
+// returns a per-row report the UI shows before the editor confirms.
+
+export interface BoardImportRow {
+    row_number: number;
+    action: 'create' | 'update' | 'skip';
+    name: string;
+    email: string | null;
+    role: string | null;
+    category: string | null;
+    errors: string[];
+}
+
+export interface BoardImportReport {
+    dry_run: boolean;
+    total_rows: number;
+    will_create: number;
+    will_update: number;
+    will_skip: number;
+    unrecognised_headers: string[];
+    rows: BoardImportRow[];
+    summary: string;
+    applied?: { created: number; updated: number };
+}
+
+export const exportBoardCsv = async (): Promise<Blob> => {
+    const response = await client.get(`${BASE}/export.csv`, { responseType: 'blob' });
+    return response.data;
+};
+
+export const importBoardCsv = async (file: File, dryRun: boolean): Promise<BoardImportReport> => {
+    const form = new FormData();
+    form.append('file', file);
+    const response = await client.post(
+        `${BASE}/import?dry_run=${dryRun ? 'true' : 'false'}`,
+        form,
+        { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 60_000 },
+    );
+    return response.data;
+};
+
 export const uploadBoardProfileFile = (token: string, file: File): Promise<BoardFileUpload> => {
     const form = new FormData();
     form.append('file', file);

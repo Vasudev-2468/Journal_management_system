@@ -3,6 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import Header from '../components/layout/Header';
 import Footer from '../components/layout/Footer';
 import { fetchArticles } from '../api/articles';
+import { fetchArticleNoticeSummaries, ArticleNoticeSummary } from '../api/corrections';
 import type { Article } from '../types';
 
 // JG-fix F4 — /articles previously mounted the single-article view without an
@@ -11,6 +12,7 @@ import type { Article } from '../types';
 
 const ArticleListPage: React.FC = () => {
     const [articles, setArticles] = useState<Article[]>([]);
+    const [notices, setNotices] = useState<Record<number, ArticleNoticeSummary>>({});
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [params] = useSearchParams();
@@ -22,7 +24,19 @@ const ArticleListPage: React.FC = () => {
         setError(null);
         fetchArticles()
             .then((data) => {
-                if (!cancelled) setArticles(data);
+                if (cancelled) return;
+                setArticles(data);
+                // Batch-fetch retraction/correction badges. Non-fatal —
+                // a failure here just leaves the badges off.
+                const ids = data.map((a) => Number(a.id)).filter((n) => n > 0);
+                fetchArticleNoticeSummaries(ids)
+                    .then((rows) => {
+                        if (cancelled) return;
+                        const map: Record<number, ArticleNoticeSummary> = {};
+                        for (const r of rows) map[r.article_id] = r;
+                        setNotices(map);
+                    })
+                    .catch(() => {});
             })
             .catch((e) => {
                 if (!cancelled) setError(e?.message || 'Failed to load articles');
@@ -82,9 +96,26 @@ const ArticleListPage: React.FC = () => {
                                 to={`/articles/${a.id}`}
                                 className="block group"
                             >
-                                <h2 className="text-lg font-semibold text-gray-900 group-hover:text-blue-700">
-                                    {a.title || 'Untitled'}
-                                </h2>
+                                <div className="flex items-start gap-2 flex-wrap">
+                                    <h2 className="text-lg font-semibold text-gray-900 group-hover:text-blue-700">
+                                        {a.title || 'Untitled'}
+                                    </h2>
+                                    {notices[Number(a.id)]?.is_retracted && (
+                                        <span className="mt-1 text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-rose-100 text-rose-800 border border-rose-200">
+                                            ⚠️ Retracted
+                                        </span>
+                                    )}
+                                    {!notices[Number(a.id)]?.is_retracted && (notices[Number(a.id)]?.correction_count || 0) > 0 && (
+                                        <span className="mt-1 text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-blue-100 text-blue-800 border border-blue-200">
+                                            📝 Correction
+                                        </span>
+                                    )}
+                                    {(notices[Number(a.id)]?.expression_of_concern_count || 0) > 0 && (
+                                        <span className="mt-1 text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-amber-100 text-amber-900 border border-amber-200">
+                                            ⚠️ EoC
+                                        </span>
+                                    )}
+                                </div>
                                 {(a as any).abstract && (
                                     <p className="mt-1 text-sm text-gray-600 line-clamp-2">
                                         {(a as any).abstract}

@@ -848,3 +848,170 @@ def run_reviewer_consensus_agent(reports: List[Dict[str, Any]]) -> Dict[str, Any
         "ethics_flag_count": ethics_flags,
         "text_summary": text_summary,
     }
+
+
+# ── Agent: Annotation Assistant (page-anchored PDF helper) ─
+#
+# Small helper the reviewer form calls when the reviewer pastes a text
+# selection from the PDF. Classifies the text into major/minor/
+# suggestion using cheap keyword heuristics and returns a stub prompt
+# the reviewer can then edit — never a finished comment.
+
+_ANNOTATION_MAJOR_MARKERS = (
+    "must", "cannot", "incorrect", "invalid", "flaw", "wrong",
+    "error", "missing", "fails", "insufficient", "unsupported",
+)
+
+_ANNOTATION_MINOR_MARKERS = (
+    "typo", "grammar", "figure", "caption", "reference",
+    "citation", "spelling", "wording",
+)
+
+
+def run_annotation_assistant(*, selected_text: str) -> Dict[str, Any]:
+    """Classify a pasted PDF selection and hand back a starter prompt.
+
+    Returns ``{suggested_type, suggested_prompt, keyword_hits}``. The
+    reviewer's own comment goes into the annotation textarea; this is
+    only a jumping-off point, never a written comment."""
+    text = (selected_text or "").strip()
+    if not text:
+        return {
+            "suggested_type": "suggestion",
+            "suggested_prompt": "",
+            "keyword_hits": [],
+        }
+    lower = text.lower()
+    major_hits = [m for m in _ANNOTATION_MAJOR_MARKERS if m in lower]
+    minor_hits = [m for m in _ANNOTATION_MINOR_MARKERS if m in lower]
+    if major_hits:
+        return {
+            "suggested_type": "major",
+            "suggested_prompt": f"The authors state: “{_first_sentence(text, cap=180)}” — please clarify or justify.",
+            "keyword_hits": major_hits,
+        }
+    if minor_hits:
+        return {
+            "suggested_type": "minor",
+            "suggested_prompt": f"Please correct the following: “{_first_sentence(text, cap=180)}”.",
+            "keyword_hits": minor_hits,
+        }
+    return {
+        "suggested_type": "suggestion",
+        "suggested_prompt": f"Consider expanding on: “{_first_sentence(text, cap=180)}”.",
+        "keyword_hits": [],
+    }
+
+
+# ── Agent: Editorial Decision Letter Drafter (spec §10) ────
+
+def run_decision_letter_agent(
+    *,
+    editor_decision: str,
+    manuscript_id: str,
+    paper_title: str,
+    reports: List[Dict[str, Any]],
+    editor_note: str = "",
+) -> Dict[str, Any]:
+    """Draft an editorial decision letter from the reviewer reports.
+
+    Never authoritative — the editor reviews and edits before sending
+    (spec §10: "the editor should approve the final letter"). Excludes
+    confidential comments-to-editor from the author-facing output.
+
+    Structure:
+      1. Opening paragraph — thanks the author, states the decision.
+      2. Summary of reviewer recommendations.
+      3. Consolidated Major Comments (across reviewers, verbatim).
+      4. Consolidated Minor Comments.
+      5. Consolidated Suggestions.
+      6. Closing paragraph with next steps for the decision.
+      7. Editor's own note appended at the bottom.
+    """
+    dec = (editor_decision or "").lower()
+    decision_label = {
+        "accepted":            "Accept",
+        "accept":              "Accept",
+        "minor_revision":      "Minor Revision",
+        "major_revision":      "Major Revision",
+        "revision_requested":  "Revision Required",
+        "rejected":            "Reject",
+        "reject":              "Reject",
+        "reject_and_resubmit": "Reject and Resubmit",
+    }.get(dec, editor_decision or "Decision")
+
+    opening = {
+        "accept":                "We are pleased to inform you that your manuscript has been accepted for publication.",
+        "accepted":              "We are pleased to inform you that your manuscript has been accepted for publication.",
+        "minor_revision":        "Your manuscript has been reviewed and requires minor revision before it can be accepted.",
+        "major_revision":        "Your manuscript has been reviewed and requires major revision before it can be reconsidered.",
+        "revision_requested":    "Your manuscript has been reviewed and requires revision before it can be reconsidered.",
+        "reject":                "After careful consideration, we regret that we cannot accept your manuscript for publication.",
+        "rejected":              "After careful consideration, we regret that we cannot accept your manuscript for publication.",
+        "reject_and_resubmit":   "We cannot accept the manuscript in its current form; however, we invite a substantially revised resubmission for fresh consideration.",
+    }.get(dec, "The reviewer reports for your manuscript are now complete.")
+
+    closing = {
+        "accept":                "Congratulations. The production team will be in touch shortly regarding typesetting and proofs.",
+        "accepted":              "Congratulations. The production team will be in touch shortly regarding typesetting and proofs.",
+        "minor_revision":        "Please prepare a revised manuscript addressing every reviewer point, along with a response letter mapping each response to the corresponding change.",
+        "major_revision":        "Please prepare a substantially revised manuscript addressing every reviewer concern, along with a response letter mapping each response to the corresponding change.",
+        "revision_requested":    "Please prepare a revised manuscript addressing every reviewer point, along with a response letter mapping each response to the corresponding change.",
+        "reject":                "Thank you for considering our journal. We wish you success in placing your work elsewhere.",
+        "rejected":              "Thank you for considering our journal. We wish you success in placing your work elsewhere.",
+        "reject_and_resubmit":   "A resubmission will be treated as a new submission. Please address every reviewer concern and include a clear response letter.",
+    }.get(dec, "Thank you for submitting your work to our journal.")
+
+    # Aggregate reviewer content verbatim — never rewritten.
+    def _lines(header: str, items: List[str]) -> str:
+        if not items:
+            return ""
+        body = "\n".join(f"  {idx + 1}. {t}" for idx, t in enumerate(items))
+        return f"{header}\n{body}\n\n"
+
+    tally: Dict[str, int] = {v: 0 for v, _ in RECOMMENDATION_OPTIONS}
+    majors: List[str] = []
+    minors: List[str] = []
+    suggestions: List[str] = []
+    for r in reports:
+        rec = str(r.get("recommendation") or "").lower()
+        if rec in tally:
+            tally[rec] += 1
+        for m in r.get("major_comments", []) or []:
+            text = m.get("comment") if isinstance(m, dict) else str(m)
+            if text:
+                majors.append(format_comment(m) if isinstance(m, dict) else str(text))
+        for m in r.get("minor_comments", []) or []:
+            text = m.get("comment") if isinstance(m, dict) else str(m)
+            if text:
+                minors.append(format_comment(m) if isinstance(m, dict) else str(text))
+        for s in r.get("suggestions", []) or []:
+            if s:
+                suggestions.append(str(s))
+
+    tally_line = ", ".join(
+        f"{v} {k.replace('_', ' ')}" for k, v in tally.items() if v
+    ) or "no reviewer recommendations recorded"
+
+    letter = (
+        f"Dear Author,\n\n"
+        f"Re: {manuscript_id} — {paper_title}\n\n"
+        f"{opening}\n\n"
+        f"Decision: {decision_label}\n"
+        f"Reviewer recommendations: {tally_line}.\n\n"
+        + _lines("Major concerns from reviewers:", majors)
+        + _lines("Minor concerns from reviewers:", minors)
+        + _lines("Suggestions from reviewers:", suggestions)
+        + (f"\nEditor's note:\n{editor_note.strip()}\n\n" if editor_note.strip() else "")
+        + f"{closing}\n\n"
+        f"Sincerely,\nEditorial Office"
+    )
+
+    return {
+        "decision_label": decision_label,
+        "recommendation_tally": tally,
+        "letter": letter,
+        "major_count": len(majors),
+        "minor_count": len(minors),
+        "suggestions_count": len(suggestions),
+    }

@@ -26,6 +26,7 @@ import ProtectedEditorRoute from './components/common/ProtectedEditorRoute';
 import ProtectedAuthorRoute from './components/common/ProtectedAuthorRoute';
 import { AuthProvider } from './context/AuthContext';
 import { JournalProvider } from './context/JournalContext';
+import { PermissionsProvider } from './context/PermissionsContext';
 import EditorJournalIdentityPage from './pages/EditorJournalIdentityPage';
 import ArticleListPage from './pages/ArticleListPage';
 import PolicyPageView from './pages/PolicyPageView';
@@ -62,13 +63,22 @@ import SecurityPage from './pages/reviewer/SecurityPage';
 import GuidelinesPage from './pages/reviewer/GuidelinesPage';
 import EditorReviewerReportPage from './pages/editor/EditorReviewerReportPage';
 import EditorReviewerReportsPage from './pages/editor/EditorReviewerReportsPage';
+import EditorManuscriptWorkspacePage from './pages/editor/EditorManuscriptWorkspacePage';
+import EditorJournalIdentifiersPage from './pages/EditorJournalIdentifiersPage';
+import EditorRecoveryCodesPage from './pages/EditorRecoveryCodesPage';
+import EditorJournalsAdminPage from './pages/EditorJournalsAdminPage';
 import AuthorRevisionPage from './pages/AuthorRevisionPage';
 import AuthorRevisionResponsePage from './pages/AuthorRevisionResponsePage';
+import AuthorDecisionViewPage from './pages/AuthorDecisionViewPage';
 import EditorUsersAdmin from './pages/EditorUsersAdmin';
 import EditorAuditLogPage from './pages/EditorAuditLogPage';
 import EditorEmailTemplatesPage from './pages/EditorEmailTemplatesPage';
 import EditorSpecialIssuesAdmin from './pages/EditorSpecialIssuesAdmin';
 import EditorProductionQueue from './pages/EditorProductionQueue';
+import EditorDoiManagementPage from './pages/EditorDoiManagementPage';
+import EditorCorrectionsPage from './pages/EditorCorrectionsPage';
+import EditorDecisionWorkspacePage from './pages/EditorDecisionWorkspacePage';
+import EditorBidRoomPage from './pages/EditorBidRoomPage';
 import StatisticsPage from './pages/StatisticsPage';
 import SearchPage from './pages/SearchPage';
 import AuthorProfilePage from './pages/AuthorProfilePage';
@@ -83,6 +93,7 @@ const App: React.FC = () => {
         <AuthProvider>
             <AnalyticsLoader />
             <JournalProvider>
+                <PermissionsProvider>
                 <Router>
                     <CookieBanner />
                     <Routes>
@@ -211,6 +222,26 @@ const App: React.FC = () => {
                             <EditorReviewerReportsPage />
                         </ProtectedEditorRoute>
                     } />
+                    <Route path="/editor/manuscripts/:submissionId" element={
+                        <ProtectedEditorRoute>
+                            <EditorManuscriptWorkspacePage />
+                        </ProtectedEditorRoute>
+                    } />
+                    <Route path="/editor/journal-identifiers" element={
+                        <ProtectedEditorRoute>
+                            <EditorJournalIdentifiersPage />
+                        </ProtectedEditorRoute>
+                    } />
+                    <Route path="/editor/recovery-codes" element={
+                        <ProtectedEditorRoute>
+                            <EditorRecoveryCodesPage />
+                        </ProtectedEditorRoute>
+                    } />
+                    <Route path="/editor/journals-admin" element={
+                        <ProtectedEditorRoute>
+                            <EditorJournalsAdminPage />
+                        </ProtectedEditorRoute>
+                    } />
                     <Route path="/reviewer/guidelines" element={<GuidelinesPage />} />
 
                     {/* Public informational pages — statistics, search, author profile, APC, manuscript prep */}
@@ -229,6 +260,11 @@ const App: React.FC = () => {
                     <Route path="/author-dashboard/:submissionId/respond" element={
                         <ProtectedAuthorRoute>
                             <AuthorRevisionResponsePage />
+                        </ProtectedAuthorRoute>
+                    } />
+                    <Route path="/author-dashboard/:submissionId/decision" element={
+                        <ProtectedAuthorRoute>
+                            <AuthorDecisionViewPage />
                         </ProtectedAuthorRoute>
                     } />
 
@@ -258,8 +294,29 @@ const App: React.FC = () => {
                             <EditorProductionQueue />
                         </ProtectedEditorRoute>
                     } />
+                    <Route path="/editor/doi/:articleId" element={
+                        <ProtectedEditorRoute>
+                            <EditorDoiManagementPage />
+                        </ProtectedEditorRoute>
+                    } />
+                    <Route path="/editor/articles/:articleId/corrections" element={
+                        <ProtectedEditorRoute>
+                            <EditorCorrectionsPage />
+                        </ProtectedEditorRoute>
+                    } />
+                    <Route path="/editor/submissions/:submissionId/decision" element={
+                        <ProtectedEditorRoute>
+                            <EditorDecisionWorkspacePage />
+                        </ProtectedEditorRoute>
+                    } />
+                    <Route path="/editor/bid-room/:submissionId" element={
+                        <ProtectedEditorRoute>
+                            <EditorBidRoomPage />
+                        </ProtectedEditorRoute>
+                    } />
                     </Routes>
                 </Router>
+                </PermissionsProvider>
             </JournalProvider>
         </AuthProvider>
     );

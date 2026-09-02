@@ -71,4 +71,20 @@ def get_current_reviewer(
     reviewer = db.query(Reviewer).filter(Reviewer.id == reviewer_id).first()
     if reviewer is None or not reviewer.is_active:
         raise _UNAUTH
+
+    # Sign-out-everywhere enforcement: tokens minted before the
+    # reviewer's most recent explicit login (or sign-out-everywhere
+    # click) are refused. ``iat`` on the token is compared against
+    # ``last_login_at`` on the row with a 1-second slack for
+    # integer-second JWT truncation vs. microsecond DB timestamps.
+    iat_raw = payload.get("iat")
+    if iat_raw is not None and reviewer.last_login_at is not None:
+        try:
+            from datetime import datetime, timedelta
+            iat = datetime.utcfromtimestamp(int(iat_raw))
+            if iat < reviewer.last_login_at - timedelta(seconds=1):
+                raise _UNAUTH
+        except (OverflowError, OSError, ValueError):
+            pass
+
     return reviewer

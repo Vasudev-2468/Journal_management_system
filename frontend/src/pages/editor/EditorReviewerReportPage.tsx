@@ -2,6 +2,18 @@ import React, { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { fetchReviewerReport } from '../../api/editor';
 
+// Side-by-side PDF viewer (spec §8) — editor keeps the manuscript
+// open while reading the reviewer report so they can verify claims
+// against the paper without page-switching. The iframe uses the
+// editor session JWT via query param because iframes can't send an
+// Authorization header.
+const buildEditorPdfUrl = (reviewId: string): string => {
+    const base =
+        (process.env.REACT_APP_API_URL as string | undefined) || 'http://localhost:8000';
+    const token = localStorage.getItem('editor_token') || '';
+    return `${base.replace(/\/$/, '')}/editor-portal/reviews/${reviewId}/pdf?token=${encodeURIComponent(token)}`;
+};
+
 // Full structured Reviewer Report as the editor sees it (spec §7-13).
 // Renders the exact same shape the reviewer's Preview modal shows, but
 // with the reviewer identity masked to "Anonymous Reviewer #N".
@@ -86,6 +98,9 @@ export default function EditorReviewerReportPage() {
     const [report, setReport] = useState<ReviewerReport | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    // Side-by-side toggle — some editors prefer full-width report on
+    // smaller displays. Defaults to on for wide screens.
+    const [showPdf, setShowPdf] = useState(true);
 
     useEffect(() => {
         fetchReviewerReport(reviewId)
@@ -105,12 +120,44 @@ export default function EditorReviewerReportPage() {
 
     const rec = report.recommendation ? REC_STYLES[report.recommendation] : null;
 
+    const pdfUrl = buildEditorPdfUrl(reviewId);
+
     return (
-        <div className="min-h-screen bg-gray-50 py-8 px-4">
-            <div className="max-w-4xl mx-auto">
-                <div className="mb-4">
+        <div className="min-h-screen bg-gray-50 py-6 px-4">
+            <div className="max-w-[1600px] mx-auto">
+                <div className="mb-4 flex items-center justify-between">
                     <Link to="/editor" className="text-sm text-gray-500 hover:text-blue-700">← Back to dashboard</Link>
+                    <button
+                        type="button"
+                        onClick={() => setShowPdf((v) => !v)}
+                        className="text-xs font-bold px-3 py-1.5 rounded-lg border border-gray-300 bg-white hover:bg-gray-50 text-gray-800"
+                    >
+                        {showPdf ? '📄 Hide PDF' : '📄 Show PDF side-by-side'}
+                    </button>
                 </div>
+
+                <div className={showPdf ? 'grid grid-cols-1 xl:grid-cols-2 gap-6' : ''}>
+                    {showPdf && (
+                        <div className="hidden xl:block">
+                            <div className="bg-white rounded-xl border border-gray-200 sticky top-6 h-[calc(100vh-96px)] overflow-hidden flex flex-col">
+                                <div className="px-3 py-2 border-b border-gray-100 flex items-center justify-between text-xs">
+                                    <span className="font-medium text-gray-700 truncate">Manuscript PDF</span>
+                                    <a
+                                        href={pdfUrl}
+                                        target="_blank" rel="noreferrer"
+                                        className="text-blue-700 hover:underline"
+                                    >Open ↗</a>
+                                </div>
+                                <iframe
+                                    src={pdfUrl}
+                                    title="Manuscript"
+                                    className="flex-1 w-full"
+                                />
+                            </div>
+                        </div>
+                    )}
+
+                    <div className="min-w-0">
 
                 <div className="bg-white rounded-xl border border-gray-200 p-6 mb-4">
                     <div className="text-xs uppercase tracking-wider text-gray-400 font-semibold mb-1">Reviewer Report</div>
@@ -261,6 +308,8 @@ export default function EditorReviewerReportPage() {
                         <pre className="text-xs whitespace-pre-wrap text-gray-800 font-sans">{report.editor_summary}</pre>
                     </div>
                 )}
+                    </div>
+                </div>
             </div>
         </div>
     );

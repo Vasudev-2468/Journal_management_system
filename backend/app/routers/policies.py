@@ -15,6 +15,7 @@ from app.models.policy_page import PolicyPage
 from app.models.user import User, UserRole
 from app.schemas.policy_page import PolicyPageCreate, PolicyPageRead, PolicyPageUpdate
 from app.services.editor_auth import require_editor_mfa
+from app.services.permissions import ACTION_CONFIGURE_JOURNAL, require_permission
 
 router = APIRouter()
 
@@ -23,7 +24,7 @@ router = APIRouter()
 _POLICY_EDIT_ROLES = {UserRole.admin, UserRole.editor}
 
 
-def _require_policy_editor(user: User = Depends(require_editor_mfa)) -> User:
+def _require_policy_editor(user: User = Depends(require_permission(ACTION_CONFIGURE_JOURNAL))) -> User:
     if user.role not in _POLICY_EDIT_ROLES:
         raise HTTPException(status_code=403, detail="Only editors_in_chief and admins can edit policies")
     return user

@@ -95,6 +95,7 @@ def _send_decision_to_author(
             paper_title=submission.paper_title,
             decision=decision,
             editor_comments=editor_comments,
+            submission_id=str(submission.id),
         )
 
         logger.info(

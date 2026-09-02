@@ -7,6 +7,9 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.services.auth_service import get_current_user
 from app.services.editor_auth import require_editor_mfa
+from app.services.permissions import ACTION_ASSIGN_REVIEWERS, require_permission
+
+_require_assign_reviewers = require_permission(ACTION_ASSIGN_REVIEWERS)
 from app.models.reviewer import Reviewer
 from app.services.reviewer_service import (
     assign_reviewers,
@@ -17,6 +20,7 @@ from app.services.reviewer_service import (
     list_reviewers,
     register_reviewer,
     resend_reviewer_invitation,
+    reset_reviewer_password_only,
     revoke_reviewer_invitation,
     send_welcome_email,
     update_reviewer,
@@ -27,6 +31,7 @@ from app.services.ai_agent import match_reviewers
 from app.schemas.reviewer import (
     AssignReviewersRequest,
     AssignReviewersResponse,
+    ReviewerCredentialsRevealResponse,
     ReviewerDetailResponse,
     ReviewerInvitationLinkResponse,
     ReviewerListItem,
@@ -207,7 +212,10 @@ def suggest_reviewers(
 def assign(
     body: AssignReviewersRequest,
     db: Session = Depends(get_db),
-    _editor=Depends(require_editor_mfa),
+    # ASSIGN_REVIEWERS is the RBAC gate that actually authorises
+    # invitation dispatch. Editors without this permission see the
+    # AI-suggested shortlist but can't fire emails to the reviewers.
+    _editor=Depends(_require_assign_reviewers),
 ):
     try:
         created_reviews = assign_reviewers(db, body.submission_id, body.reviewer_ids)
@@ -309,6 +317,63 @@ def resend_invitation(
             if email_sent
             else "Could not dispatch the email — check the notification log."
         ),
+    )
+
+
+@router.post(
+    "/{reviewer_id}/reset-credentials",
+    response_model=ReviewerCredentialsRevealResponse,
+)
+def reset_and_reveal_credentials(
+    reviewer_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _editor=Depends(require_editor_mfa),
+):
+    """Reset the reviewer's password and return the plaintext once.
+
+    Editor-only, MFA-gated. The DB stores only a bcrypt hash — there is
+    no way to reveal an existing password. This endpoint replaces the
+    hash with a freshly-generated one and returns the plaintext exactly
+    once so the editor can pass the credentials on out-of-band (chat,
+    phone, in-person). It also mints a fresh invitation URL when the
+    reviewer has not yet accepted their invitation, and always includes
+    the reviewer login URL.
+
+    Because a reset is destructive to any password the reviewer may
+    already have set, the intent is deliberate: an editor invoking this
+    is committing to hand the new credentials to the reviewer.
+    """
+    from app.config import settings
+
+    reviewer = _load_reviewer_or_404(db, reviewer_id)
+    plaintext = reset_reviewer_password_only(db, reviewer)
+
+    # Only mint a fresh invitation link for reviewers who have not
+    # accepted yet — for accepted reviewers, the login URL alone is
+    # the right entry point.
+    invitation_url = None
+    invitation_expires_at = None
+    if reviewer.invitation_accepted_at is None:
+        try:
+            invitation_url = build_invitation_link(reviewer)
+            invitation_expires_at = reviewer.invitation_expires_at or (
+                datetime.utcnow() + _REVIEWER_INVITE_TTL
+            )
+        except Exception:
+            # A minting failure must not prevent us returning the
+            # password itself — the invitation URL is the extra channel,
+            # not the primary payload.
+            invitation_url = None
+
+    login_url = f"{settings.FRONTEND_URL}/reviewer/login"
+
+    return ReviewerCredentialsRevealResponse(
+        reviewer_id=reviewer.id,
+        username=reviewer.email,
+        password=plaintext,
+        login_url=login_url,
+        invitation_url=invitation_url,
+        invitation_expires_at=invitation_expires_at,
     )
 
 

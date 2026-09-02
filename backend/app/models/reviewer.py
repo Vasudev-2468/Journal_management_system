@@ -75,6 +75,12 @@ class Reviewer(Base):
     unavailable_from = Column(DateTime, nullable=True)
     unavailable_until = Column(DateTime, nullable=True)
 
+    # TOTP (authenticator-app) 2FA for reviewer sign-in.
+    # ``totp_secret``       — base32 secret; nulled on disable.
+    # ``totp_enrolled_at``  — stamped only after /totp/confirm.
+    totp_secret = Column(String(64), nullable=True)
+    totp_enrolled_at = Column(DateTime, nullable=True)
+
     # Bridge to the unified ``users`` identity surface. A Reviewer row is
     # kept as the operational record for peer-review (load counters, tags,
     # embedding vector, per-review token flow); the linked User row

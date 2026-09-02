@@ -182,8 +182,22 @@ async def submit_paper(
     except Exception:
         pass  # emails are best-effort; don't fail the submission
 
-    # Trigger async processing pipeline
-    process_new_submission.delay(str(submission.id))
+    # Trigger async processing pipeline. A broker outage must not fail
+    # or hang the synchronous submit — the row is already persisted, so
+    # we dispatch the enqueue on a daemon thread. If the broker is down,
+    # ``.delay()`` can block for tens of seconds retrying the connection;
+    # putting it off-thread keeps the HTTP response snappy either way.
+    import logging, threading
+    _log = logging.getLogger(__name__)
+    def _enqueue(sub_id: str):
+        try:
+            process_new_submission.delay(sub_id)
+        except Exception as exc:
+            _log.warning(
+                "Celery broker unreachable; submission %s persisted but pipeline not enqueued: %s",
+                sub_id, exc,
+            )
+    threading.Thread(target=_enqueue, args=(str(submission.id),), daemon=True).start()
 
     return SubmissionCreatedResponse(
         submission_id=submission.id,

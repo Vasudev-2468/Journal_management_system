@@ -272,6 +272,14 @@ export const fetchHistory = (params: { year?: number; recommendation?: string; s
 export const fetchNotifications = () => g<Alert[]>('/reviewer-portal/notifications');
 export const fetchRubric        = () => g<RubricResponse>('/reviewer-portal/rubric');
 
+export interface AnnotationSuggestion {
+    suggested_type: 'major' | 'minor' | 'suggestion';
+    suggested_prompt: string;
+    keyword_hits: string[];
+}
+export const suggestAnnotation = (id: string, selected_text: string) =>
+    p<AnnotationSuggestion>(`/reviewer-portal/assignments/${id}/annotation-assistant`, { selected_text });
+
 export const fetchProfile       = () => g<ProfileResponse>('/reviewer-portal/profile');
 export const saveProfile        = (body: Partial<ProfileResponse>) =>
     patch<ProfileResponse>('/reviewer-portal/profile', body);

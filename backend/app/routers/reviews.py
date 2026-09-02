@@ -18,7 +18,10 @@ from app.services.review_service import (
     record_decision,
     submit_review,
 )
+from app.models.editorial_decision import EditorialDecision
+from app.models.review import Review, ReviewState
 from app.models.submission import Submission, SubmissionStatus
+from app.services.state_machine import transition_or_direct
 from app.schemas.review import (
     DecisionRequest,
     DecisionResponse,
@@ -33,6 +36,44 @@ from app.tasks import notify_editor_review_complete, send_decision_to_author
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _persist_editorial_decision(
+    db: Session,
+    *,
+    submission: Submission,
+    editor_id: int | None,
+    decision: str,
+    letter_text: str | None,
+) -> None:
+    """Append a row to editorial_decisions for the current review round.
+
+    Best-effort — a persistence failure here MUST NOT break the outer
+    /decision endpoint. The submission-level status update has already
+    happened by the time we get here; the audit row is a separate
+    record. If the migration hasn't run yet (table missing), we log
+    and swallow.
+    """
+    try:
+        current_round = 1
+        for r in submission.reviews or []:
+            if r.round_number and r.round_number > current_round:
+                current_round = r.round_number
+        row = EditorialDecision(
+            submission_id=submission.id,
+            editor_id=editor_id,
+            decision=decision,
+            round_number=current_round,
+            letter_text=(letter_text or None),
+        )
+        db.add(row)
+        db.commit()
+    except Exception:  # noqa: BLE001
+        db.rollback()
+        logger.exception(
+            "reviews.decision: editorial_decisions insert failed for %s",
+            submission.id,
+        )
 
 
 # ── GET /reviews/access/{link_token}  (reviewer portal) ─
@@ -182,6 +223,35 @@ def make_decision(
     db: Session = Depends(get_db),
     editor=Depends(require_editor_mfa),
 ):
+    # Idempotency guard — refuse a second decision on the same round.
+    # The workspace's "Issue Decision" button can double-fire on slow
+    # networks; without this a duplicate `editorial_decisions` row +
+    # a duplicate author-notification email would slip through.
+    from app.models.editorial_decision import EditorialDecision as _EdDec
+    from app.models.review import Review as _Rev
+    _sub = db.query(Submission).filter(Submission.id == submission_id).first()
+    if _sub is not None:
+        cur_round = max(
+            (r.round_number or 1 for r in (_sub.reviews or [])),
+            default=1,
+        )
+        prior = (
+            db.query(_EdDec)
+            .filter(
+                _EdDec.submission_id == submission_id,
+                _EdDec.round_number == cur_round,
+            )
+            .first()
+        )
+        if prior is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"A decision ({prior.decision}) has already been issued "
+                    f"for round {cur_round}. Open a new round before deciding again."
+                ),
+            )
+
     submission = record_decision(db, submission_id, body.decision)
     if submission is None:
         raise HTTPException(status_code=404, detail="Submission not found.")
@@ -204,6 +274,18 @@ def make_decision(
         submission.format_check_report = merged
         db.commit()
         db.refresh(submission)
+
+    # Persist the decision to the editorial_decisions audit trail
+    # (spec §13) — one row per (submission, round, editor). The
+    # letter/editor_note are optional; the frontend sends the letter as
+    # ``editor_comments`` when it's issued from the workspace.
+    _persist_editorial_decision(
+        db,
+        submission=submission,
+        editor_id=editor.id if editor else None,
+        decision=body.decision,
+        letter_text=body.editor_comments,
+    )
 
     # Structured audit log entry — the reason code lives in ``meta`` so
     # analytics can group rejections by reason without parsing free text.
@@ -267,7 +349,7 @@ def request_additional_review(
             detail="Submission has a final decision; additional review cannot be requested.",
         )
 
-    submission.status = SubmissionStatus.pending_assignment
+    transition_or_direct(db, submission, SubmissionStatus.pending_assignment)
     db.commit()
     db.refresh(submission)
 

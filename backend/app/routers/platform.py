@@ -49,6 +49,12 @@ from app.schemas.platform import (
 )
 from app.services.auth_service import get_current_user
 from app.services.editor_auth import require_editor_mfa
+from app.services.permissions import (
+    ACTION_MANAGE_USERS,
+    ACTION_VIEW_AUDIT,
+    require_permission,
+)
+from app.services.state_machine import transition_or_direct
 
 
 # ═══════════════════════════════════════════════════════════
@@ -209,8 +215,7 @@ def submit_revision(
     # Move the submission back into review pipeline if a revision was requested.
     if submission.status.value in ("revision_requested", "returned_to_author"):
         from app.models.submission import SubmissionStatus
-        submission.status = SubmissionStatus.under_review
-
+        transition_or_direct(db, submission, SubmissionStatus.under_review)
     db.commit()
     db.refresh(version)
 
@@ -569,7 +574,7 @@ def list_audit(
     q: Optional[str] = Query(None, description="Substring on action / target / actor"),
     limit: int = Query(200, ge=1, le=1000),
     db: Session = Depends(get_db),
-    _editor=Depends(require_editor_mfa),
+    _editor=Depends(require_permission(ACTION_VIEW_AUDIT)),
 ):
     query = db.query(AuditLog)
     if action:
@@ -690,7 +695,7 @@ def update_user(
     payload: UserAdminUpdate,
     request: Request,
     db: Session = Depends(get_db),
-    editor: User = Depends(require_editor_mfa),
+    editor: User = Depends(require_permission(ACTION_MANAGE_USERS)),
 ):
     row = db.query(User).filter(User.id == user_id).first()
     if row is None:
@@ -717,7 +722,7 @@ def deactivate_user(
     user_id: int,
     request: Request,
     db: Session = Depends(get_db),
-    editor: User = Depends(require_editor_mfa),
+    editor: User = Depends(require_permission(ACTION_MANAGE_USERS)),
 ):
     row = db.query(User).filter(User.id == user_id).first()
     if row is None:

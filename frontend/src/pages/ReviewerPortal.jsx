@@ -5,8 +5,14 @@ import 'react-pdf/dist/esm/Page/AnnotationLayer.css';
 import 'react-pdf/dist/esm/Page/TextLayer.css';
 import client from '../api/client';
 
-// PDF.js worker — use CDN matching the bundled pdfjs version
-pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.js`;
+// PDF.js worker — pinned to the cdnjs mirror because unpkg has been
+// unreliable (intermittent 5xx + protocol-relative URL fell back to
+// plain http:// on some pages, tripping mixed-content blocks). For
+// pdfjs 4.x cdnjs names the file `.mjs` (module worker); the shape
+// changed from 2.x/3.x. Version tracks pdfjs.version so a package
+// bump doesn't ship a mismatched worker.
+pdfjs.GlobalWorkerOptions.workerSrc =
+  `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.mjs`;
 
 // ── Constants ───────────────────────────────────────────
 const CRITERIA = [

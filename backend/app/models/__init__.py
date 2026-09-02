@@ -4,6 +4,9 @@ from .article import Article
 from .review import Review, ReviewState, ReviewStatus, OverallRecommendation
 from .review_draft import ReviewDraft
 from .revision_response import RevisionResponse
+from .editorial_decision import EditorialDecision
+from .reviewer_session import ReviewerSession
+from .journal_identifier import JournalIdentifier, IdentifierType, IdentifierStatus
 from .ai_analysis import AIAnalysis
 from .submission import Submission
 from .reviewer import Reviewer
@@ -12,9 +15,14 @@ from .access_log import AccessLog
 from .cv_request import CVRequest
 from .article_review import ArticleReview
 from .volume import Volume, Issue, IssueArticle
+from .doi_audit_log import DoiAuditLog
+from .permission import Permission, RolePermission
+from .submission_transition import SubmissionTransition
+from .article_correction import ArticleCorrection
 from .contact_message import ContactMessage
 from .announcement import Announcement
 from .editorial_board_member import EditorialBoardMember
+from .doi_audit_log import DoiAuditLog
 from .manuscript_version import ManuscriptVersion
 from .manuscript_file import ManuscriptFile
 from .special_issue import SpecialIssue

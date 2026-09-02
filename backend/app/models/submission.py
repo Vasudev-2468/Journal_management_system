@@ -19,6 +19,12 @@ class SubmissionStatus(str, enum.Enum):
     returned_to_author = "returned_to_author"
     accepted = "accepted"
     rejected = "rejected"
+    # Editor's "Reject and Resubmit" — distinct from rejected so the
+    # author sees an invitation to resubmit rather than a plain
+    # decline. The submission still leaves active-review handling on
+    # the editor side; the author decision-time view surfaces the
+    # editor's letter with the invitation to resubmit.
+    reject_and_resubmit = "reject_and_resubmit"
 
 
 class Submission(Base):
@@ -39,6 +45,14 @@ class Submission(Base):
         nullable=False,
         default=SubmissionStatus.pending_classification,
         index=True,
+    )
+    # Handling editor — nullable so legacy submissions load without a
+    # forced backfill. The editor claim / delegation endpoint sets this.
+    handling_editor_id = Column(
+        "handling_editor_id",
+        # ForeignKey referenced by string to avoid circular import.
+        Integer, ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True, index=True,
     )
     submitted_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(

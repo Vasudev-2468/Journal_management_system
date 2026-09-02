@@ -8,7 +8,7 @@ True/False for success.
 
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 
 from sendgrid import SendGridAPIClient, SendGridException
 from sendgrid.helpers.mail import Mail
@@ -77,27 +77,80 @@ def _from_address() -> str:
     )
 
 
-def _send_via_gmail(to_email: str, subject: str, html: str) -> tuple[bool, str]:
+def _build_mime(
+    to_email: str,
+    subject: str,
+    html: str,
+    attachments: Optional[List[dict]] = None,
+):
+    """Compose an outbound MIME message.
+
+    ``attachments`` — a list of ``{filename, content, content_type}``.
+    When non-empty the message is wrapped in a ``multipart/mixed``
+    envelope containing a ``multipart/alternative`` body plus one
+    ``application/<subtype>`` part per file, so the reviewer's client
+    renders the HTML body and shows the attachment inline.
+    """
+    from email.mime.base import MIMEBase
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from email import encoders
+
+    from_addr = _from_address()
+
+    if attachments:
+        outer = MIMEMultipart("mixed")
+        outer["Subject"] = subject
+        outer["From"] = from_addr
+        outer["To"] = to_email
+        alt = MIMEMultipart("alternative")
+        alt.attach(MIMEText(html, "html", "utf-8"))
+        outer.attach(alt)
+        for att in attachments:
+            content = att.get("content")
+            filename = att.get("filename", "attachment")
+            content_type = att.get("content_type", "application/octet-stream")
+            if not content:
+                continue
+            maintype, _, subtype = content_type.partition("/")
+            part = MIMEBase(maintype or "application", subtype or "octet-stream")
+            part.set_payload(content)
+            encoders.encode_base64(part)
+            part.add_header(
+                "Content-Disposition",
+                f'attachment; filename="{filename}"',
+            )
+            outer.attach(part)
+        return outer, from_addr
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = from_addr
+    msg["To"] = to_email
+    msg.attach(MIMEText(html, "html", "utf-8"))
+    return msg, from_addr
+
+
+def _send_via_gmail(
+    to_email: str,
+    subject: str,
+    html: str,
+    attachments: Optional[List[dict]] = None,
+) -> tuple[bool, str]:
     """Send an HTML email via Gmail's SMTP relay using stdlib smtplib.
 
     Uses a Google App Password (not the account password). Because the
     ``From:`` address IS the sending Gmail account, DMARC/SPF/DKIM all
     align at Google, so messages don't hit the p=reject cliff that
     third-party relays run into when forging @gmail.com senders.
+    ``attachments`` — optional list of file parts (see ``_build_mime``).
     """
     import smtplib
-    from email.mime.multipart import MIMEMultipart
-    from email.mime.text import MIMEText
 
-    from_addr = _from_address()
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = from_addr
-    msg["To"] = to_email
-    msg.attach(MIMEText(html, "html", "utf-8"))
+    msg, from_addr = _build_mime(to_email, subject, html, attachments)
 
     try:
-        with smtplib.SMTP(settings.GMAIL_SMTP_HOST, settings.GMAIL_SMTP_PORT, timeout=15) as smtp:
+        with smtplib.SMTP(settings.GMAIL_SMTP_HOST, settings.GMAIL_SMTP_PORT, timeout=30) as smtp:
             smtp.ehlo()
             smtp.starttls()
             smtp.ehlo()
@@ -108,7 +161,12 @@ def _send_via_gmail(to_email: str, subject: str, html: str) -> tuple[bool, str]:
         return False, f"Gmail SMTP: {exc}"
 
 
-def _send_via_brevo(to_email: str, subject: str, html: str) -> tuple[bool, str]:
+def _send_via_brevo(
+    to_email: str,
+    subject: str,
+    html: str,
+    attachments: Optional[List[dict]] = None,
+) -> tuple[bool, str]:
     """Send an HTML email via Brevo's SMTP relay using stdlib smtplib.
 
     Returns ``(success, detail)``. On failure ``detail`` carries the
@@ -116,18 +174,11 @@ def _send_via_brevo(to_email: str, subject: str, html: str) -> tuple[bool, str]:
     ``notifications.error_message``.
     """
     import smtplib
-    from email.mime.multipart import MIMEMultipart
-    from email.mime.text import MIMEText
 
-    from_addr = _from_address()
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = from_addr
-    msg["To"] = to_email
-    msg.attach(MIMEText(html, "html", "utf-8"))
+    msg, from_addr = _build_mime(to_email, subject, html, attachments)
 
     try:
-        with smtplib.SMTP(settings.BREVO_SMTP_HOST, settings.BREVO_SMTP_PORT, timeout=15) as smtp:
+        with smtplib.SMTP(settings.BREVO_SMTP_HOST, settings.BREVO_SMTP_PORT, timeout=30) as smtp:
             smtp.ehlo()
             smtp.starttls()
             smtp.ehlo()
@@ -143,15 +194,21 @@ def _send_and_log(
     subject: str,
     html: str,
     trigger_event: str,
+    attachments: Optional[List[dict]] = None,
 ) -> bool:
     """Route the send through Gmail SMTP (preferred) → Brevo SMTP →
     SendGrid HTTP API. Persists a Notification row either way.
+
+    ``attachments`` — optional list of ``{filename, content, content_type}``
+    dicts. Threaded through Gmail + Brevo SMTP paths. The SendGrid HTTP
+    fallback ignores attachments today (its API takes a different shape);
+    a send that must carry the PDF should reach Gmail first anyway.
     """
     db = SessionLocal()
     try:
         # ── Primary: Gmail SMTP ────────────────────────
         if settings.GMAIL_SMTP_PASSWORD and settings.GMAIL_SMTP_USER:
-            success, detail = _send_via_gmail(to_email, subject, html)
+            success, detail = _send_via_gmail(to_email, subject, html, attachments)
             db.add(
                 Notification(
                     recipient_email=to_email,
@@ -172,7 +229,7 @@ def _send_and_log(
 
         # ── Secondary: Brevo SMTP ──────────────────────
         if settings.BREVO_SMTP_KEY and settings.BREVO_SMTP_USER:
-            success, detail = _send_via_brevo(to_email, subject, html)
+            success, detail = _send_via_brevo(to_email, subject, html, attachments)
             db.add(
                 Notification(
                     recipient_email=to_email,
@@ -585,38 +642,240 @@ def send_reviewer_reminder(
     paper_title: str,
     review_link: str,
     days_remaining: int,
+    manuscript_id: Optional[str] = None,
+    review_deadline: Optional[str] = None,
+    editor_name: Optional[str] = None,
+    editor_position: Optional[str] = None,
+    journal_name: Optional[str] = None,
 ) -> bool:
+    """"Review Due Soon" reminder (JG spec).
+
+    The template follows the editorial-team spec verbatim, with the six
+    placeholders — DAYS_REMAINING, MANUSCRIPT_ID, MANUSCRIPT_TITLE,
+    REVIEW_DEADLINE, REVIEWER_NAME, plus EDITOR_NAME / EDITOR_POSITION
+    / JOURNAL_NAME — filled from the caller. Missing values fall back
+    to sensible defaults so a partial call still renders cleanly.
+    """
     urgency_color = "#dc2626" if days_remaining <= 1 else "#d97706" if days_remaining <= 3 else "#1e40af"
 
-    subject = f"Reminder: Review Due in {days_remaining} Days — {paper_title}"
+    # Fallbacks so the message still renders when the caller doesn't
+    # thread every field — the scheduler call site now provides them all.
+    manuscript_id_display = manuscript_id or "—"
+    review_deadline_display = review_deadline or "the stated deadline"
+    editor_name_display = editor_name or "Editorial Office"
+    editor_position_display = editor_position or "Managing Editor"
+    journal_name_display = journal_name or "the Editorial Team"
+
+    subject = (
+        f"Action Required: Review Due in {days_remaining} "
+        f"Day{'s' if days_remaining != 1 else ''} – {manuscript_id_display}"
+    )
+
     body = _wrap(
         f"""
-        <p>Dear {reviewer_name},</p>
+        <p>Dear Dr. {reviewer_name},</p>
 
-        <div style="background:#fffbeb;border:1px solid #fde68a;border-left:4px solid {urgency_color};
-                    padding:16px;border-radius:6px;margin-bottom:20px;">
-          <p style="margin:0;font-weight:700;color:{urgency_color};font-size:15px;">
-            Your review is due in {days_remaining} day{"s" if days_remaining != 1 else ""}
-          </p>
-        </div>
+        <p>This is a reminder that your review for the following manuscript is due soon.</p>
 
-        <p>This is a friendly reminder that your review for
-           <strong>{paper_title}</strong> is approaching its deadline.</p>
+        <table role="presentation" cellspacing="0" cellpadding="0" border="0"
+               style="width:100%;border-collapse:collapse;margin:16px 0;">
+          <tr>
+            <td style="padding:6px 0;color:#374151;width:170px;">
+              <strong>Manuscript ID:</strong>
+            </td>
+            <td style="padding:6px 0;color:#111827;">{manuscript_id_display}</td>
+          </tr>
+          <tr>
+            <td style="padding:6px 0;color:#374151;"><strong>Title:</strong></td>
+            <td style="padding:6px 0;color:#111827;">{paper_title}</td>
+          </tr>
+          <tr>
+            <td style="padding:6px 0;color:#374151;"><strong>Review Deadline:</strong></td>
+            <td style="padding:6px 0;color:{urgency_color};font-weight:700;">
+              {review_deadline_display}
+            </td>
+          </tr>
+        </table>
 
-        <p>If you have already started, thank you!  If not, please set aside
-           time to review the manuscript and submit your evaluation.</p>
+        <p>Our records indicate that your review has not yet been submitted.</p>
 
-        {_btn("Continue Review", review_link, urgency_color)}
+        <p>Please complete and submit your review before the deadline.</p>
+
+        {_btn("📝 Complete Review", review_link, urgency_color)}
 
         <p style="font-size:13px;color:#6b7280;">
-          If you are unable to complete the review, please let us know
-          immediately so we can reassign it.
+          If you require additional time, please request an extension through the reviewer portal.
         </p>
 
-        <p>Best regards,<br><strong>Editorial Team</strong></p>
+        <p>Thank you for your cooperation.</p>
+
+        <p style="margin-top:24px;">
+          Sincerely,<br>
+          <strong>{editor_name_display}</strong><br>
+          {editor_position_display}<br>
+          {journal_name_display}
+        </p>
         """
     )
     return _send_and_log(reviewer_email, subject, body, "reviewer_reminder")
+
+
+def send_rejection_to_author(
+    *,
+    author_email: str,
+    author_name: str,
+    manuscript_id: str,
+    manuscript_title: str,
+    article_type: str = "Research Article",
+    primary_reason: str = "the overall assessment by the reviewers and editorial team",
+    rejection_reasons: Optional[List[str]] = None,
+    reviewer_comments: Optional[List[dict]] = None,
+    journal_name: Optional[str] = None,
+    journal_email: Optional[str] = None,
+    journal_website: Optional[str] = None,
+    editor_name: str = "Editorial Team",
+    editor_position: str = "Editorial Office",
+) -> bool:
+    """Send the canonical JGAIR rejection letter to the corresponding
+    author.
+
+    The layout follows the specification exactly — manuscript info
+    block, decision block, AI-drafted rejection reasons (editor is
+    authoritative but the reasons are seeded from the Review Analysis
+    Agent's ``common_concerns``), reviewer author-visible comments,
+    and a journal-masthead sign-off.
+
+    Confidential reviewer-to-editor comments MUST NOT be passed in
+    ``reviewer_comments`` — only the author-facing text belongs in
+    this email. See ``reviews.public_comments`` on the Review model.
+    """
+    _journal_name = journal_name or "JGAIR — Journal of Generative and Applied Intelligence Research"
+    _journal_email = journal_email or settings.EDITORIAL_INBOX_EMAIL or settings.SENDGRID_FROM_EMAIL or "editorial@jgair.org"
+    _journal_website = journal_website or (settings.FRONTEND_URL or "https://jgair.org").rstrip("/")
+
+    subject = f"Editorial Decision – Manuscript {manuscript_id} | {_journal_name}"
+
+    # ── Rejection reasons list ───────────────────────────────
+    # If the caller didn't seed any (e.g. legacy path with no
+    # briefing available), fall back to a single line that still
+    # produces a coherent email. Otherwise render up to the first
+    # three so the email stays readable — the full audit lives in
+    # the transition log.
+    reasons = rejection_reasons or []
+    reasons = [r for r in reasons if isinstance(r, str) and r.strip()]
+    if not reasons:
+        reasons_html = (
+            "<li>The reviewers and editorial team judged that the "
+            "contribution does not, in its present form, meet the "
+            "journal's criteria for publication.</li>"
+        )
+    else:
+        reasons_html = "".join(f"<li>{r}</li>" for r in reasons[:3])
+
+    # ── Reviewer author-facing comments block ────────────────
+    # Each entry: {"index": 1, "comments": "...", "recommendation": "..."}
+    reviewer_blocks = []
+    for entry in (reviewer_comments or [])[:3]:
+        idx = entry.get("index") or len(reviewer_blocks) + 1
+        comments = (entry.get("comments") or "").strip()
+        if not comments:
+            comments = (
+                "<em>No author-facing comments were provided by this reviewer.</em>"
+            )
+        else:
+            comments = comments.replace("\n", "<br>")
+        reviewer_blocks.append(
+            f"<div style='margin:16px 0 20px 0;padding:14px 16px;"
+            f"background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;'>"
+            f"<p style='margin:0 0 6px 0;font-weight:600;color:#111827;'>"
+            f"Reviewer {idx}:</p>"
+            f"<div style='font-size:14px;color:#374151;line-height:1.55;'>{comments}</div>"
+            f"</div>"
+        )
+    reviewer_html = "".join(reviewer_blocks) or (
+        "<p style='color:#6b7280;font-size:13px;'>"
+        "No author-facing reviewer comments were captured for this manuscript."
+        "</p>"
+    )
+
+    body = _wrap(
+        f"""
+        <p>Dear {author_name},</p>
+
+        <p>Thank you for submitting your manuscript to <strong>{_journal_name}</strong>.</p>
+
+        <p>We have completed the editorial evaluation and peer-review process
+           for your manuscript:</p>
+
+        <table style="width:100%;border-collapse:collapse;margin:6px 0 18px 0;">
+          <tr>
+            <td style="padding:8px 12px;background:#f3f4f6;font-weight:600;
+                       border:1px solid #e5e7eb;width:38%;">Manuscript ID</td>
+            <td style="padding:8px 12px;border:1px solid #e5e7eb;">{manuscript_id}</td>
+          </tr>
+          <tr>
+            <td style="padding:8px 12px;background:#f3f4f6;font-weight:600;
+                       border:1px solid #e5e7eb;">Title</td>
+            <td style="padding:8px 12px;border:1px solid #e5e7eb;">{manuscript_title}</td>
+          </tr>
+          <tr>
+            <td style="padding:8px 12px;background:#f3f4f6;font-weight:600;
+                       border:1px solid #e5e7eb;">Article Type</td>
+            <td style="padding:8px 12px;border:1px solid #e5e7eb;">{article_type}</td>
+          </tr>
+        </table>
+
+        <p>Following careful consideration of the reviewers' reports and the
+           editorial assessment, we regret to inform you that the manuscript
+           has been rejected for publication in <strong>{_journal_name}</strong>.</p>
+
+        <h3 style="margin:22px 0 6px 0;color:#111827;">Editorial Decision</h3>
+        <div style="text-align:center;margin:14px 0 18px 0;">
+          <span style="display:inline-block;padding:10px 32px;
+                       background:#dc2626;color:#ffffff;
+                       font-size:18px;font-weight:700;border-radius:6px;">
+            ❌ REJECT
+          </span>
+        </div>
+
+        <p>The decision was reached after considering the manuscript's
+           <strong>{primary_reason}</strong>.</p>
+
+        <p>The major issues identified during the evaluation include:</p>
+        <ol style="padding-left:20px;line-height:1.6;">
+          {reasons_html}
+        </ol>
+
+        <p>The reviewers' comments, where applicable, are provided below to help
+           you understand the concerns raised during the evaluation.</p>
+
+        <h3 style="margin:22px 0 6px 0;color:#111827;">Reviewer Comments</h3>
+        {reviewer_html}
+
+        <p style="font-size:13px;color:#4b5563;">
+          Please note that confidential comments submitted by reviewers to
+          the editor are not included in this communication.
+        </p>
+
+        <p>We understand that this decision may be disappointing. However, we
+           hope that the reviewers' and editor's comments will be useful in
+           improving the manuscript for possible submission to another
+           appropriate venue.</p>
+
+        <p>Thank you for considering <strong>{_journal_name}</strong> for your
+           work. We appreciate the time and effort invested in preparing and
+           submitting your manuscript.</p>
+
+        <p style="margin-top:22px;">Sincerely,<br>
+          <strong>{editor_name}</strong><br>
+          <span style="font-size:13px;color:#6b7280;">{editor_position}</span><br>
+          <span style="font-size:13px;color:#6b7280;">{_journal_name}</span><br>
+          <a href="mailto:{_journal_email}" style="font-size:13px;color:#1e40af;">{_journal_email}</a><br>
+          <a href="{_journal_website}" style="font-size:13px;color:#1e40af;">{_journal_website}</a>
+        </p>
+        """
+    )
+    return _send_and_log(author_email, subject, body, "manuscript_rejection")
 
 
 def send_decision_to_author(

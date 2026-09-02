@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models.submission import Submission, SubmissionStatus
+from app.services.state_machine import transition_or_direct
 from app.services.ai_agent import semantic_format_check
 from app.services.email_service import _send_and_log, _wrap, _btn
 
@@ -57,7 +58,7 @@ class FormatValidationAgent:
         # Store report on submission
         submission.format_check_report = report
         submission.format_check_completed_at = datetime.utcnow()
-        submission.status = SubmissionStatus.awaiting_consult_review
+        transition_or_direct(db, submission, SubmissionStatus.awaiting_consult_review)
         self.db.commit()
 
         # Send report to consult party

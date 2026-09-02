@@ -18,6 +18,47 @@ interface Props {
     children: React.ReactNode;
 }
 
+// Reviewer WebSocket bell — connects to /ws/reviewer-notifications with
+// the reviewer session token and dispatches a document-level event
+// whenever a real push arrives. Any page can listen for the event and
+// re-fetch its slice. Keeps the layout dependency-free.
+function useReviewerLivePush() {
+    useEffect(() => {
+        const token = localStorage.getItem('reviewer_token');
+        if (!token) return;
+        const base = (process.env.REACT_APP_API_URL as string | undefined) || 'http://localhost:8000';
+        const wsBase = base.replace(/^http/, 'ws');
+        const url = `${wsBase.replace(/\/$/, '')}/ws/reviewer-notifications?token=${encodeURIComponent(token)}`;
+        let ws: WebSocket | null = null;
+        let closed = false;
+        let retry = 0;
+        const connect = () => {
+            if (closed) return;
+            try {
+                ws = new WebSocket(url);
+                ws.onmessage = (e) => {
+                    try {
+                        const msg = JSON.parse(e.data);
+                        if (msg.type === 'notification') {
+                            document.dispatchEvent(new CustomEvent('reviewer:live', { detail: msg.payload }));
+                        }
+                    } catch { /* ignore malformed */ }
+                };
+                ws.onclose = () => {
+                    // Exponential backoff up to 30s.
+                    retry = Math.min(retry + 1, 5);
+                    setTimeout(connect, Math.min(30000, 1000 * 2 ** retry));
+                };
+            } catch { /* browser blocked ws */ }
+        };
+        connect();
+        return () => {
+            closed = true;
+            try { ws?.close(); } catch { /* ignore */ }
+        };
+    }, []);
+}
+
 const SIDEBAR_ITEMS: Array<{ key: string; label: string; icon: string; to: string }> = [
     { key: 'dashboard',    label: 'Dashboard',       icon: '🏠', to: '/reviewer-dashboard' },
     { key: 'assignments',  label: 'My Assignments',  icon: '📄', to: '/reviewer/assignments' },
@@ -159,6 +200,7 @@ const ReviewerPortalLayout: React.FC<Props> = ({ active, pendingInvites = 0, chi
     const location = useLocation();
     const { journal } = useJournal();
     const [me, setMe] = useState<ReviewerMe | null>(null);
+    useReviewerLivePush();
 
     useEffect(() => {
         let mounted = true;

@@ -165,18 +165,47 @@ class AgentOrchestrator:
         submission_id: uuid.UUID,
         consult_party_email: Optional[str] = None,
     ) -> dict:
-        """
-        Run Stages 1+2 automatically on new submission.
-        Stages 3-5 require human input (consult party / editor decisions).
+        """Run Stages 1 → 2 → 3 automatically on a new submission.
+
+        Stage 3 only **suggests** reviewers — it never mints review-link
+        tokens and never sends anything to any reviewer. The suggestions
+        are attached to the submission (``suggested_reviewers_data``) and
+        the row transitions to ``awaiting_reviewer_suggestions`` so the
+        editor's workspace can display the shortlist and prompt for
+        approval.
+
+        Stages 4 (Link Generator) and 5 (Notification) still require the
+        editor to explicitly call ``run_reviewer_assignment`` with the
+        chosen reviewer_ids — that is where reviewer invitations are
+        actually dispatched. Nothing on the intake path can bypass that
+        gate.
         """
         result1 = self.run_acknowledgement(submission_id, consult_party_email)
         result2 = self.run_format_validation(submission_id)
 
+        # Best-effort reviewer shortlist — a failure here (e.g. no
+        # embeddings yet, OpenAlex outage) must not fail the intake.
+        # The editor can retry from the workspace.
+        result3: Optional[dict] = None
+        try:
+            result3 = self.run_reviewer_suggestion(submission_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "Auto-suggestion failed for %s — intake completed; editor can retry.",
+                submission_id,
+            )
+            result3 = {"error": str(exc)}
+
         return {
             "agent1": result1,
             "agent2": result2,
-            "pipeline_status": "awaiting_consult_review",
-            "next_action": "Consult party must review format report and suggest reviewers",
+            "agent3": result3,
+            "pipeline_status": "awaiting_editor_reviewer_approval",
+            "next_action": (
+                "Editor reviews the AI-suggested reviewer shortlist and "
+                "authorises invitations. Nothing is emailed to any "
+                "reviewer until the editor confirms."
+            ),
         }
 
     # ── Review Completion Handler ──────────────────────────

@@ -99,3 +99,70 @@ def upload_manuscript_file(
 
 def storage_backend() -> str:
     return "s3" if _s3_configured() else "local"
+
+
+def download_bytes(url_or_key: str) -> bytes:
+    """Read a stored file back as bytes. Handles:
+
+    * A local ``/uploads/<key>`` path — resolves against ``LOCAL_UPLOADS_DIR``.
+    * A raw S3 key (no scheme) — pulled from the configured bucket.
+    * An HTTPS S3 URL of the shape produced by ``upload_bytes``.
+
+    Raises ``FileNotFoundError`` on any resolution failure — callers
+    that want a best-effort read should ``try/except`` it. Kept small
+    on purpose: the email pipeline only needs one bytes-in-hand.
+    """
+    if not url_or_key:
+        raise FileNotFoundError("empty path")
+
+    # ── Local: /uploads/<key> — resolve under LOCAL_UPLOADS_DIR ──
+    if url_or_key.startswith("/uploads/"):
+        key = url_or_key[len("/uploads/"):]
+        local_path = LOCAL_UPLOADS_DIR / key
+        if local_path.exists():
+            return local_path.read_bytes()
+        # Windows-friendly fallback: some deployments store under
+        # a project-relative "uploads/" directory when /app is not a
+        # real path (dev machines). Try that too.
+        alt = Path("uploads") / key
+        if alt.exists():
+            return alt.read_bytes()
+        raise FileNotFoundError(f"local file not found: {url_or_key}")
+
+    # ── S3 URL — extract bucket + key from the standard URL shape ─
+    if url_or_key.startswith("http://") or url_or_key.startswith("https://"):
+        if _s3_configured():
+            try:
+                # https://<bucket>.s3.<region>.amazonaws.com/<key>
+                # Take everything after the first single "/" following the host.
+                without_scheme = url_or_key.split("//", 1)[1]
+                _host, _, key = without_scheme.partition("/")
+                if key:
+                    buf = io.BytesIO()
+                    _s3_client().download_fileobj(
+                        settings.AWS_S3_BUCKET_NAME, key, buf,
+                    )
+                    return buf.getvalue()
+            except (BotoCoreError, ClientError) as exc:
+                raise FileNotFoundError(f"S3 fetch failed: {exc}") from exc
+        raise FileNotFoundError(f"cannot resolve remote URL without S3 credentials: {url_or_key}")
+
+    # ── Raw S3 key ──────────────────────────────────────────────
+    if _s3_configured():
+        try:
+            buf = io.BytesIO()
+            _s3_client().download_fileobj(
+                settings.AWS_S3_BUCKET_NAME, url_or_key, buf,
+            )
+            return buf.getvalue()
+        except (BotoCoreError, ClientError) as exc:
+            raise FileNotFoundError(f"S3 fetch failed: {exc}") from exc
+
+    # No prefix, no S3 — try local as a last resort.
+    local_path = LOCAL_UPLOADS_DIR / url_or_key
+    if local_path.exists():
+        return local_path.read_bytes()
+    alt = Path("uploads") / url_or_key
+    if alt.exists():
+        return alt.read_bytes()
+    raise FileNotFoundError(f"cannot resolve: {url_or_key}")

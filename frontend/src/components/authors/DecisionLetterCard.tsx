@@ -1,4 +1,193 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
+import client from '../../api/client';
+
+interface DecisionSummary {
+    submission_id: string;
+    manuscript_id: string;
+    manuscript_title: string;
+    article_type: string;
+    decision: string;
+    decision_display: string;
+    decision_date: string | null;
+    primary_reason: string;
+    rejection_reasons: string[];
+    reviewer_reports: {
+        reviewer_label: string;
+        review_id: string;
+        completed: boolean;
+    }[];
+    letter_available: boolean;
+}
+
+function formatDecisionDate(iso: string | null): string {
+    if (!iso) return '—';
+    try {
+        return new Date(iso).toLocaleDateString(undefined, {
+            year: 'numeric',
+            month: 'long',
+            day: '2-digit',
+        });
+    } catch {
+        return '—';
+    }
+}
+
+// Author-facing decision card (spec §Rejection Portal View). Renders
+// the manuscript-level decision block with reasons and reviewer-report
+// checklist — mirrors the wording of the email so the two channels
+// stay consistent. Fetches the read-only summary from
+// GET /submissions/{id}/author-decision-summary — kept separate from
+// the plain-text letter card below so the layout matches the spec
+// exactly (badges + checklist), and so the same wiring can hold
+// accept/revision variants without regressing.
+function AuthorDecisionCard({ submissionId }: { submissionId: string }): JSX.Element | null {
+    const [summary, setSummary] = useState<DecisionSummary | null>(null);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
+    const [letterOpen, setLetterOpen] = useState(false);
+
+    useEffect(() => {
+        let cancelled = false;
+        setLoading(true);
+        setError(null);
+        client
+            .get(`/submissions/${submissionId}/author-decision-summary`)
+            .then((r) => {
+                if (!cancelled) setSummary(r.data as DecisionSummary);
+            })
+            .catch((e) => {
+                if (!cancelled) {
+                    setError(
+                        e?.response?.data?.detail || e?.message || 'Could not load decision summary.'
+                    );
+                }
+            })
+            .finally(() => {
+                if (!cancelled) setLoading(false);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [submissionId]);
+
+    if (loading) {
+        return (
+            <section className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
+                <p className="text-sm text-gray-500">Loading decision…</p>
+            </section>
+        );
+    }
+    if (error || !summary) {
+        return null;
+    }
+
+    const isRejection = summary.decision === 'rejected';
+    const isAccepted = summary.decision === 'accepted';
+    const badgeClass = isRejection
+        ? 'bg-red-600 text-white'
+        : isAccepted
+        ? 'bg-emerald-600 text-white'
+        : 'bg-amber-500 text-white';
+    const emoji = isRejection ? '❌' : isAccepted ? '✅' : '🔶';
+
+    return (
+        <section
+            className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6"
+            aria-label="Editorial decision"
+        >
+            <div className="flex items-center justify-between border-b border-gray-100 pb-3 mb-4">
+                <h2 className="text-sm font-bold text-gray-900 tracking-widest uppercase">
+                    Editorial Decision
+                </h2>
+                <span className={`text-xs font-bold px-3 py-1 rounded-full ${badgeClass}`}>
+                    {emoji} {summary.decision_display}
+                </span>
+            </div>
+
+            <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3 text-sm">
+                <div>
+                    <dt className="text-xs font-semibold text-gray-500 uppercase">Manuscript ID</dt>
+                    <dd className="text-gray-900 font-mono">{summary.manuscript_id}</dd>
+                </div>
+                <div>
+                    <dt className="text-xs font-semibold text-gray-500 uppercase">Decision Date</dt>
+                    <dd className="text-gray-900">{formatDecisionDate(summary.decision_date)}</dd>
+                </div>
+                <div className="sm:col-span-2">
+                    <dt className="text-xs font-semibold text-gray-500 uppercase">Title</dt>
+                    <dd className="text-gray-900">{summary.manuscript_title}</dd>
+                </div>
+                <div>
+                    <dt className="text-xs font-semibold text-gray-500 uppercase">Article Type</dt>
+                    <dd className="text-gray-900">{summary.article_type}</dd>
+                </div>
+                <div>
+                    <dt className="text-xs font-semibold text-gray-500 uppercase">Reason</dt>
+                    <dd className="text-gray-900">{summary.primary_reason}</dd>
+                </div>
+            </dl>
+
+            {isRejection && summary.rejection_reasons.length > 0 && (
+                <div className="mt-5 rounded-lg border border-rose-100 bg-rose-50 px-4 py-3">
+                    <p className="text-xs font-bold text-rose-900 uppercase mb-2">
+                        Major issues identified
+                    </p>
+                    <ol className="list-decimal pl-5 space-y-1 text-sm text-rose-900">
+                        {summary.rejection_reasons.map((r, i) => (
+                            <li key={i}>{r}</li>
+                        ))}
+                    </ol>
+                </div>
+            )}
+
+            {summary.reviewer_reports.length > 0 && (
+                <div className="mt-5">
+                    <p className="text-xs font-bold text-gray-500 uppercase mb-2">
+                        Reviewer Reports
+                    </p>
+                    <ul className="text-sm text-gray-800 space-y-1">
+                        {summary.reviewer_reports.map((r) => (
+                            <li key={r.review_id} className="flex items-center gap-2">
+                                <span className="font-medium">├──</span>
+                                <span>{r.reviewer_label}</span>
+                                <span className={r.completed ? 'text-emerald-600' : 'text-gray-400'}>
+                                    {r.completed ? '✓' : '…'}
+                                </span>
+                            </li>
+                        ))}
+                    </ul>
+                </div>
+            )}
+
+            {summary.letter_available && (
+                <div className="mt-6 flex flex-wrap gap-2">
+                    <button
+                        type="button"
+                        onClick={() => setLetterOpen((v) => !v)}
+                        className="inline-flex items-center gap-1.5 text-xs font-semibold text-blue-800 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-xl px-3 py-1.5"
+                    >
+                        {letterOpen ? 'Hide Decision Letter' : 'View Decision Letter'}
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => window.print()}
+                        className="inline-flex items-center gap-1.5 text-xs font-semibold text-gray-800 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-xl px-3 py-1.5"
+                    >
+                        Download Decision Letter
+                    </button>
+                </div>
+            )}
+
+            {letterOpen && (
+                <div id={`decision-letter-${summary.submission_id}`} className="mt-4">
+                    {/* The plain-text letter renders via the DecisionLetterBody */}
+                    {/* below — kept as a slot so the /email-templates hook can */}
+                    {/* replace this bundled fallback later. */}
+                </div>
+            )}
+        </section>
+    );
+}
 
 type DecisionStatus =
     | 'accepted'
@@ -109,6 +298,9 @@ export default function DecisionLetterCard({
     };
 
     return (
+        <>
+            <AuthorDecisionCard submissionId={submissionId} />
+            <div className="h-3" />
         <section
             className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6"
             aria-label="Decision letter"
@@ -156,5 +348,6 @@ export default function DecisionLetterCard({
                 </button>
             </div>
         </section>
+        </>
     );
 }

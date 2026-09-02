@@ -73,9 +73,44 @@ export const fetchRevisionChecklist = (submissionId) =>
     .then((r) => r.data);
 
 // Round-N automation — opens a new review round on a submission.
-export const openReviewRound = (submissionId) =>
+// options: { carry_previous?: boolean, new_reviewer_ids?: string[] }
+export const openReviewRound = (submissionId, options = {}) =>
   client
-    .post(`/editor-portal/submissions/${submissionId}/open-round`)
+    .post(`/editor-portal/submissions/${submissionId}/open-round`, options)
+    .then((r) => r.data);
+
+// Editor Decision Letter Drafter — synthesises a draft letter from
+// reviewer reports + editor decision + optional editor note.
+// Under Review manuscript list — powers the dashboard's Under Review
+// panel with the "N/M Reviews Received" progress column + consensus
+// recommendation + ethics flag per submission.
+export const fetchUnderReviewManuscripts = () =>
+  client.get('/editor-portal/under-review').then((r) => r.data);
+
+// Handling-editor delegation
+export const fetchHandlingEditor = (submissionId) =>
+  client.get(`/editor-portal/submissions/${submissionId}/handling-editor`).then((r) => r.data);
+export const assignHandlingEditor = (submissionId, editor_id) =>
+  client.post(`/editor-portal/submissions/${submissionId}/handling-editor`, { editor_id }).then((r) => r.data);
+export const fetchEditorMe = () =>
+  client.get('/editor-auth/me').then((r) => r.data);
+
+// Detection agents (deterministic — spec §14, §15).
+export const runDuplicateCheck = (submissionId) =>
+  client.get(`/editor-portal/submissions/${submissionId}/duplicate-check`).then((r) => r.data);
+export const runPanelBalance = (submissionId) =>
+  client.get(`/editor-portal/submissions/${submissionId}/panel-balance`).then((r) => r.data);
+export const runCrossRoundConsistency = (submissionId) =>
+  client.get(`/editor-portal/submissions/${submissionId}/cross-round-consistency`).then((r) => r.data);
+export const runReviewerBiasCheck = (submissionId, reviewer_id) =>
+  client.post(`/editor-portal/submissions/${submissionId}/reviewer-bias-check`, { reviewer_id }).then((r) => r.data);
+
+export const draftDecisionLetter = (submissionId, editor_decision, editor_note = '') =>
+  client
+    .post(`/editor-portal/submissions/${submissionId}/decision-letter-draft`, {
+      editor_decision,
+      editor_note,
+    })
     .then((r) => r.data);
 
 // ── Reviews ─────────────────────────────────────────────
@@ -113,6 +148,10 @@ export const editorAssignReviewers = (submissionId, data) =>
 
 export const fetchAnalyticsOverview = (range = 'this_year') =>
   client.get('/editor-portal/analytics/overview', { params: { range } }).then((r) => r.data);
+
+// Detailed throughput / decision-distribution / avg-turnaround card
+export const fetchEditorialAnalytics = (days = 180) =>
+  client.get('/editor-portal/analytics/editorial-overview', { params: { days } }).then((r) => r.data);
 
 // ── Notification log (JG-304) ───────────────────────────
 

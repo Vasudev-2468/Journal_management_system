@@ -93,12 +93,53 @@ def _task_send_deadline_reminders() -> int:
                 remaining = review.link_expires_at - now
                 days_remaining = max(1, int(remaining.total_seconds() // 86400) + 1)
 
+                # Manuscript display id — the human-readable code shown
+                # everywhere else in the editorial UI; fall back to the
+                # submission UUID prefix so the field is never blank.
+                manuscript_id = (
+                    getattr(submission, "paper_id_code", None)
+                    or str(getattr(submission, "id", ""))[:8]
+                )
+                # Deadline — the reviewer's link expiry rounded to date.
+                review_deadline = review.link_expires_at.strftime("%A, %d %B %Y")
+
+                # Journal name + editor signature — from the active
+                # Journal row (masthead source of truth). Nothing here is
+                # required; the email service falls back to safe defaults.
+                journal_name = None
+                editor_name = None
+                editor_position = "Managing Editor"
+                try:
+                    from app.models.journal import Journal
+                    j = (
+                        db.query(Journal)
+                        .filter(Journal.is_active.is_(True))
+                        .order_by(Journal.id.asc())
+                        .first()
+                    ) or db.query(Journal).order_by(Journal.id.asc()).first()
+                    if j is not None:
+                        journal_name = j.title
+                        # ``email_editorial`` is our closest proxy for a
+                        # named signatory; if it isn't set, leave editor
+                        # unnamed and the service will substitute
+                        # "Editorial Office".
+                        editor_name = getattr(j, "publisher_name", None) or None
+                except Exception:
+                    # Non-fatal — a journal-lookup failure must not stop
+                    # the reminder going out.
+                    pass
+
                 ok = send_reviewer_reminder(
                     reviewer_email=reviewer.email,
                     reviewer_name=reviewer.name,
                     paper_title=submission.paper_title,
                     review_link=review_link,
                     days_remaining=days_remaining,
+                    manuscript_id=manuscript_id,
+                    review_deadline=review_deadline,
+                    editor_name=editor_name,
+                    editor_position=editor_position,
+                    journal_name=journal_name,
                 )
                 if ok:
                     sent += 1
@@ -404,6 +445,186 @@ def _task_auto_revoke_expired_invitations() -> int:
         db.close()
 
 
+# ── Task 6: author revision deadline reminders ──────────
+
+
+def _task_author_revision_reminders() -> int:
+    """Nudge authors whose revision window is inside the reminder
+    horizon. Uses the same notification uniqueness pattern as the
+    reviewer 48h reminder so a scheduler firing hourly doesn't spam
+    the author."""
+    from datetime import datetime, timedelta
+    from app.models.submission import Submission, SubmissionStatus
+    from app.models.notification import Notification, NotificationChannel, NotificationStatus
+    from app.services.email_service import _send_and_log, _wrap, _btn
+    from app.config import settings as _s
+
+    sent = 0
+    db = SessionLocal()
+    try:
+        now = datetime.utcnow()
+        seven_days = now + timedelta(days=7)
+        # Submissions in revision_requested for at least X days, with
+        # the ``revision_requested_at`` window closing.
+        candidates = (
+            db.query(Submission)
+            .filter(Submission.status == SubmissionStatus.revision_requested)
+            .all()
+        )
+        for s in candidates:
+            trigger = f"author_revision_reminder_7d:{s.id}"
+            already = (
+                db.query(Notification)
+                .filter(Notification.trigger_event == trigger)
+                .first()
+            )
+            if already is not None:
+                continue
+            if not s.author_email:
+                continue
+            frontend = (_s.FRONTEND_URL or "").rstrip("/")
+            respond_url = f"{frontend}/author-dashboard/{s.id}/respond" if frontend else f"/author-dashboard/{s.id}/respond"
+            body_html = _wrap(f"""
+                <p>Dear author,</p>
+                <p>This is a friendly reminder that a revision is required on your
+                   manuscript <strong>{s.paper_title}</strong>. Please respond to
+                   the reviewer comments and upload the revised version.</p>
+                <div style="text-align:center;">
+                  {_btn("Respond to reviewers", respond_url)}
+                </div>
+            """)
+            ok = _send_and_log(
+                s.author_email,
+                f"Revision reminder: {s.paper_title}",
+                body_html,
+                "author_revision_reminder",
+            )
+            if ok:
+                sent += 1
+            db.add(Notification(
+                recipient_email=s.author_email,
+                channel=NotificationChannel.email,
+                trigger_event=trigger,
+                message_body=f"author_revision_reminder_7d for {s.id}",
+                status=NotificationStatus.sent if ok else NotificationStatus.failed,
+                sent_at=datetime.utcnow() if ok else None,
+            ))
+            db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("author_revision_reminders task failed")
+    finally:
+        db.close()
+    return sent
+
+
+# ── Task 7: editor decision overdue reminders ───────────
+
+
+def _task_editor_decision_overdue_reminders() -> int:
+    """Surface submissions where every reviewer report is in AND the
+    editor hasn't decided within 14 days. Uses the existing editor
+    inbox address."""
+    from datetime import datetime, timedelta
+    from app.models.submission import Submission, SubmissionStatus
+    from app.models.review import Review, ReviewState
+    from app.models.editorial_decision import EditorialDecision
+    from app.models.notification import Notification, NotificationChannel, NotificationStatus
+    from app.services.email_service import _send_and_log, _wrap
+    from app.config import settings as _s
+
+    sent = 0
+    db = SessionLocal()
+    try:
+        editor_email = (_s.EDITORIAL_INBOX_EMAIL or "").strip()
+        if not editor_email:
+            from app.models.user import User
+            from app.services.editor_auth import EDITOR_ROLES
+            first = (
+                db.query(User)
+                .filter(User.role.in_(EDITOR_ROLES), User.is_active.is_(True))
+                .order_by(User.id.asc())
+                .first()
+            )
+            editor_email = first.email if first is not None else ""
+        if not editor_email:
+            return 0
+
+        cutoff = datetime.utcnow() - timedelta(days=14)
+        subs = (
+            db.query(Submission)
+            .filter(Submission.status == SubmissionStatus.under_review)
+            .all()
+        )
+        for s in subs:
+            reviews = list(s.reviews or [])
+            if not reviews:
+                continue
+            cur_round = max((r.round_number or 1 for r in reviews), default=1)
+            round_reviews = [r for r in reviews if (r.round_number or 1) == cur_round]
+            all_in = round_reviews and all(r.state == ReviewState.submitted for r in round_reviews)
+            if not all_in:
+                continue
+            newest_submit = max(
+                (r.completed_at for r in round_reviews if r.completed_at),
+                default=None,
+            )
+            if newest_submit is None or newest_submit > cutoff:
+                continue
+            # Already decided this round?
+            already_decided = (
+                db.query(EditorialDecision)
+                .filter(
+                    EditorialDecision.submission_id == s.id,
+                    EditorialDecision.round_number == cur_round,
+                )
+                .first()
+            )
+            if already_decided is not None:
+                continue
+            trigger = f"editor_decision_overdue:{s.id}:{cur_round}"
+            already = (
+                db.query(Notification)
+                .filter(Notification.trigger_event == trigger)
+                .first()
+            )
+            if already is not None:
+                continue
+            frontend = (_s.FRONTEND_URL or "").rstrip("/")
+            workspace_url = f"{frontend}/editor/manuscripts/{s.id}" if frontend else f"/editor/manuscripts/{s.id}"
+            body_html = _wrap(f"""
+                <p>Dear editor,</p>
+                <p>All reviewer reports are in for
+                   <strong>{s.paper_title}</strong> ({s.id}), and a decision has
+                   been outstanding for more than 14 days. Please open the
+                   workspace and issue a decision.</p>
+                <p><a href="{workspace_url}">Open editor workspace</a></p>
+            """)
+            ok = _send_and_log(
+                editor_email,
+                f"Decision overdue — {s.paper_title}",
+                body_html,
+                "editor_decision_overdue",
+            )
+            if ok:
+                sent += 1
+            db.add(Notification(
+                recipient_email=editor_email,
+                channel=NotificationChannel.email,
+                trigger_event=trigger,
+                message_body=f"editor_decision_overdue for {s.id} round {cur_round}",
+                status=NotificationStatus.sent if ok else NotificationStatus.failed,
+                sent_at=datetime.utcnow() if ok else None,
+            ))
+            db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("editor_decision_overdue_reminders task failed")
+    finally:
+        db.close()
+    return sent
+
+
 # ── Orchestrator ──────────────────────────────────────────
 
 
@@ -444,6 +665,17 @@ def main() -> Dict[str, Any]:
     except Exception:
         logger.exception("scheduled task 'auto_revoke_expired_invitations' crashed")
 
+    author_revision_reminders_sent = 0
+    editor_decision_overdue_sent = 0
+    try:
+        author_revision_reminders_sent = _task_author_revision_reminders()
+    except Exception:
+        logger.exception("scheduled task 'author_revision_reminders' crashed")
+    try:
+        editor_decision_overdue_sent = _task_editor_decision_overdue_reminders()
+    except Exception:
+        logger.exception("scheduled task 'editor_decision_overdue_reminders' crashed")
+
     duration_ms = int((time.perf_counter() - started) * 1000)
     summary = {
         "reminders_sent": reminders_sent,
@@ -451,6 +683,8 @@ def main() -> Dict[str, Any]:
         "proof_nudges": proof_nudges,
         "sessions_deleted": sessions_deleted,
         "invitations_auto_revoked": invitations_auto_revoked,
+        "author_revision_reminders_sent": author_revision_reminders_sent,
+        "editor_decision_overdue_sent": editor_decision_overdue_sent,
         "duration_ms": duration_ms,
     }
     print(json.dumps(summary))

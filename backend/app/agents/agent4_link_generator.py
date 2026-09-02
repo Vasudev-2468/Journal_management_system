@@ -20,6 +20,7 @@ from app.config import settings
 from app.models.review import Review, ReviewStatus
 from app.models.reviewer import Reviewer
 from app.models.submission import Submission, SubmissionStatus
+from app.services.state_machine import transition_or_direct
 from app.utils.link_tokens import create_review_link_token
 
 logger = logging.getLogger(__name__)
@@ -42,9 +43,31 @@ class ReviewLinkGeneratorAgent:
         Returns review data for Agent 5 to send notifications.
         """
         paper_id = submission.paper_id_code
+        # Fallback so downstream email templates never show "None" when
+        # a submission slipped past Agent 1 without a paper_id_code.
+        # Ordered: friendly code → first-8 of UUID → literal "unassigned".
+        paper_id_display = paper_id or f"#{str(submission.id)[:8]}" or "unassigned"
         results = {
             "agent": "ReviewLinkGeneratorAgent",
             "paper_id_code": paper_id,
+            "paper_id_display": paper_id_display,
+            "paper_title": submission.paper_title,
+            # Domain tag from Agent 1 doubles as the article_type. The
+            # canonical publisher taxonomy (Research Article / Review /
+            # Short Communication) isn't yet on the submission model,
+            # so we fall back to the classified subject or the default.
+            "article_type": getattr(submission, "classified_field", None) or "Research Article",
+            # Prefer the redacted PDF so reviewer identity + author
+            # identity stay on separate documents (spec: double-blind
+            # peer review). Falls back to the raw PDF when redaction
+            # hasn't been run yet.
+            "manuscript_pdf_url": (
+                getattr(submission, "redacted_pdf_url", None)
+                or getattr(submission, "pdf_url", None)
+            ),
+            "manuscript_pdf_is_redacted": bool(
+                getattr(submission, "redacted_pdf_url", None)
+            ),
             "submission_id": str(submission.id),
             "reviews_created": [],
             "errors": [],
@@ -112,7 +135,7 @@ class ReviewLinkGeneratorAgent:
             })
 
         # Update submission status
-        submission.status = SubmissionStatus.under_review
+        transition_or_direct(self.db, submission, SubmissionStatus.under_review)
         self.db.commit()
 
         # Update review IDs after commit

@@ -30,7 +30,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Form
 from fastapi.responses import HTMLResponse
 from jose import JWTError, jwt
 from sqlalchemy.orm import Session
@@ -230,29 +230,127 @@ def accept_membership(token: str, db: Session = Depends(get_db)):
     )
 
 
-# ── GET /reviewer-membership-invite/{token}/decline ─────
+# ── Decline: reason-capture form (GET) + submit (POST) ──
+#
+# GET renders a short "why are you declining?" form so the reviewer's
+# input flows into the notifications audit and helps the editor pick
+# a replacement. POST processes the form, decision-stamps the row,
+# and pings the editorial inbox. See ``decline_reviewer_invitation``
+# for the persistence + notification side.
+
+
+_DECLINE_REASONS = [
+    ("outside_expertise", "Outside my area of expertise"),
+    ("conflict_of_interest", "Conflict of interest"),
+    ("deadline",            "Unable to meet the deadline"),
+    ("not_available",       "Not available / personal or professional commitments"),
+    ("other",               "Other"),
+]
+
+
+def _render_decline_form(token: str, reviewer: Reviewer) -> HTMLResponse:
+    """Render the decline-reason form. The form POSTs back to the same
+    URL so the reviewer's click chain stays inside the email → single
+    URL flow — no client-side app required."""
+    radio_rows = "".join(
+        f"<label style='display:flex;align-items:center;gap:10px;"
+        f"padding:8px 4px;font-size:14px;'>"
+        f"<input type='radio' name='reason_code' value='{code}' required> "
+        f"<span>{label}</span></label>"
+        for code, label in _DECLINE_REASONS
+    )
+    form_html = (
+        f"<p>We're sorry you can't take this on. If you have a moment, "
+        f"please let us know why — this helps the editorial team plan "
+        f"the round and pick a replacement reviewer.</p>"
+        f"<form method='post' style='margin-top:12px;'>"
+        f"<div>{radio_rows}</div>"
+        f"<div style='margin-top:14px;'>"
+        f"<label style='font-size:13px;color:#4b5563;display:block;margin-bottom:4px;'>"
+        f"Additional comments (optional):</label>"
+        f"<textarea name='reason_notes' rows='3' "
+        f"style='width:100%;padding:10px;border:1px solid #d1d5db;"
+        f"border-radius:8px;font-family:inherit;font-size:14px;'></textarea>"
+        f"</div>"
+        f"<div style='margin-top:18px;display:flex;gap:10px;'>"
+        f"<button type='submit' "
+        f"style='background:#dc2626;color:#fff;border:none;"
+        f"padding:11px 20px;border-radius:8px;font-weight:600;"
+        f"cursor:pointer;font-size:14px;'>Confirm Decline</button>"
+        f"<a href='about:blank' onclick='window.close();return false;' "
+        f"style='background:#f3f4f6;color:#374151;text-decoration:none;"
+        f"padding:11px 20px;border-radius:8px;font-weight:600;"
+        f"font-size:14px;'>Cancel</a>"
+        f"</div>"
+        f"</form>"
+    )
+    return _page(
+        "Decline Review Invitation",
+        "warning",
+        f"Decline Review Invitation",
+        form_html,
+    )
+
 
 @router.get("/{token}/decline", response_class=HTMLResponse)
-def decline_membership(token: str, db: Session = Depends(get_db)):
+def decline_membership_form(token: str, db: Session = Depends(get_db)):
+    """Render the decline-reason capture form. Does NOT mark the
+    invitation declined — the reviewer must confirm via POST."""
     reviewer, err = _lookup_and_check(db, token, _REVIEWER_INVITE_DECLINE_TYPE)
     if err is not None:
         return err
-    already_accepted = reviewer.invitation_accepted_at is not None
-    if already_accepted:
+    if reviewer.invitation_accepted_at is not None:
         return _error_page(
             "You have already accepted this invitation. If you'd like to "
             "step down as a reviewer, please contact the editorial office.",
             status=409,
         )
-    decline_reviewer_invitation(db, reviewer)
+    if reviewer.invitation_declined_at is not None:
+        return _page(
+            "Already declined", "warning", "You have already declined this invitation",
+            "<p>Nothing more to do — the editorial team has been notified.</p>",
+        )
+    return _render_decline_form(token, reviewer)
+
+
+@router.post("/{token}/decline", response_class=HTMLResponse)
+def decline_membership_submit(
+    token: str,
+    reason_code: str = Form(...),
+    reason_notes: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    """Finalise the decline once the reviewer picks a reason."""
+    reviewer, err = _lookup_and_check(db, token, _REVIEWER_INVITE_DECLINE_TYPE)
+    if err is not None:
+        return err
+    if reviewer.invitation_accepted_at is not None:
+        return _error_page(
+            "You have already accepted this invitation. If you'd like to "
+            "step down as a reviewer, please contact the editorial office.",
+            status=409,
+        )
+    # Only accept a code we listed in the form — anything else falls
+    # into "other" so a tampered POST can't drop garbage into the audit.
+    valid_codes = {code for code, _ in _DECLINE_REASONS}
+    if reason_code not in valid_codes:
+        reason_code = "other"
+
+    decline_reviewer_invitation(
+        db,
+        reviewer,
+        reason_code=reason_code,
+        reason_notes=(reason_notes or "").strip() or None,
+    )
     return _page(
         "Invitation declined", "warning", "Thank you for letting us know",
         (
             "<p>We've noted your decision — the invitation has been retired "
             "and you will not receive review requests from us.</p>"
             "<p style='font-size:13px;color:#6b7280;margin-top:20px;'>"
-            "If this was a mistake, please contact the editorial office "
-            "and a fresh invitation can be sent."
+            "The editorial team has been notified and will identify a "
+            "replacement reviewer. If this was a mistake, please contact "
+            "the editorial office and a fresh invitation can be sent."
             "</p>"
         ),
     )

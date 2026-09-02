@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
 
@@ -8,6 +10,7 @@ from ..schemas.journal import (
     JournalCreate,
     JournalUpdate,
     Journal as JournalResponse,
+    JournalList,
 )
 from ..services.editor_auth import require_editor_mfa
 
@@ -28,6 +31,117 @@ def _require_identity_editor(user: User = Depends(require_editor_mfa)) -> User:
             detail="Only editors_in_chief and admins can edit journal identity",
         )
     return user
+
+
+# ── Multi-journal tenancy (JG-501) ──────────────────────
+# The masthead is one row, but the platform is designed to host multiple
+# journal tenants side-by-side. These endpoints power the editor
+# "Journals Admin" page: list every configured journal, mark one active
+# (mutex — the previous active row is cleared), and run a tiny agent
+# that flags identity gaps (missing ISSN, no publisher, etc.).
+
+@router.get("/", response_model=JournalList)
+def list_journals(db: Session = Depends(get_db)):
+    """Return every configured journal, oldest first."""
+    rows = db.query(Journal).order_by(Journal.id.asc()).all()
+    return {"journals": rows}
+
+
+@router.post("/{journal_id}/activate", response_model=JournalResponse)
+def activate_journal(
+    journal_id: int,
+    db: Session = Depends(get_db),
+    _user: User = Depends(_require_identity_editor),
+):
+    """Mark ``journal_id`` as the active tenant; clear every other row.
+
+    The masthead only ever renders one journal. To avoid a split-brain
+    where two rows both carry ``is_active=True``, we clear the flag on
+    all other rows in the same transaction.
+    """
+    target = db.query(Journal).filter(Journal.id == journal_id).first()
+    if target is None:
+        raise HTTPException(status_code=404, detail="Journal not found")
+
+    # Clear every other row's active flag before flipping this one on,
+    # so there is never a moment with two active rows.
+    db.query(Journal).filter(Journal.id != journal_id).update(
+        {Journal.is_active: False}, synchronize_session=False,
+    )
+    target.is_active = True
+    db.commit()
+    db.refresh(target)
+    return target
+
+
+@router.get("/agent/tenancy-health")
+def tenancy_health_agent(db: Session = Depends(get_db)):
+    """Multi-Journal Tenancy Health Agent — deterministic identity audit.
+
+    For each configured journal, checks the masthead-critical fields and
+    returns a per-journal readiness score plus tenancy-wide invariants
+    (exactly one active row, no duplicate ISSNs). No LLM — pure Python.
+    """
+    rows = db.query(Journal).order_by(Journal.id.asc()).all()
+
+    # Fields the masthead + DOI metadata + citation export all depend on.
+    required = [
+        ("title", "Title"),
+        ("issn_online", "ISSN (online)"),
+        ("publisher_name", "Publisher"),
+        ("abbreviation", "Abbreviation"),
+        ("subject_area", "Subject area"),
+        ("language", "Language"),
+        ("doi_prefix", "DOI prefix"),
+        ("email_editorial", "Editorial email"),
+    ]
+
+    per_journal = []
+    active_count = 0
+    seen_issn: dict[str, list[int]] = {}
+    for j in rows:
+        missing = [label for attr, label in required if not getattr(j, attr, None)]
+        completeness = round(100 * (len(required) - len(missing)) / len(required))
+        if j.is_active:
+            active_count += 1
+        if j.issn_online:
+            seen_issn.setdefault(j.issn_online.strip().upper(), []).append(j.id)
+        per_journal.append({
+            "id": j.id,
+            "title": j.title,
+            "is_active": bool(j.is_active),
+            "completeness": completeness,
+            "missing_fields": missing,
+        })
+
+    invariants: list[dict] = []
+    if not rows:
+        invariants.append({
+            "severity": "critical",
+            "message": "No journal records configured — masthead falls back to defaults.",
+        })
+    elif active_count == 0:
+        invariants.append({
+            "severity": "warning",
+            "message": "No journal is marked active. Public pages will use the oldest row as fallback.",
+        })
+    elif active_count > 1:
+        invariants.append({
+            "severity": "critical",
+            "message": f"{active_count} journals are marked active. Exactly one row must be active.",
+        })
+    for issn, ids in seen_issn.items():
+        if len(ids) > 1:
+            invariants.append({
+                "severity": "critical",
+                "message": f"Duplicate ISSN {issn} appears on journals {ids}. ISSNs must be unique.",
+            })
+
+    return {
+        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "invariants": invariants,
+        "journals": per_journal,
+    }
 
 
 # ── Current journal (masthead source of truth) ──────────

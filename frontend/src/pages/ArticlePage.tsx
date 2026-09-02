@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom';
 import Header from '../components/layout/Header';
 import Footer from '../components/layout/Footer';
 import SEO from '../components/common/SEO';
+import ArticleNoticesBanner from '../components/article/ArticleNoticesBanner';
 import {
     findArticleById,
     getRelatedArticles,
@@ -597,6 +598,15 @@ const ArticlePage: React.FC = () => {
                             <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-white/10 border border-white/20 rounded-full font-semibold">
                                 pp. {article.pages}
                             </span>
+                        </div>
+
+                        {/* Post-publication notices (spec §29, §30) — a
+                            retraction / correction / expression of concern
+                            must be shown prominently and never suppress
+                            the original article. Renders nothing when
+                            the article carries no notices. */}
+                        <div className="mt-6 max-w-4xl">
+                            <ArticleNoticesBanner articleId={Number(article.id)} />
                         </div>
 
                         {/* Title */}

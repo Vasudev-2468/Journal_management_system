@@ -615,6 +615,51 @@ def get_assignment(
                     "kind": f.kind,
                 })
 
+        # Fallback path — submissions that came in through the plain
+        # POST /submissions pipeline land their PDF on
+        # ``submission.pdf_url`` (and optionally ``redacted_pdf_url``)
+        # without producing a ManuscriptVersion row. Surface those as
+        # synthetic file entries so the reviewer workspace still sees
+        # the manuscript. The synthetic id is ``sub-<uuid>`` (or
+        # ``sub-<uuid>-redacted``) — the streaming endpoint parses it
+        # and reads from storage_service.
+        if not files:
+            redacted = getattr(submission, "redacted_pdf_url", None)
+            raw = getattr(submission, "pdf_url", None)
+            paper_id = getattr(submission, "paper_id_code", None) or str(submission.id)[:8]
+            for url_val, kind, id_suffix, filename_suffix in [
+                (redacted, "redacted",  "-redacted", "_anonymized"),
+                (raw,      "manuscript", "",         ""),
+            ]:
+                if not url_val:
+                    continue
+                # Best-effort size — a HEAD would be ideal but local
+                # files are cheap to size and remote just displays 0.
+                size_bytes = 0
+                try:
+                    from pathlib import Path
+                    if url_val.startswith("/uploads/"):
+                        p = Path("/app/uploads") / url_val[len("/uploads/"):]
+                        if p.exists():
+                            size_bytes = p.stat().st_size
+                        else:
+                            alt = Path("uploads") / url_val[len("/uploads/"):]
+                            if alt.exists():
+                                size_bytes = alt.stat().st_size
+                except Exception:  # noqa: BLE001
+                    pass
+                files.append({
+                    "id": f"sub-{submission.id}{id_suffix}",
+                    "filename": f"{paper_id}_manuscript{filename_suffix}.pdf",
+                    "size_bytes": size_bytes,
+                    "content_type": "application/pdf",
+                    "kind": kind,
+                })
+                # Show only ONE fallback — redacted wins over raw so a
+                # reviewer never sees author-identifying pages when a
+                # redacted copy exists.
+                break
+
     return AssignmentDetail(
         **summary.model_dump(),
         abstract=getattr(submission, "abstract", None) if submission else None,
@@ -886,6 +931,8 @@ def submit_review(
     # "🔔 New Reviewer Report" alert on the editor dashboard) plus
     # one email (deliberately carries NO reviewer prose per spec §6).
     _notify_editor_of_new_review(db, review)
+    # WS push so the reviewer's own bell updates without a page reload.
+    _push_reviewer_ws(reviewer.id, "review_submitted", {"review_id": str(review.id)})
 
     return SubmitResponse(
         ok=True,
@@ -923,6 +970,18 @@ def _load_json_dict(raw: Optional[str]) -> dict:
     except Exception:  # noqa: BLE001
         return {}
     return val if isinstance(val, dict) else {}
+
+
+def _push_reviewer_ws(reviewer_id, event: str, meta: dict | None = None) -> None:
+    """Fire a lightweight WS ping to the reviewer's bell topic."""
+    try:
+        from app.services import pubsub
+        pubsub.publish_threadsafe(
+            f"reviewer:{reviewer_id}",
+            {"event": event, "meta": meta or {}},
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _notify_editor_of_new_review(db: Session, review: Review) -> None:
@@ -1367,19 +1426,94 @@ def _reviewer_from_query_token(token: Optional[str], db: Session) -> Reviewer:
 
 @router.get("/files/{file_id}/pdf")
 def stream_manuscript_pdf(
-    file_id: int,
+    file_id: str,
     token: Optional[str] = Query(None, description="Reviewer session JWT (iframes cannot send Authorization headers)"),
     db: Session = Depends(get_db),
 ):
+    """Stream a manuscript PDF to the reviewer's inline viewer.
+
+    Accepts two ID shapes:
+
+    * ``<int>`` — a real ``ManuscriptFile.id`` (versioned uploads).
+      302-redirects the browser to the stored URL so the FastAPI
+      worker never proxies megabytes.
+
+    * ``sub-<submission_uuid>`` / ``sub-<submission_uuid>-redacted`` —
+      a synthetic id for submissions that landed the PDF on
+      ``submission.pdf_url`` directly (no ManuscriptVersion). The
+      endpoint reads the bytes via ``storage_service.download_bytes``
+      and streams them inline, since local paths can't be redirected
+      to and S3 URLs may not be publicly readable.
+    """
     reviewer = _reviewer_from_query_token(token, db)
-    f = db.query(ManuscriptFile).filter(ManuscriptFile.id == file_id).first()
+
+    # ── Synthetic ID path — submission-level PDF ─────────
+    if file_id.startswith("sub-"):
+        rest = file_id[len("sub-"):]
+        is_redacted = rest.endswith("-redacted")
+        if is_redacted:
+            rest = rest[: -len("-redacted")]
+        try:
+            submission_uuid = uuid.UUID(rest)
+        except (ValueError, AttributeError):
+            raise HTTPException(status_code=404, detail="File not found.")
+        # Ownership check — reviewer must have a Review against this
+        # submission. Same guarantee as the ManuscriptFile branch.
+        owned = (
+            db.query(Review)
+            .filter(
+                Review.reviewer_id == reviewer.id,
+                Review.submission_id == submission_uuid,
+            )
+            .first()
+        )
+        if owned is None:
+            raise HTTPException(status_code=403, detail="You are not assigned to this manuscript.")
+
+        submission = (
+            db.query(Submission).filter(Submission.id == submission_uuid).first()
+        )
+        if submission is None:
+            raise HTTPException(status_code=404, detail="Submission not found.")
+
+        url_val = (
+            getattr(submission, "redacted_pdf_url", None)
+            if is_redacted else None
+        ) or getattr(submission, "pdf_url", None)
+        if not url_val:
+            raise HTTPException(status_code=404, detail="No manuscript file on this submission.")
+
+        # Public HTTPS URL — hand the browser a redirect so we don't
+        # proxy. Local file → stream the bytes directly.
+        if url_val.startswith("http://") or url_val.startswith("https://"):
+            return RedirectResponse(url_val, status_code=302)
+        try:
+            from app.services.storage_service import download_bytes
+            data = download_bytes(url_val)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        from fastapi.responses import Response
+        paper_id = getattr(submission, "paper_id_code", None) or str(submission.id)[:8]
+        filename = (
+            f"{paper_id}_manuscript{'_anonymized' if is_redacted else ''}.pdf"
+        )
+        return Response(
+            content=data,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'inline; filename="{filename}"'},
+        )
+
+    # ── ManuscriptFile path — versioned uploads ─────────
+    try:
+        file_pk = int(file_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="File not found.")
+    f = db.query(ManuscriptFile).filter(ManuscriptFile.id == file_pk).first()
     if f is None:
         raise HTTPException(status_code=404, detail="File not found.")
     version = f.version
     if version is None:
         raise HTTPException(status_code=404, detail="File version missing.")
-    # Ownership check — the reviewer must have a live Review against
-    # the same submission the file belongs to.
     owned = (
         db.query(Review)
         .filter(
@@ -1392,10 +1526,42 @@ def stream_manuscript_pdf(
         raise HTTPException(status_code=403, detail="You are not assigned to this manuscript.")
     if not f.stored_url:
         raise HTTPException(status_code=404, detail="File has no storage URL.")
-    # ``stored_url`` is a presigned or public S3/R2 URL — 302 hands the
-    # browser the file directly so the FastAPI worker doesn't proxy
-    # megabytes of PDF traffic.
     return RedirectResponse(f.stored_url, status_code=302)
+
+
+# ── Annotation Assistant Agent endpoint ────────────────
+
+class AnnotationSuggestRequest(BaseModel):
+    selected_text: str
+
+
+class AnnotationSuggestResponse(BaseModel):
+    suggested_type: str
+    suggested_prompt: str
+    keyword_hits: List[str]
+
+
+@router.post(
+    "/assignments/{review_id}/annotation-assistant",
+    response_model=AnnotationSuggestResponse,
+)
+def annotation_assistant(
+    review_id: uuid.UUID,
+    body: AnnotationSuggestRequest,
+    db: Session = Depends(get_db),
+    reviewer: Reviewer = Depends(get_current_reviewer),
+):
+    """Classify a pasted PDF selection into major / minor / suggestion
+    and hand back a starter prompt the reviewer edits before saving."""
+    from app.agents.reviewer_agents import run_annotation_assistant
+
+    _load_review(db, review_id, reviewer)  # ownership check
+    result = run_annotation_assistant(selected_text=body.selected_text)
+    return AnnotationSuggestResponse(
+        suggested_type=result["suggested_type"],
+        suggested_prompt=result["suggested_prompt"],
+        keyword_hits=result["keyword_hits"],
+    )
 
 
 @router.get("/rubric", response_model=RubricResponse)

@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import ReviewerPortalLayout from '../../components/reviewer/ReviewerPortalLayout';
+import PdfViewerWithSelection from '../../components/reviewer/PdfViewerWithSelection';
 import Loading from '../../components/common/Loading';
 import {
     AssignmentDetail,
@@ -23,6 +24,7 @@ import {
     runQualityCheck,
     saveDraft,
     submitReview,
+    suggestAnnotation,
 } from '../../api/reviewerPortal';
 
 // Structured review form — spec §9-15.
@@ -218,31 +220,64 @@ const SuggestionsList: React.FC<{
 
 // Page/line-anchored PDF comment list.
 const AnnotationList: React.FC<{
+    reviewId: string;
     values: PageAnnotation[];
     onChange: (v: PageAnnotation[]) => void;
-}> = ({ values, onChange }) => {
+}> = ({ reviewId, values, onChange }) => {
     const add = () =>
         onChange([...values, { page: 1, lines: '', type: 'suggestion', text: '' }]);
     const patch = (idx: number, delta: Partial<PageAnnotation>) => {
         const next = values.map((a, i) => (i === idx ? { ...a, ...delta } : a));
         onChange(next);
     };
+    // Annotation Assistant Agent — reviewer pastes a PDF selection,
+    // agent suggests type + starter prompt. The starter text always
+    // appears in the annotation textarea so the reviewer can edit it
+    // before saving.
+    const [pasteBusy, setPasteBusy] = useState(false);
+    const pasteFromPdf = async () => {
+        setPasteBusy(true);
+        try {
+            const text = await navigator.clipboard.readText();
+            if (!text || !text.trim()) return;
+            const res = await suggestAnnotation(reviewId, text);
+            onChange([...values, {
+                page: 1,
+                lines: '',
+                type: (res.suggested_type as PageAnnotation['type']),
+                text: res.suggested_prompt || text.trim(),
+            }]);
+        } catch (err: any) {
+            alert(err?.message || 'Could not read from clipboard.');
+        } finally {
+            setPasteBusy(false);
+        }
+    };
     return (
         <div className="bg-white rounded-xl border border-gray-200 p-5 mb-4">
-            <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
                 <h2 className="text-sm font-bold text-gray-900 uppercase tracking-wider">
                     Page-Anchored Comments
                 </h2>
-                <button
-                    type="button" onClick={add}
-                    className="text-xs font-semibold text-blue-700 hover:underline"
-                >
-                    + Anchor a comment to a page
-                </button>
+                <div className="flex gap-2">
+                    <button
+                        type="button" onClick={pasteFromPdf} disabled={pasteBusy}
+                        className="text-xs font-semibold text-blue-700 hover:underline disabled:opacity-50"
+                        title="Copy text from the PDF viewer, then click this — the Annotation Assistant Agent classifies the paste and drafts a starter comment."
+                    >
+                        {pasteBusy ? 'Reading clipboard…' : '📋 Paste from PDF (assistant)'}
+                    </button>
+                    <button
+                        type="button" onClick={add}
+                        className="text-xs font-semibold text-blue-700 hover:underline"
+                    >
+                        + Anchor a comment to a page
+                    </button>
+                </div>
             </div>
             <p className="text-xs text-gray-500 mb-3">
                 Point to a specific page + line range while you read the PDF —
-                the editor sees exactly where each issue occurs.
+                the editor sees exactly where each issue occurs. Or copy text from the PDF viewer and click <em>Paste from PDF</em> to let the assistant classify it and pre-fill a comment for you to edit.
             </p>
             {values.length === 0 ? (
                 <p className="text-xs text-gray-400">No page-anchored comments yet.</p>
@@ -315,7 +350,10 @@ const buildPdfUrl = (fileId: string): string => {
     return `${base.replace(/\/$/, '')}/reviewer-portal/files/${fileId}/pdf?token=${encodeURIComponent(token)}`;
 };
 
-const PdfPanel: React.FC<{ assignment: AssignmentDetail | null }> = ({ assignment }) => {
+const PdfPanel: React.FC<{
+    assignment: AssignmentDetail | null;
+    onSelectedText?: (t: string) => void;
+}> = ({ assignment, onSelectedText }) => {
     const pdf = assignment?.files.find(
         (f) => (f.content_type || '').toLowerCase().includes('pdf'),
     );
@@ -328,15 +366,7 @@ const PdfPanel: React.FC<{ assignment: AssignmentDetail | null }> = ({ assignmen
     }
     const url = buildPdfUrl(pdf.id);
     return (
-        <div className="bg-white rounded-xl border border-gray-200 sticky top-24 h-[calc(100vh-140px)] overflow-hidden flex flex-col">
-            <div className="px-3 py-2 border-b border-gray-100 flex items-center justify-between text-xs">
-                <span className="font-medium text-gray-700 truncate">{pdf.filename}</span>
-                <a href={url} className="text-blue-700 hover:underline" target="_blank" rel="noreferrer">
-                    Open ↗
-                </a>
-            </div>
-            <iframe src={url} title={pdf.filename} className="flex-1 w-full" />
-        </div>
+        <PdfViewerWithSelection pdfUrl={url} onSelectedText={onSelectedText} />
     );
 };
 
@@ -364,61 +394,147 @@ const RubricRow: React.FC<{
     </div>
 );
 
-const AssistantPanel: React.FC<{ hints: AssistantHint[]; busy: boolean }> = ({ hints, busy }) => (
-    <div className="bg-white rounded-xl border border-gray-200 p-4 sticky top-24">
-        <div className="flex items-center justify-between mb-2">
-            <h3 className="text-sm font-semibold text-gray-900">Review Assistant</h3>
-            <span className="text-[10px] font-bold uppercase tracking-wider text-blue-700 bg-blue-100 rounded px-1.5 py-0.5">
-                Agent
-            </span>
-        </div>
-        <p className="text-[11px] text-gray-500 mb-3">
-            Hints only. Your judgement stays yours.
-        </p>
-        {busy ? (
-            <p className="text-xs text-gray-400 animate-pulse">Analyzing your draft…</p>
-        ) : hints.length === 0 ? (
-            <p className="text-xs text-emerald-700">Looks good so far — nothing to flag.</p>
-        ) : (
-            <ul className="space-y-2">
-                {hints.map((h) => (
-                    <li
-                        key={h.code}
-                        className={
-                            'text-xs rounded-lg p-2 border ' +
-                            (h.severity === 'warning'
-                                ? 'bg-amber-50 border-amber-200 text-amber-900'
-                                : 'bg-blue-50 border-blue-200 text-blue-900')
-                        }
-                    >
-                        <span className="font-semibold uppercase tracking-wide text-[10px] block mb-0.5">
-                            {h.severity === 'warning' ? 'Consider' : 'Tip'}
+// Assistant panel — collapsible, tucked into the form column so it
+// never squeezes the PDF/form workspace. Reviewers see hints when
+// they choose to look, and the panel stays out of the way otherwise.
+const AssistantPanel: React.FC<{
+    hints: AssistantHint[];
+    busy: boolean;
+    open: boolean;
+    onToggle: () => void;
+}> = ({ hints, busy, open, onToggle }) => {
+    const critical = hints.filter((h) => h.severity === 'warning').length;
+    return (
+        <div className="bg-white rounded-xl border border-gray-200">
+            <button
+                type="button"
+                onClick={onToggle}
+                className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-gray-50 rounded-xl"
+            >
+                <div className="flex items-center gap-2">
+                    <span className="text-sm font-semibold text-gray-900">🤖 Review Assistant</span>
+                    {critical > 0 && (
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-900">
+                            {critical} to consider
                         </span>
-                        {h.message}
-                    </li>
-                ))}
-            </ul>
-        )}
-    </div>
-);
+                    )}
+                    {!busy && critical === 0 && hints.length === 0 && (
+                        <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700">
+                            all clear
+                        </span>
+                    )}
+                </div>
+                <span className="text-xs text-gray-400">{open ? 'Hide' : 'Show'}</span>
+            </button>
+            {open && (
+                <div className="px-4 pb-4">
+                    <p className="text-[11px] text-gray-500 mb-3">
+                        Hints only. Your judgement stays yours.
+                    </p>
+                    {busy ? (
+                        <p className="text-xs text-gray-400 animate-pulse">Analyzing your draft…</p>
+                    ) : hints.length === 0 ? (
+                        <p className="text-xs text-emerald-700">Nothing to flag right now.</p>
+                    ) : (
+                        <ul className="space-y-2">
+                            {hints.map((h) => (
+                                <li
+                                    key={h.code}
+                                    className={
+                                        'text-xs rounded-lg p-2.5 border ' +
+                                        (h.severity === 'warning'
+                                            ? 'bg-amber-50 border-amber-200 text-amber-900'
+                                            : 'bg-blue-50 border-blue-200 text-blue-900')
+                                    }
+                                >
+                                    <span className="font-semibold uppercase tracking-wide text-[10px] block mb-0.5">
+                                        {h.severity === 'warning' ? 'Consider' : 'Tip'}
+                                    </span>
+                                    {h.message}
+                                </li>
+                            ))}
+                        </ul>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+};
 
-const QualityChecklist: React.FC<{ report: QualityCheckResponse | null }> = ({ report }) => {
+// Compact validation summary — one line beside the Submit button.
+// The full list opens in a popover only if the reviewer clicks it,
+// so the reviewer sees a calm progress signal instead of a wall of
+// "Answer required" bullets.
+const ValidationSummary: React.FC<{
+    report: QualityCheckResponse | null;
+    onOpen: () => void;
+}> = ({ report, onOpen }) => {
+    if (!report) return (
+        <span className="text-xs text-gray-400">Checking…</span>
+    );
+    if (report.ok && report.warnings.length === 0) return (
+        <span className="text-xs font-medium text-emerald-700">✓ Ready to submit</span>
+    );
+    const blockers = report.blockers.length;
+    const warnings = report.warnings.length;
+    return (
+        <button
+            type="button"
+            onClick={onOpen}
+            className={
+                'text-xs font-medium underline underline-offset-2 ' +
+                (blockers > 0 ? 'text-rose-700' : 'text-amber-800')
+            }
+        >
+            {blockers > 0
+                ? `${blockers} to fix before submit`
+                : `${warnings} suggestion${warnings === 1 ? '' : 's'}`}
+        </button>
+    );
+};
+
+// Full validation panel — shown when the reviewer expands it or
+// hits Submit with blockers. Kept out of the top of the form.
+const ValidationPanel: React.FC<{
+    report: QualityCheckResponse | null;
+    onClose: () => void;
+}> = ({ report, onClose }) => {
     if (!report) return null;
     if (report.ok && report.warnings.length === 0) return null;
     return (
-        <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 mb-3 text-xs text-amber-900">
-            <div className="font-semibold uppercase tracking-wider text-[11px] mb-1 flex items-center gap-2">
-                Review Validation <span className="text-[10px] bg-amber-200 rounded px-1.5 py-0.5">Agent</span>
+        <div className="rounded-xl border border-amber-200 bg-amber-50/70 p-4 mb-4">
+            <div className="flex items-center justify-between mb-2">
+                <div className="font-semibold uppercase tracking-wider text-[11px] text-amber-900 flex items-center gap-2">
+                    Review Validation <span className="text-[10px] bg-amber-200 rounded px-1.5 py-0.5">Agent</span>
+                </div>
+                <button
+                    type="button"
+                    onClick={onClose}
+                    className="text-xs text-amber-800 hover:text-amber-900"
+                    aria-label="Hide validation panel"
+                >
+                    ✕
+                </button>
             </div>
             {report.blockers.length > 0 && (
-                <ul className="list-disc pl-4 mb-1">
-                    {report.blockers.map((b, i) => <li key={`b${i}`}>{b}</li>)}
-                </ul>
+                <>
+                    <p className="text-[11px] font-semibold uppercase tracking-wider text-rose-900 mb-1">
+                        Blockers ({report.blockers.length})
+                    </p>
+                    <ul className="list-disc pl-4 mb-2 text-xs text-rose-900">
+                        {report.blockers.map((b, i) => <li key={`b${i}`}>{b}</li>)}
+                    </ul>
+                </>
             )}
             {report.warnings.length > 0 && (
-                <ul className="list-disc pl-4 text-amber-800">
-                    {report.warnings.map((w, i) => <li key={`w${i}`}>{w}</li>)}
-                </ul>
+                <>
+                    <p className="text-[11px] font-semibold uppercase tracking-wider text-amber-800 mb-1">
+                        Suggestions ({report.warnings.length})
+                    </p>
+                    <ul className="list-disc pl-4 text-xs text-amber-800">
+                        {report.warnings.map((w, i) => <li key={`w${i}`}>{w}</li>)}
+                    </ul>
+                </>
             )}
         </div>
     );
@@ -445,6 +561,8 @@ export default function ReviewFormPage() {
     const [hints, setHints] = useState<AssistantHint[]>([]);
     const [assistantBusy, setAssistantBusy] = useState(false);
     const [quality, setQuality] = useState<QualityCheckResponse | null>(null);
+    const [assistantOpen, setAssistantOpen] = useState(false);
+    const [validationOpen, setValidationOpen] = useState(false);
 
     const draftRef = useRef(draft);
     const dirtyRef = useRef(false);
@@ -591,6 +709,21 @@ export default function ReviewFormPage() {
         }
     };
 
+    // ── rubric progress ──
+    // Reviewers get anxious about validation walls. A single "X of N
+    // answered" bar frames the same info as a calm progress signal.
+    const rubricProgress = useMemo(() => {
+        if (!rubric) return { answered: 0, total: 0, pct: 0 };
+        const total = rubric.questions.length;
+        const answered = rubric.questions.filter(
+            (q) => (draft.rubric_answers[q.key] || '').length > 0,
+        ).length;
+        return {
+            answered, total,
+            pct: total === 0 ? 100 : Math.round((answered / total) * 100),
+        };
+    }, [rubric, draft.rubric_answers]);
+
     // ── grouped rubric ──
     const sections = useMemo(() => {
         if (!rubric) return [] as Array<{ title: string; qs: RubricQuestion[] }>;
@@ -677,25 +810,143 @@ export default function ReviewFormPage() {
                     </div>
                 </div>
             ) : (
-                <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_280px] lg:grid-cols-[minmax(0,1fr)_280px] gap-6">
-                    <div className="min-w-0">
-                        {/* Header */}
-                        <div className="mb-4">
-                            <Link to={`/reviewer/assignment/${assignment.review_id}`} className="text-sm text-gray-500 hover:text-blue-700">
-                                ← Back to assignment
+                <div className="-mx-4 sm:-mx-6 lg:-mx-8">
+                    {/* ─── Sticky top bar — one row, everything the reviewer needs ─── */}
+                    <div className="sticky top-0 z-30 bg-white border-b border-gray-200 shadow-sm">
+                        <div className="px-4 sm:px-6 lg:px-8 py-3 flex items-center gap-4 flex-wrap">
+                            <Link
+                                to={`/reviewer/assignment/${assignment.review_id}`}
+                                className="text-xs text-gray-500 hover:text-blue-700 whitespace-nowrap"
+                            >
+                                ← Back
                             </Link>
-                        </div>
-                        <div className="bg-white rounded-xl border border-gray-200 p-5 mb-4">
-                            <div className="text-xs uppercase tracking-wider text-gray-400 font-semibold">
-                                Review Workspace
+                            <div className="min-w-0 flex-1">
+                                <h1 className="text-sm font-bold text-gray-900 truncate">
+                                    {assignment.paper_title}
+                                </h1>
+                                <p className="text-[11px] text-gray-500 font-mono truncate">
+                                    {assignment.manuscript_id} · Due {humanTime(assignment.deadline)}
+                                </p>
                             </div>
-                            <h1 className="text-xl font-bold text-gray-900 mt-1">{assignment.paper_title}</h1>
-                            <div className="mt-1 font-mono text-xs text-gray-500">
-                                {assignment.manuscript_id} · deadline {humanTime(assignment.deadline)}
+                            <div className="hidden md:flex items-center gap-2 text-[11px] text-gray-500">
+                                <span className="inline-flex items-center gap-1">
+                                    <span
+                                        className={
+                                            'inline-block h-1.5 w-1.5 rounded-full ' +
+                                            (dirtyRef.current ? 'bg-amber-400' : 'bg-emerald-500')
+                                        }
+                                    />
+                                    {savedAt ? `Saved ${humanTime(savedAt)}` : 'Not saved yet'}
+                                </span>
+                            </div>
+                            <ValidationSummary
+                                report={quality}
+                                onOpen={() => setValidationOpen((v) => !v)}
+                            />
+                            <button
+                                type="button"
+                                onClick={manualSave}
+                                className="px-3 py-1.5 rounded-lg text-xs font-semibold text-gray-700 border border-gray-300 hover:bg-gray-50"
+                            >
+                                Save
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handlePreview}
+                                disabled={previewBusy}
+                                className="px-3 py-1.5 rounded-lg text-xs font-semibold text-blue-700 border border-blue-300 bg-blue-50 hover:bg-blue-100 disabled:opacity-50"
+                            >
+                                {previewBusy ? 'Preview…' : 'Preview'}
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setShowConfirm(true)}
+                                disabled={!!quality && !quality.ok}
+                                className="px-4 py-1.5 rounded-lg text-xs font-bold text-white bg-blue-700 hover:bg-blue-800 disabled:bg-gray-300 disabled:cursor-not-allowed"
+                                title={quality && !quality.ok ? 'Fix the blockers listed above first.' : ''}
+                            >
+                                Submit Review
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* ─── Two-column workspace: PDF sticky left, form scrolls right ─── */}
+                    <div className="px-4 sm:px-6 lg:px-8 pt-4 grid grid-cols-1 lg:grid-cols-[minmax(0,55%)_minmax(0,45%)] gap-6">
+
+                        {/* ── PDF (sticky) ── */}
+                        <div className="hidden lg:block">
+                            <div className="sticky top-16">
+                                <PdfPanel
+                                    assignment={assignment}
+                                    onSelectedText={async (selected) => {
+                                        try {
+                                            const res = await suggestAnnotation(reviewId, selected);
+                                            dirtyRef.current = true;
+                                            setDraft((prev) => ({
+                                                ...prev,
+                                                page_annotations: [
+                                                    ...prev.page_annotations,
+                                                    {
+                                                        page: 1,
+                                                        lines: '',
+                                                        type: (res.suggested_type as any),
+                                                        text: res.suggested_prompt || selected.trim(),
+                                                    },
+                                                ],
+                                            }));
+                                        } catch (err: any) {
+                                            alert(err?.response?.data?.detail || 'Could not add annotation.');
+                                        }
+                                    }}
+                                />
                             </div>
                         </div>
 
-                        <QualityChecklist report={quality} />
+                        {/* ── Form column ── */}
+                        <div className="min-w-0 pb-8">
+
+                            {/* Rubric progress meter — calm, not shouty. */}
+                            <div className="bg-white rounded-xl border border-gray-200 p-4 mb-4">
+                                <div className="flex items-center justify-between mb-2">
+                                    <span className="text-xs font-semibold text-gray-700 uppercase tracking-wider">
+                                        Rubric Progress
+                                    </span>
+                                    <span className="text-xs font-mono text-gray-500">
+                                        {rubricProgress.answered} / {rubricProgress.total} answered
+                                    </span>
+                                </div>
+                                <div className="h-2 w-full rounded-full bg-gray-100 overflow-hidden">
+                                    <div
+                                        className={
+                                            'h-full transition-all duration-300 ' +
+                                            (rubricProgress.pct === 100
+                                                ? 'bg-emerald-500'
+                                                : rubricProgress.pct > 50
+                                                ? 'bg-blue-500'
+                                                : 'bg-amber-400')
+                                        }
+                                        style={{ width: `${rubricProgress.pct}%` }}
+                                    />
+                                </div>
+                            </div>
+
+                            {/* Validation panel — collapsed unless the reviewer opens it. */}
+                            {validationOpen && (
+                                <ValidationPanel
+                                    report={quality}
+                                    onClose={() => setValidationOpen(false)}
+                                />
+                            )}
+
+                            {/* Assistant — collapsible, sits inside the form column. */}
+                            <div className="mb-4">
+                                <AssistantPanel
+                                    hints={hints}
+                                    busy={assistantBusy}
+                                    open={assistantOpen}
+                                    onToggle={() => setAssistantOpen((v) => !v)}
+                                />
+                            </div>
 
                         {/* Overall assessment (spec §2A) */}
                         <div className="bg-white rounded-xl border border-gray-200 p-5 mb-4">
@@ -807,6 +1058,7 @@ export default function ReviewFormPage() {
 
                         {/* Page-anchored comments */}
                         <AnnotationList
+                            reviewId={reviewId}
                             values={draft.page_annotations}
                             onChange={(v) => {
                                 dirtyRef.current = true;
@@ -891,39 +1143,36 @@ export default function ReviewFormPage() {
                             </label>
                         </div>
 
-                        {/* Actions */}
-                        <div className="bg-white rounded-xl border border-gray-200 p-5 flex flex-wrap gap-2 items-center">
-                            <button
-                                type="button" onClick={manualSave}
-                                className="px-4 py-2 rounded-lg text-sm font-semibold text-gray-700 border border-gray-300 hover:bg-gray-50"
-                            >
-                                Save Draft
-                            </button>
-                            <button
-                                type="button" onClick={handlePreview} disabled={previewBusy}
-                                className="px-4 py-2 rounded-lg text-sm font-semibold text-blue-700 border border-blue-300 bg-blue-50 hover:bg-blue-100 disabled:opacity-50"
-                            >
-                                {previewBusy ? 'Loading preview…' : 'Preview Review'}
-                            </button>
-                            <button
-                                type="button" onClick={() => setShowConfirm(true)}
-                                disabled={!!quality && !quality.ok}
-                                className="px-4 py-2 rounded-lg text-sm font-semibold text-white bg-blue-700 hover:bg-blue-800 disabled:bg-gray-300 disabled:cursor-not-allowed"
-                                title={quality && !quality.ok ? 'Fix the blockers listed above first.' : ''}
-                            >
-                                Submit Review
-                            </button>
-                            <span className="text-xs text-gray-500 ml-auto">
-                                Last saved: <strong>{humanTime(savedAt)}</strong>
-                            </span>
+                            {/* Bottom action bar — sticky-top has the primary buttons, this is a mirror for reach on long pages. */}
+                            <div className="bg-white rounded-xl border border-gray-200 p-4 flex flex-wrap gap-2 items-center mt-4">
+                                <span className="text-xs text-gray-500">
+                                    Autosaves every 12 seconds while you type.
+                                </span>
+                                <div className="ml-auto flex items-center gap-2">
+                                    <button
+                                        type="button" onClick={manualSave}
+                                        className="px-4 py-2 rounded-lg text-sm font-semibold text-gray-700 border border-gray-300 hover:bg-gray-50"
+                                    >
+                                        Save Draft
+                                    </button>
+                                    <button
+                                        type="button" onClick={handlePreview} disabled={previewBusy}
+                                        className="px-4 py-2 rounded-lg text-sm font-semibold text-blue-700 border border-blue-300 bg-blue-50 hover:bg-blue-100 disabled:opacity-50"
+                                    >
+                                        {previewBusy ? 'Loading preview…' : 'Preview Review'}
+                                    </button>
+                                    <button
+                                        type="button" onClick={() => setShowConfirm(true)}
+                                        disabled={!!quality && !quality.ok}
+                                        className="px-4 py-2 rounded-lg text-sm font-semibold text-white bg-blue-700 hover:bg-blue-800 disabled:bg-gray-300 disabled:cursor-not-allowed"
+                                        title={quality && !quality.ok ? 'Fix the blockers listed above first.' : ''}
+                                    >
+                                        Submit Review
+                                    </button>
+                                </div>
+                            </div>
                         </div>
                     </div>
-                    {/* Middle column: PDF panel — visible only on xl. On lg
-                        it drops out to keep the form + assistant readable. */}
-                    <div className="hidden xl:block min-w-0">
-                        <PdfPanel assignment={assignment} />
-                    </div>
-                    <AssistantPanel hints={hints} busy={assistantBusy} />
 
                     {/* Preview Review modal */}
                     {showPreview && preview && (

@@ -276,23 +276,11 @@ def author_verify_otp(
     authorization: Optional[str] = Header(None, alias="Authorization"),
     db: Session = Depends(get_db),
 ):
-    user, payload = _require_pre_auth_or_session(authorization, db)
-    totp_ok = bool(payload.get("totp_ok"))
+    user, _payload = _require_pre_auth_or_session(authorization, db)
 
-    # This endpoint only handles email OTP verification now. TOTP is the
-    # second and final factor and lives on /verify-totp. WhatsApp OTP was
-    # removed as a required step — a stored ``whatsapp_number`` no longer
-    # forces an extra factor at sign-in.
-    if user.mfa_email_verified_at is None:
-        channel = "email"
-    elif not totp_ok:
-        raise HTTPException(
-            status_code=409,
-            detail="Authenticator code required. Call /author-auth/verify-totp.",
-        )
-    else:
-        return _finish_mfa(user, db, totp_ok=totp_ok)
-
+    # Author MFA is now a single factor: email OTP. The authenticator
+    # step was removed on request — TOTP verification lives only in
+    # editor auth. Whatsapp OTP was retired earlier for the same reason.
     result = verify_otp(db, user, body.otp)
     if not result.get("success"):
         status_code = 423 if result.get("locked") else 400
@@ -301,21 +289,12 @@ def author_verify_otp(
     user.mfa_email_verified_at = datetime.utcnow()
     db.commit()
 
-    # After email OTP, TOTP is required (enrolment or verify).
-    if not totp_service.is_enrolled(user):
-        secret = totp_service.start_enrolment(db, user)
-        uri = totp_service.provisioning_uri(secret, user.email)
-        return VerifyOtpResponse(
-            stage="totp_enrolment_needed",
-            email_verified=True,
-            totp_secret=secret,
-            totp_otpauth_uri=uri,
-            totp_qr_data_uri=totp_service.qr_code_data_uri(uri),
-        )
-    return VerifyOtpResponse(
-        stage="totp_needed",
-        email_verified=True,
-    )
+    # ``totp_ok=True`` here is a compat lie for the shared _finish_mfa
+    # helper. The helper's ``totp_ok`` gate exists to defend against a
+    # rogue caller skipping TOTP; with the step removed the gate is
+    # dead code that we still route through so session minting stays
+    # centralised.
+    return _finish_mfa(user, db, totp_ok=True)
 
 
 @router.post("/verify-totp", response_model=VerifyOtpResponse)

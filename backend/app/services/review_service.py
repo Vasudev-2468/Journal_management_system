@@ -173,8 +173,22 @@ def record_decision(
         "revision_requested": SubmissionStatus.revision_requested,
         "minor_revision": SubmissionStatus.revision_requested,
         "major_revision": SubmissionStatus.revision_requested,
+        # Reject and Resubmit — its own SubmissionStatus so the author
+        # dashboard can render an "Invitation to resubmit" state
+        # distinct from a plain rejection.
+        "reject_and_resubmit": SubmissionStatus.reject_and_resubmit,
     }
-    submission.status = status_map[decision]
+    # Editorial decision path — routes through the strict state machine
+    # so ``rejected → accepted`` and other illegal edges hard-fail here.
+    # This is the load-bearing enforcement point spec §14 called out.
+    # The caller (routers/reviews.py) can wrap this call in a try/except
+    # IllegalTransitionError to surface a 409 with a helpful message.
+    from app.services.state_machine import transition
+    transition(
+        db, submission, status_map[decision],
+        actor=None,
+        reason=f"Editorial decision: {decision}",
+    )
 
     # JG — when an editor lands the `accepted` decision, kick off the
     # post-acceptance production pipeline so authors don't have to wait for

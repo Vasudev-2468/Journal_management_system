@@ -12,8 +12,10 @@ import {
   triggerAgentPipeline,
   editorAssignReviewers,
   fetchAnalyticsOverview,
+  fetchEditorialAnalytics,
   fetchNotificationLog,
   fetchReviewers,
+  fetchUnderReviewManuscripts,
   inviteReviewer,
   getReviewerInvitationLink,
   resendReviewerInvitation,
@@ -25,6 +27,7 @@ import {
   bulkUpdateSubmissions,
 } from '../api/editor';
 import { useJournal } from '../context/JournalContext';
+import { usePermissions } from '../context/PermissionsContext';
 import NotificationBell from '../components/editor/NotificationBell';
 import PageActionBar from '../components/common/PageActionBar';
 
@@ -156,24 +159,46 @@ const SkeletonRows = ({ rows = 5 }) => (
 const SIDEBAR_ITEMS = [
   { key: 'overview', label: 'Overview', icon: '📊' },
   { key: 'pending', label: 'Pending Actions', icon: '⏳', badge: true, countKey: 'pending_actions' },
+  { key: 'new_submissions', label: 'New Submissions', icon: '🆕' },
+  { key: 'under_review', label: 'Under Review', icon: '🔍' },
+  { key: 'revision_required', label: 'Revision Required', icon: '📝' },
+  { key: 'accepted', label: 'Accepted', icon: '✅' },
+  { key: 'rejected', label: 'Rejected', icon: '🔴' },
   { key: 'submissions', label: 'All Submissions', icon: '📄' },
   { key: 'reviewers', label: 'Reviewers', icon: '👥' },
   { key: 'notifications', label: 'Notifications Log', icon: '🔔', countKey: 'notifications_unread' },
   { key: 'analytics', label: 'Analytics', icon: '📈' },
 ];
 
+// Sub-tab status filters — maps sidebar keys to the API `status` param.
+const MANUSCRIPT_TAB_FILTERS = {
+  new_submissions:   ['pending_classification', 'awaiting_format_check', 'awaiting_consult_review', 'awaiting_reviewer_suggestions', 'pending_assignment'],
+  under_review:      ['under_review'],
+  revision_required: ['revision_requested', 'returned_to_author'],
+  accepted:          ['accepted'],
+  rejected:          ['rejected', 'reject_and_resubmit'],
+};
+
+// ``permission`` — RBAC action required to see this entry. When set,
+// EditorDashboard filters the entry out for editors who don't carry
+// the action. Server-side ``require_permission`` gates on those routes
+// stay the actual security boundary; hiding here just keeps the UI
+// honest.
 const SIDEBAR_LINKS = [
-  { to: '/editor/production', label: 'Production Queue', icon: '⚙️', countKey: 'production_queue' },
-  { to: '/editor/issues', label: 'Volumes & Issues', icon: '📚' },
-  { to: '/editor/special-issues', label: 'Special Issues', icon: '✨' },
-  { to: '/editor/editorial-board', label: 'Editorial Board', icon: '🧑‍🎓' },
-  { to: '/editor/announcements', label: 'Announcements', icon: '📣' },
-  { to: '/editor/policies', label: 'Policy Pages', icon: '📜' },
+  { to: '/editor/production', label: 'Production Queue', icon: '⚙️', countKey: 'production_queue', permission: 'PUBLISH' },
+  { to: '/editor/issues', label: 'Volumes & Issues', icon: '📚', permission: 'CONFIGURE_JOURNAL' },
+  { to: '/editor/special-issues', label: 'Special Issues', icon: '✨', permission: 'CONFIGURE_JOURNAL' },
+  { to: '/editor/journal-identifiers', label: 'Journal Identifiers', icon: '🆔', permission: 'CONFIGURE_JOURNAL' },
+  { to: '/editor/recovery-codes', label: 'Recovery Codes', icon: '🔑' },
+  { to: '/editor/journals-admin', label: 'Journals Admin', icon: '📰' },
+  { to: '/editor/editorial-board', label: 'Editorial Board', icon: '🧑‍🎓', permission: 'CONFIGURE_JOURNAL' },
+  { to: '/editor/announcements', label: 'Announcements', icon: '📣', permission: 'CONFIGURE_JOURNAL' },
+  { to: '/editor/policies', label: 'Policy Pages', icon: '📜', permission: 'CONFIGURE_JOURNAL' },
   { to: '/editor/contact-inbox', label: 'Contact Inbox', icon: '📬', countKey: 'contact_inbox_unread' },
-  { to: '/editor/journal-identity', label: 'Journal Identity', icon: '🏛️' },
-  { to: '/editor/email-templates', label: 'Email Templates', icon: '✉️' },
-  { to: '/editor/users', label: 'User Management', icon: '👤' },
-  { to: '/editor/audit-log', label: 'Audit Log', icon: '📋' },
+  { to: '/editor/journal-identity', label: 'Journal Identity', icon: '🏛️', permission: 'CONFIGURE_JOURNAL' },
+  { to: '/editor/email-templates', label: 'Email Templates', icon: '✉️', permission: 'CONFIGURE_JOURNAL' },
+  { to: '/editor/users', label: 'User Management', icon: '👤', permission: 'MANAGE_USERS' },
+  { to: '/editor/audit-log', label: 'Audit Log', icon: '📋', permission: 'VIEW_AUDIT' },
 ];
 
 // Small red-circle counter used next to any sidebar entry with a matching
@@ -188,6 +213,11 @@ const CountBadge = ({ count }) => {
 };
 
 export default function EditorDashboard() {
+  // RBAC snapshot — used to hide sidebar entries the caller has no
+  // permission to open. The server-side ``require_permission`` gate
+  // on the individual routes is the real enforcement; this just
+  // keeps the nav honest.
+  const permissionsCtx = usePermissions();
   const [activePanel, setActivePanel] = useState('overview');
   const [submissions, setSubmissions] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -312,7 +342,9 @@ export default function EditorDashboard() {
             <p className="px-3 pb-2 text-[10px] font-bold uppercase tracking-wider text-gray-400">
               Journal admin
             </p>
-            {SIDEBAR_LINKS.map((item) => (
+            {SIDEBAR_LINKS
+              .filter((item) => !item.permission || permissionsCtx.has(item.permission))
+              .map((item) => (
               <Link
                 key={item.to}
                 to={item.to}
@@ -356,6 +388,14 @@ export default function EditorDashboard() {
             />
           )}
           {activePanel === 'reviewers' && <ReviewersPanel />}
+          {activePanel === 'under_review' && <UnderReviewPanel />}
+          {['new_submissions', 'revision_required', 'accepted', 'rejected'].includes(activePanel) && (
+            <SubStatusPanel
+              filterKey={activePanel}
+              statuses={MANUSCRIPT_TAB_FILTERS[activePanel] || []}
+              onOpenDrawer={setDrawerSubmission}
+            />
+          )}
           {activePanel === 'notifications' && <NotificationsLogPanel />}
           {activePanel === 'analytics' && <AnalyticsPanel />}
         </div>
@@ -439,9 +479,12 @@ function OverviewPanel({
           )}
         </div>
 
-        {/* Activity feed — 1 col */}
+        {/* What's Happening — friendly editorial event feed */}
         <div>
-          <h3 className="text-lg font-semibold text-gray-800 mb-4">Recent Activity</h3>
+          <div className="flex items-baseline justify-between mb-4">
+            <h3 className="text-lg font-semibold text-gray-800">What's Happening</h3>
+            <span className="text-xs text-gray-400">Editorial activity — last few days</span>
+          </div>
           <ActivityFeed />
         </div>
       </div>
@@ -572,6 +615,45 @@ function PendingActionCard({ submission, onRefresh }) {
 
 /* ── Activity Feed ───────────────────────────────────────── */
 
+// Internal/security events that clutter the editor's editorial view.
+// These are still readable in Notifications Log — they're only hidden
+// from the "What's Happening" glance card.
+const ACTIVITY_HIDDEN_EVENTS = new Set([
+  'editor_mfa_otp_email',
+  'author_mfa_otp_email',
+  'reviewer_mfa_otp_email',
+  'password_reset_request',
+  'editor_recovery_fallback',
+]);
+
+// Only these events actually mean something happened in the editorial
+// workflow. Anything else falls through to `describeEvent()`'s
+// prettified fallback, which is still readable.
+const ACTIVITY_KEEP_EVENTS = new Set([
+  'reviewer_invitation',
+  'reviewer_welcome',
+  'reviewer_reminder',
+  'author_acknowledgment',
+  'editor_new_submission',
+  'editor_escalation',
+  'editor_new_review',
+  'reviewer_report_submitted',
+  'decision_to_author',
+  'contact_message',
+]);
+
+// Mask a raw email to first-initial + domain so the feed reads as a
+// human summary rather than a mailing list dump.
+function maskRecipient(raw) {
+  if (!raw) return '';
+  const at = String(raw).indexOf('@');
+  if (at <= 0) return String(raw);
+  const local = raw.slice(0, at);
+  const domain = raw.slice(at + 1);
+  const preview = local.length <= 2 ? local : `${local[0]}…${local[local.length - 1]}`;
+  return `${preview}@${domain}`;
+}
+
 function ActivityFeed() {
   const [entries, setEntries] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -579,27 +661,34 @@ function ActivityFeed() {
 
   useEffect(() => {
     let cancelled = false;
-    fetchNotificationLog({ limit: 20 })
+    // Load a larger window then filter client-side so hiding noise
+    // doesn't leave the card empty.
+    fetchNotificationLog({ limit: 60 })
       .then((data) => {
         if (!cancelled) setEntries(data?.entries || []);
       })
       .catch((err) => {
         if (!cancelled) {
-          setError(err?.response?.data?.detail || err?.message || 'Failed to load activity.');
+          setError(err?.response?.data?.detail || err?.message || "Couldn't load activity.");
         }
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, []);
+
+  // Hide internal + security events; keep everything editorial. Cap the
+  // card at 8 rows so it fits without scrolling; the full log lives on
+  // the Notifications Log panel.
+  const visible = entries
+    .filter((e) => !ACTIVITY_HIDDEN_EVENTS.has(e.trigger_event))
+    .slice(0, 8);
 
   if (loading) {
     return (
       <div className="bg-white rounded-xl border border-gray-200 px-6 py-10 text-center text-sm text-gray-500">
-        Loading activity…
+        Loading…
       </div>
     );
   }
@@ -615,44 +704,65 @@ function ActivityFeed() {
     );
   }
 
-  if (entries.length === 0) {
+  if (visible.length === 0) {
     return (
       <div className="bg-white rounded-xl border border-gray-200 px-6 py-10 text-center">
-        <p className="text-sm text-gray-500">No notifications yet.</p>
+        <div className="text-3xl mb-2" aria-hidden>🌤️</div>
+        <p className="text-sm font-semibold text-gray-700">Nothing new</p>
+        <p className="mt-1 text-xs text-gray-500">
+          Reviewer submissions and editor decisions will show up here as they happen.
+        </p>
       </div>
     );
   }
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 divide-y divide-gray-100">
-      {entries.map((entry) => (
-        <div key={entry.id} className="px-4 py-3 text-sm">
-          <div className="flex items-center justify-between">
-            <span className="font-medium text-gray-800">{entry.trigger_event}</span>
-            <span
-              className={
-                entry.status === 'sent'
-                  ? 'text-xs px-2 py-0.5 rounded bg-green-100 text-green-700'
-                  : entry.status === 'failed'
-                  ? 'text-xs px-2 py-0.5 rounded bg-red-100 text-red-700'
-                  : 'text-xs px-2 py-0.5 rounded bg-gray-100 text-gray-700'
-              }
+    <div className="bg-white rounded-xl border border-gray-200 divide-y divide-gray-100 overflow-hidden">
+      {visible.map((entry) => {
+        const info = describeEvent(entry.trigger_event);
+        const style = NOTIF_COLOR_STYLES[info.color] || NOTIF_COLOR_STYLES.gray;
+        const when = entry.sent_at || entry.created_at;
+        return (
+          <div key={entry.id} className="px-4 py-3 flex items-start gap-3">
+            <div
+              className={`w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0 text-base ${style.icon}`}
+              aria-hidden
             >
-              {entry.status}
-            </span>
+              {info.icon}
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-sm font-semibold text-gray-900 truncate">
+                  {info.label}
+                </span>
+                <span className="text-[11px] text-gray-500 whitespace-nowrap">
+                  {relativeTime(when)}
+                </span>
+              </div>
+              <div className="text-xs text-gray-500 mt-0.5 truncate">
+                {entry.recipient ? `to ${maskRecipient(entry.recipient)}` : entry.channel || ''}
+              </div>
+              {entry.status === 'failed' && (
+                <div className="mt-1 text-[11px] text-rose-700">
+                  Delivery failed — see Notifications Log.
+                </div>
+              )}
+            </div>
           </div>
-          <div className="text-xs text-gray-500 mt-1">
-            {entry.channel} · {entry.recipient || 'unknown recipient'}
-            {entry.sent_at ? ` · ${new Date(entry.sent_at).toLocaleString()}` : ''}
-          </div>
-          {entry.preview && (
-            <p className="mt-1 text-gray-600 line-clamp-2">{entry.preview}</p>
-          )}
-          {entry.error_message && (
-            <p className="mt-1 text-red-600 text-xs">Error: {entry.error_message}</p>
-          )}
-        </div>
-      ))}
+        );
+      })}
+      <div className="px-4 py-2 bg-gray-50 text-right">
+        <button
+          type="button"
+          onClick={() => {
+            const el = document.querySelector('[data-sidebar-key="notifications"]');
+            if (el) el.click();
+          }}
+          className="text-xs font-semibold text-blue-700 hover:underline"
+        >
+          Open Notifications Log →
+        </button>
+      </div>
     </div>
   );
 }
@@ -970,6 +1080,21 @@ function SubmissionsPanel({
    ═══════════════════════════════════════════════════════════ */
 
 function SubmissionDrawer({ submission, onClose, onRefresh }) {
+  // Multi-select state for the reviewer picker below. Kept separate
+  // from the API-driven suggestions so the editor can re-shuffle
+  // their choice without refetching. The editor decides how many
+  // reviewers to invite — no hard cap.
+  const [selectedReviewerIds, setSelectedReviewerIds] = useState(new Set());
+  const [confirmAssignOpen, setConfirmAssignOpen] = useState(false);
+  const toggleReviewer = (rid) => {
+    setSelectedReviewerIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(rid)) next.delete(rid);
+      else next.add(rid);
+      return next;
+    });
+  };
+  const canDispatch = selectedReviewerIds.size >= 1;
   const [reviews, setReviews] = useState(null);
   const [suggestions, setSuggestions] = useState(null);
   const [loadingReviews, setLoadingReviews] = useState(true);
@@ -1020,7 +1145,11 @@ function SubmissionDrawer({ submission, onClose, onRefresh }) {
     setAssigning(true);
     try {
       await assignReviewers({ submission_id: submission.id, reviewer_ids: reviewerIds });
+      // Review-row creation happens on a daemon thread server-side, so
+      // refetch twice: once immediately, once after ~1.5s. Prevents a
+      // just-invited reviewer from looking "lost".
       onRefresh();
+      setTimeout(onRefresh, 1500);
     } catch (e) {
       console.error(e);
     } finally {
@@ -1138,30 +1267,118 @@ function SubmissionDrawer({ submission, onClose, onRefresh }) {
             ) : !suggestions?.length ? (
               <p className="text-gray-400 text-sm">No suggestions available.</p>
             ) : (
+              <>
               <div className="space-y-2">
-                {suggestions.map((r) => (
-                  <div key={r.reviewer_id} className="flex items-center justify-between bg-gray-50 rounded-lg px-4 py-3">
-                    <div>
-                      <p className="font-medium text-gray-900">{r.name}</p>
-                      <p className="text-xs text-gray-500">
-                        {(r.expertise_tags || []).join(', ')} · Load: {r.current_load}/{r.max_assignments}
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <span className="text-sm font-semibold text-blue-700">
+                <p className="text-xs text-gray-500 mb-1">
+                  Pick as many reviewers as this manuscript warrants — your editorial
+                  judgement decides the number. The AI has ranked candidates below by
+                  expertise-match score.
+                </p>
+                {suggestions.map((r) => {
+                  const checked = selectedReviewerIds.has(r.reviewer_id);
+                  const overloaded = r.current_load >= r.max_assignments;
+                  const disabled = !checked && overloaded;
+                  return (
+                    <label
+                      key={r.reviewer_id}
+                      className={`flex items-start gap-3 rounded-lg px-4 py-3 border transition ${
+                        checked
+                          ? 'bg-blue-50 border-blue-300'
+                          : disabled
+                          ? 'bg-gray-50 border-gray-100 opacity-50 cursor-not-allowed'
+                          : 'bg-gray-50 border-gray-100 hover:border-blue-200 cursor-pointer'
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="mt-1 accent-blue-600"
+                        checked={checked}
+                        disabled={disabled}
+                        onChange={() => toggleReviewer(r.reviewer_id)}
+                        aria-label={`Select reviewer ${r.name}`}
+                      />
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium text-gray-900 truncate">{r.name}</p>
+                        <p className="text-xs text-gray-500 truncate">
+                          {(r.expertise_tags || []).join(', ') || '—'}
+                        </p>
+                        <p className="text-[11px] text-gray-500 mt-0.5">
+                          Load: {r.current_load}/{r.max_assignments}
+                          {overloaded && <span className="ml-2 text-rose-700 font-semibold">at capacity</span>}
+                        </p>
+                      </div>
+                      <span className="text-sm font-semibold text-blue-700 whitespace-nowrap">
                         {Math.round(r.similarity_score * 100)}%
                       </span>
+                    </label>
+                  );
+                })}
+                <div className="mt-3 flex items-center justify-between">
+                  <p className={`text-xs font-medium ${
+                    canDispatch ? 'text-emerald-700' : 'text-amber-800'
+                  }`}>
+                    Selected: {selectedReviewerIds.size}
+                    {canDispatch ? ' · ready to invite' : ' · pick at least one'}
+                  </p>
+                  <button
+                    onClick={() => setConfirmAssignOpen(true)}
+                    disabled={assigning || !canDispatch}
+                    className="py-2 px-4 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg text-sm disabled:bg-gray-300 disabled:cursor-not-allowed"
+                  >
+                    {assigning ? 'Assigning…' : `Invite ${selectedReviewerIds.size || '…'} reviewers`}
+                  </button>
+                </div>
+              </div>
+              {confirmAssignOpen && canDispatch && (
+                <div
+                  className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"
+                  role="dialog"
+                  aria-modal="true"
+                >
+                  <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6">
+                    <h3 className="text-lg font-bold text-gray-900 mb-2">
+                      Invite {selectedReviewerIds.size} reviewers?
+                    </h3>
+                    <p className="text-sm text-gray-700 mb-3">
+                      An email invitation with a signed review link will be sent to each of the
+                      reviewers below. Nothing sends until you confirm.
+                    </p>
+                    <ul className="rounded-lg border border-gray-200 divide-y divide-gray-100 text-sm mb-4">
+                      {suggestions
+                        .filter((r) => selectedReviewerIds.has(r.reviewer_id))
+                        .map((r) => (
+                          <li key={r.reviewer_id} className="px-3 py-2 flex items-center justify-between">
+                            <span className="font-medium">{r.name}</span>
+                            <span className="text-xs text-blue-700">
+                              {Math.round(r.similarity_score * 100)}%
+                            </span>
+                          </li>
+                        ))}
+                    </ul>
+                    <div className="flex justify-end gap-2">
+                      <button
+                        onClick={() => setConfirmAssignOpen(false)}
+                        disabled={assigning}
+                        className="px-4 py-2 rounded-lg border border-gray-200 text-sm font-medium hover:bg-gray-50"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={async () => {
+                          await handleAssign(Array.from(selectedReviewerIds));
+                          setConfirmAssignOpen(false);
+                          setSelectedReviewerIds(new Set());
+                        }}
+                        disabled={assigning}
+                        className="px-4 py-2 rounded-lg bg-blue-700 text-white text-sm font-semibold hover:bg-blue-800 disabled:bg-gray-300"
+                      >
+                        {assigning ? 'Sending…' : 'Confirm & invite'}
+                      </button>
                     </div>
                   </div>
-                ))}
-                <button
-                  onClick={() => handleAssign(suggestions.slice(0, 3).map((r) => r.reviewer_id))}
-                  disabled={assigning}
-                  className="mt-2 w-full py-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg text-sm disabled:opacity-50"
-                >
-                  {assigning ? 'Assigning…' : `Assign Top ${Math.min(suggestions.length, 3)} Reviewers`}
-                </button>
-              </div>
+                </div>
+              )}
+              </>
             )}
           </Section>
 
@@ -1382,16 +1599,20 @@ function AgentPipelinePanel({ submission, onRefresh }) {
 
   const toggleReviewer = (id) => {
     setSelectedReviewerIds((prev) =>
-      prev.includes(id) ? prev.filter((x) => x !== id) : prev.length < 4 ? [...prev, id] : prev
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
     );
   };
 
   const handleAssignViaAgents = async () => {
-    if (selectedReviewerIds.length < 2) return;
+    if (selectedReviewerIds.length < 1) return;
     setAssigning(true);
     try {
       await editorAssignReviewers(submission.id, { reviewer_ids: selectedReviewerIds });
+      // Backend fires review-row creation on a daemon thread, so the
+      // immediate refresh can race the DB write. Refetch again after
+      // a short delay so the freshly-invited reviewer appears.
       onRefresh();
+      setTimeout(onRefresh, 1500);
     } catch (e) {
       console.error(e);
     } finally {
@@ -1558,6 +1779,400 @@ function DetailRow({ label, children }) {
 /* ═══════════════════════════════════════════════════════════
    Reviewers Panel
    ═══════════════════════════════════════════════════════════ */
+
+/* ═══════════════════════════════════════════════════════════
+   Under Review panel — the "N/M Reviews Received" list
+   (spec §2). One row per submission whose current status is
+   under_review, with progress bar + consensus recommendation
+   + click-through to the manuscript workspace.
+   ═══════════════════════════════════════════════════════════ */
+
+// Client-side CSV helper. Given an array of objects + a list of
+// {key,label}, produces a CSV string, escapes quotes/newlines, and
+// triggers a download. Keeps the filtered-view export self-contained
+// (no round-trip to /csv-export).
+function downloadCsvClientSide(rows, columns, filename) {
+  const esc = (v) => {
+    if (v === null || v === undefined) return '';
+    const s = String(v);
+    if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+    return s;
+  };
+  const header = columns.map((c) => esc(c.label)).join(',');
+  const body = rows
+    .map((r) => columns.map((c) => esc(typeof c.value === 'function' ? c.value(r) : r[c.key])).join(','))
+    .join('\n');
+  const blob = new Blob([header + '\n' + body + '\n'], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+const UR_REC_STYLES = {
+  accept:              { cls: 'bg-emerald-100 text-emerald-800', label: 'Accept',              emoji: '🟢' },
+  minor_revision:      { cls: 'bg-blue-100 text-blue-800',       label: 'Minor Revision',      emoji: '🟡' },
+  major_revision:      { cls: 'bg-amber-100 text-amber-900',     label: 'Major Revision',      emoji: '🔶' },
+  reject:              { cls: 'bg-rose-100 text-rose-800',       label: 'Reject',              emoji: '🔴' },
+  reject_and_resubmit: { cls: 'bg-slate-200 text-slate-800',     label: 'Reject and Resubmit', emoji: '↻' },
+};
+
+const UR_STRENGTH_BADGE = {
+  unanimous: { cls: 'bg-emerald-100 text-emerald-800 border-emerald-200', icon: '✓', label: 'Strong' },
+  majority:  { cls: 'bg-blue-100 text-blue-800 border-blue-200',           icon: '✓', label: 'Majority' },
+  split:     { cls: 'bg-amber-100 text-amber-800 border-amber-200',        icon: '⚠', label: 'Mixed' },
+  'n/a':     { cls: 'bg-gray-100 text-gray-600 border-gray-200',           icon: '·', label: 'Pending' },
+};
+
+function UnderReviewPanel() {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [filter, setFilter] = useState('all'); // all | complete | pending
+
+  useEffect(() => {
+    setLoading(true);
+    fetchUnderReviewManuscripts()
+      .then((data) => setRows(Array.isArray(data) ? data : []))
+      .catch((err) =>
+        setError(err?.response?.data?.detail || 'Could not load Under Review manuscripts.'),
+      )
+      .finally(() => setLoading(false));
+  }, []);
+
+  const filtered = rows.filter((r) => {
+    if (filter === 'complete') return r.received > 0 && r.received === r.total;
+    if (filter === 'pending') return r.total === 0 || r.received < r.total;
+    return true;
+  });
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
+        <div>
+          <h2 className="text-2xl font-bold text-gray-900">Under Review</h2>
+          <p className="text-sm text-gray-500 mt-1">
+            Manuscripts with an open review round. Click a row to open the editor workspace.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => downloadCsvClientSide(
+              filtered,
+              [
+                { key: 'manuscript_id', label: 'Manuscript ID' },
+                { key: 'paper_title',   label: 'Title' },
+                { key: 'round',         label: 'Round' },
+                { label: 'Reviewers', value: (row) => (row.reviewers || []).map((rv) => `${rv.name}${rv.email ? ` <${rv.email}>` : ''} [${rv.has_submitted ? 'submitted' : (rv.state || 'pending')}]`).join(' | ') },
+                { key: 'received',      label: 'Received' },
+                { key: 'total',         label: 'Total' },
+                { key: 'consensus_recommendation', label: 'Consensus' },
+                { key: 'consensus_strength',       label: 'Strength' },
+                { key: 'ethics_flag',   label: 'Ethics flag' },
+              ],
+              `under-review-${new Date().toISOString().slice(0,10)}.csv`,
+            )}
+            className="text-xs px-3 py-1.5 rounded-lg bg-white border border-gray-300 hover:bg-gray-50 text-gray-800 font-semibold"
+            title="Export the filtered rows to CSV"
+          >
+            📤 Export CSV
+          </button>
+          <div className="flex gap-1 bg-gray-100 rounded-lg p-1 text-xs font-semibold">
+            {[
+              { k: 'all',      label: 'All' },
+              { k: 'complete', label: 'Reviews received' },
+              { k: 'pending',  label: 'Pending reviews' },
+            ].map((o) => (
+              <button
+                key={o.k} type="button" onClick={() => setFilter(o.k)}
+                className={
+                  'px-3 py-1.5 rounded-md ' +
+                  (filter === o.k ? 'bg-white text-blue-700 shadow' : 'text-gray-600 hover:text-gray-900')
+                }
+              >
+                {o.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {loading ? (
+        <SkeletonRows rows={5} />
+      ) : error ? (
+        <div role="alert" className="bg-white rounded-xl border border-red-200 p-6 text-sm text-red-700">
+          {error}
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="bg-white rounded-xl border border-dashed border-gray-200 p-12 text-center text-gray-500 text-sm">
+          Nothing matches this filter.
+        </div>
+      ) : (
+        <div className="bg-white rounded-xl border border-gray-200 overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead className="bg-gray-50 text-left text-xs uppercase tracking-wider text-gray-500">
+              <tr>
+                <th className="px-4 py-3 rounded-tl-xl">Manuscript</th>
+                <th className="px-4 py-3">Title</th>
+                <th className="px-4 py-3">Round</th>
+                <th className="px-4 py-3">Sent to reviewers</th>
+                <th className="px-4 py-3">Reviews Received</th>
+                <th className="px-4 py-3">Consensus</th>
+                <th className="px-4 py-3 text-right rounded-tr-xl">Action</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {filtered.map((r) => {
+                const rec = r.consensus_recommendation ? UR_REC_STYLES[r.consensus_recommendation] : null;
+                const strength = UR_STRENGTH_BADGE[r.consensus_strength] || UR_STRENGTH_BADGE['n/a'];
+                const pct = r.total > 0 ? Math.round((100 * r.received) / r.total) : 0;
+                const complete = r.total > 0 && r.received === r.total;
+                return (
+                  <tr key={r.submission_id} className="hover:bg-gray-50">
+                    <td className="px-4 py-3 font-mono text-xs text-gray-700">{r.manuscript_id}</td>
+                    <td className="px-4 py-3 text-gray-900">
+                      <div className="line-clamp-1">{r.paper_title}</div>
+                      {r.ethics_flag && (
+                        <span className="mt-1 inline-block text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-rose-100 text-rose-800">
+                          ⚠ Ethics
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-gray-700">R{r.round}</td>
+                    <td className="px-4 py-3">
+                      {Array.isArray(r.reviewers) && r.reviewers.length > 0 ? (
+                        <div className="flex flex-col gap-0.5 max-w-[220px]">
+                          {r.reviewers.map((rv) => (
+                            <div
+                              key={rv.review_id}
+                              className="flex items-center gap-1.5 text-xs"
+                              title={rv.email || ''}
+                            >
+                              <span className={
+                                'inline-block w-1.5 h-1.5 rounded-full ' +
+                                (rv.has_submitted ? 'bg-emerald-500' : 'bg-amber-400')
+                              } />
+                              <span className="text-gray-800 truncate">{rv.name}</span>
+                              <span className={
+                                'text-[10px] font-bold uppercase tracking-wider ml-auto ' +
+                                (rv.has_submitted ? 'text-emerald-700' : 'text-amber-700')
+                              }>
+                                {rv.has_submitted ? 'submitted' : (rv.state || 'pending')}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <span className="text-[11px] text-gray-400">No reviewers assigned</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-2">
+                        <span className={
+                          'text-xs font-bold whitespace-nowrap ' +
+                          (complete ? 'text-emerald-700' : 'text-amber-800')
+                        }>
+                          {r.received}/{r.total || '—'}
+                        </span>
+                        <div className="w-24 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                          <div
+                            className={'h-full ' + (complete ? 'bg-emerald-500' : 'bg-amber-500')}
+                            style={{ width: `${pct}%` }}
+                          />
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {rec ? (
+                          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold ${rec.cls}`}>
+                            <span aria-hidden>{rec.emoji}</span> {rec.label}
+                          </span>
+                        ) : (
+                          <span className="text-[11px] text-gray-400">—</span>
+                        )}
+                        {r.consensus_strength && r.consensus_strength !== 'n/a' && (
+                          <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold border ${strength.cls}`}>
+                            <span aria-hidden>{strength.icon}</span> {strength.label}
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <div className="flex items-center justify-end gap-1.5 flex-wrap">
+                        <Link
+                          to={`/editor/manuscripts/${r.submission_id}`}
+                          className="inline-block text-xs px-3 py-1.5 rounded-lg bg-blue-700 text-white font-semibold hover:bg-blue-800"
+                        >
+                          Open Workspace →
+                        </Link>
+                        <Link
+                          to={`/editor/reviewer-reports/${r.submission_id}`}
+                          className="inline-flex items-center justify-center w-9 h-9 rounded-lg border border-gray-200 text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1"
+                          title="Reviewer reports"
+                          aria-label="Reviewer reports"
+                        >
+                          <span aria-hidden>📋</span>
+                        </Link>
+                        <Link
+                          to={`/editor/submissions/${r.submission_id}/decision`}
+                          className="inline-flex items-center justify-center w-9 h-9 rounded-lg border border-gray-200 text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1"
+                          title="Decision workspace"
+                          aria-label="Decision workspace"
+                        >
+                          <span aria-hidden>⚖️</span>
+                        </Link>
+                        <Link
+                          to={`/editor/bid-room/${r.submission_id}`}
+                          className="inline-flex items-center justify-center w-9 h-9 rounded-lg border border-gray-200 text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1"
+                          title="Review Room"
+                          aria-label="Review Room"
+                        >
+                          <span aria-hidden>🏠</span>
+                        </Link>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+/* ═══════════════════════════════════════════════════════════
+   Sub-status panel — New Submissions / Revision Required /
+   Accepted / Rejected. Reuses fetchSubmissions with a status
+   filter list; renders the same submissions table pattern.
+   ═══════════════════════════════════════════════════════════ */
+
+const SUB_STATUS_TITLE = {
+  new_submissions:   'New Submissions',
+  revision_required: 'Revision Required',
+  accepted:          'Accepted',
+  rejected:          'Rejected',
+};
+
+const SUB_STATUS_SUBTITLE = {
+  new_submissions:   'Manuscripts still moving through the intake pipeline.',
+  revision_required: 'Author is preparing a revised manuscript in response to the reviewers.',
+  accepted:          'Papers that have moved into production.',
+  rejected:          'Includes Reject and Reject-and-Resubmit outcomes.',
+};
+
+function SubStatusPanel({ filterKey, statuses, onOpenDrawer }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    // /submissions/ supports one status at a time; hit N times and merge.
+    Promise.all(statuses.map((st) => fetchSubmissions({ status: st, page_size: 50 })))
+      .then((results) => {
+        if (cancelled) return;
+        const merged = [];
+        for (const r of results) {
+          const list = Array.isArray(r) ? r : (r?.results || r?.items || []);
+          for (const s of list) merged.push(s);
+        }
+        // Newest first.
+        merged.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+        setRows(merged);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err?.response?.data?.detail || 'Could not load submissions.');
+      })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [filterKey, statuses.join(',')]);
+
+  return (
+    <div>
+      <div className="mb-4 flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-2xl font-bold text-gray-900">{SUB_STATUS_TITLE[filterKey]}</h2>
+          <p className="text-sm text-gray-500 mt-1">{SUB_STATUS_SUBTITLE[filterKey]}</p>
+        </div>
+        <button
+          type="button"
+          onClick={() => downloadCsvClientSide(
+            rows,
+            [
+              { key: 'paper_id_code', label: 'Manuscript ID' },
+              { key: 'paper_title',   label: 'Title' },
+              { key: 'status',        label: 'Status' },
+              { key: 'created_at',    label: 'Submitted' },
+              { key: 'author_name',   label: 'Author' },
+              { key: 'author_email',  label: 'Author email' },
+            ],
+            `${filterKey}-${new Date().toISOString().slice(0,10)}.csv`,
+          )}
+          className="text-xs px-3 py-1.5 rounded-lg bg-white border border-gray-300 hover:bg-gray-50 text-gray-800 font-semibold whitespace-nowrap"
+        >
+          📤 Export CSV
+        </button>
+      </div>
+      {loading ? (
+        <SkeletonRows rows={5} />
+      ) : error ? (
+        <div role="alert" className="bg-white rounded-xl border border-red-200 p-6 text-red-700 text-sm">{error}</div>
+      ) : rows.length === 0 ? (
+        <div className="bg-white rounded-xl border border-dashed border-gray-200 p-10 text-center text-gray-500 text-sm">
+          Nothing to show here.
+        </div>
+      ) : (
+        <div className="bg-white rounded-xl border border-gray-200 overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead className="bg-gray-50 text-left text-xs uppercase tracking-wider text-gray-500">
+              <tr>
+                <th className="px-4 py-3">Manuscript</th>
+                <th className="px-4 py-3">Title</th>
+                <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3">Submitted</th>
+                <th className="px-4 py-3 text-right">Action</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {rows.map((s) => (
+                <tr key={s.id} className="hover:bg-gray-50">
+                  <td className="px-4 py-3 font-mono text-xs text-gray-700">{s.paper_id_code || (String(s.id).slice(-6).toUpperCase())}</td>
+                  <td className="px-4 py-3 text-gray-900">
+                    <div className="line-clamp-1">{s.paper_title || 'Untitled'}</div>
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className="text-[11px] font-bold px-2 py-0.5 rounded bg-gray-100 text-gray-700 uppercase">
+                      {(s.status || '').replace('_', ' ')}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 whitespace-nowrap text-gray-600">
+                    {s.created_at ? new Date(s.created_at).toLocaleDateString() : '—'}
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    <Link
+                      to={`/editor/manuscripts/${s.id}`}
+                      className="inline-block text-xs px-3 py-1.5 rounded-lg bg-blue-700 text-white font-semibold hover:bg-blue-800"
+                    >
+                      Open Workspace →
+                    </Link>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 function InviteReviewerModal({ onClose, onSuccess }) {
   const [name, setName] = useState('');
@@ -2692,6 +3307,7 @@ const FUNNEL_COLORS = {
 function AnalyticsPanel() {
   const [range, setRange] = useState('this_year');
   const [data, setData] = useState(null);
+  const [detailed, setDetailed] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -2699,8 +3315,16 @@ function AnalyticsPanel() {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    fetchAnalyticsOverview(range)
-      .then((d) => { if (!cancelled) setData(d); })
+    const days = range === 'this_year' ? 365 : 730;
+    Promise.all([
+      fetchAnalyticsOverview(range),
+      fetchEditorialAnalytics(days).catch(() => null),
+    ])
+      .then(([o, det]) => {
+        if (cancelled) return;
+        setData(o);
+        setDetailed(det);
+      })
       .catch((e) => { if (!cancelled) setError(e?.response?.data?.detail || 'Failed to load analytics'); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
@@ -2789,6 +3413,59 @@ function AnalyticsPanel() {
           <StatusFunnel stages={data.status_funnel} />
         )}
       </div>
+
+      {/* Detailed editorial analytics (spec §6) */}
+      {detailed && (
+        <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="bg-white rounded-2xl border border-gray-100 p-5">
+            <div className="text-[10px] uppercase tracking-widest text-gray-500 font-semibold">Received</div>
+            <div className="mt-1 text-3xl font-black text-gray-900">{detailed.totals.received}</div>
+            <div className="mt-1 text-xs text-gray-500">Last {detailed.window_days} days</div>
+          </div>
+          <div className="bg-white rounded-2xl border border-gray-100 p-5">
+            <div className="text-[10px] uppercase tracking-widest text-gray-500 font-semibold">Avg. review turnaround</div>
+            <div className="mt-1 text-3xl font-black text-gray-900">
+              {detailed.avg_review_days !== null ? `${detailed.avg_review_days} d` : '—'}
+            </div>
+            <div className="mt-1 text-xs text-gray-500">assigned → submitted</div>
+          </div>
+          <div className="bg-white rounded-2xl border border-gray-100 p-5">
+            <div className="text-[10px] uppercase tracking-widest text-gray-500 font-semibold">Avg. decision turnaround</div>
+            <div className="mt-1 text-3xl font-black text-gray-900">
+              {detailed.avg_editor_decision_days !== null ? `${detailed.avg_editor_decision_days} d` : '—'}
+            </div>
+            <div className="mt-1 text-xs text-gray-500">last reviewer → editor decision</div>
+          </div>
+        </div>
+      )}
+
+      {detailed && detailed.decision_distribution.length > 0 && (
+        <div className="mt-6 bg-white rounded-2xl border border-gray-100 p-5">
+          <h3 className="text-lg font-bold text-gray-900 mb-3">Decision Distribution</h3>
+          <div className="space-y-2">
+            {detailed.decision_distribution.map((r) => {
+              const max = Math.max(1, ...detailed.decision_distribution.map((x) => x.count));
+              const style = {
+                accepted:            { cls: 'bg-emerald-500', label: 'Accept' },
+                minor_revision:      { cls: 'bg-blue-500',    label: 'Minor Revision' },
+                major_revision:      { cls: 'bg-amber-500',   label: 'Major Revision' },
+                revision_requested:  { cls: 'bg-amber-500',   label: 'Revision Required' },
+                rejected:            { cls: 'bg-rose-500',    label: 'Reject' },
+                reject_and_resubmit: { cls: 'bg-slate-500',   label: 'Reject and Resubmit' },
+              }[r.decision] || { cls: 'bg-gray-500', label: r.decision };
+              return (
+                <div key={r.decision} className="flex items-center gap-3 text-sm">
+                  <div className="w-40 text-xs font-bold uppercase tracking-wider">{style.label}</div>
+                  <div className="flex-1 h-5 bg-gray-100 rounded-full overflow-hidden">
+                    <div className={`h-full rounded-full ${style.cls}`} style={{ width: `${(100 * r.count) / max}%` }} />
+                  </div>
+                  <div className="w-10 text-right text-sm font-bold text-gray-800">{r.count}</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

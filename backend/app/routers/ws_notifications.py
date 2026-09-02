@@ -107,6 +107,101 @@ def _resolve_user_from_token(token: str) -> Optional[User]:
         db.close()
 
 
+def _resolve_reviewer_from_token(token: str):
+    """Same shape as _resolve_user_from_token but for reviewer session
+    JWTs. Returns the Reviewer or None."""
+    from app.database import SessionLocal
+    from app.models.reviewer import Reviewer
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+    except JWTError:
+        return None
+    if payload.get("role") != "reviewer" or payload.get("scope") not in (None, "session"):
+        return None
+    sub = payload.get("sub")
+    if not sub:
+        return None
+    db = SessionLocal()
+    try:
+        from uuid import UUID as _UUID
+        try:
+            rid = _UUID(str(sub))
+        except (ValueError, AttributeError):
+            return None
+        reviewer = db.query(Reviewer).filter(Reviewer.id == rid).first()
+        if reviewer is None or not reviewer.is_active:
+            return None
+        db.expunge(reviewer)
+        return reviewer
+    finally:
+        db.close()
+
+
+@router.websocket("/ws/reviewer-notifications")
+async def reviewer_notifications_ws(
+    websocket: WebSocket,
+    token: str = Query(..., description="Reviewer session JWT"),
+) -> None:
+    """Live notification stream for the reviewer bell. Subscribes to
+    ``reviewer:{id}`` and ``broadcast:reviewers``. Publishers targeting
+    those topics reach every open bell for that reviewer."""
+    await websocket.accept()
+    reviewer = _resolve_reviewer_from_token(token)
+    if reviewer is None:
+        try:
+            await websocket.close(code=_CLOSE_AUTH_FAILED, reason="Invalid or expired token")
+        except Exception:
+            pass
+        return
+    reviewer_topic = f"reviewer:{reviewer.id}"
+    broadcast_topic = "broadcast:reviewers"
+    queue = pubsub.subscribe(reviewer_topic)
+    pubsub.register(broadcast_topic, queue)
+    try:
+        await websocket.send_json({"type": "hello", "reviewer_id": str(reviewer.id)})
+    except Exception:
+        pubsub.unsubscribe(reviewer_topic, queue)
+        pubsub.unsubscribe(broadcast_topic, queue)
+        return
+
+    disconnect_event = asyncio.Event()
+
+    async def _reader() -> None:
+        try:
+            while True:
+                await websocket.receive_text()
+        except WebSocketDisconnect:
+            pass
+        except Exception:
+            logger.debug("ws_notifications(reviewer): reader closed", exc_info=True)
+        finally:
+            disconnect_event.set()
+
+    reader_task = asyncio.create_task(_reader())
+    try:
+        while not disconnect_event.is_set():
+            try:
+                message = await asyncio.wait_for(queue.get(), timeout=_IDLE_PING_SECONDS)
+            except asyncio.TimeoutError:
+                if websocket.client_state != WebSocketState.CONNECTED:
+                    break
+                try:
+                    await websocket.send_json({"type": "ping"})
+                except Exception:
+                    break
+                continue
+            if websocket.client_state != WebSocketState.CONNECTED:
+                break
+            try:
+                await websocket.send_json({"type": "notification", "payload": message})
+            except Exception:
+                break
+    finally:
+        pubsub.unsubscribe(reviewer_topic, queue)
+        pubsub.unsubscribe(broadcast_topic, queue)
+        reader_task.cancel()
+
+
 @router.websocket("/ws/notifications")
 async def notifications_ws(
     websocket: WebSocket,

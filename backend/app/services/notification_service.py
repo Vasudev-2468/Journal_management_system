@@ -228,14 +228,32 @@ def send_decision_to_author_notification(
     paper_title: str,
     decision: str,
     editor_comments: str,
+    submission_id: str = "",
 ) -> None:
+    from app.config import settings as _s
+    frontend = (_s.FRONTEND_URL or "").rstrip("/")
+    decision_url = (
+        f"{frontend}/author-dashboard/{submission_id}/decision"
+        if frontend and submission_id else ""
+    )
     subject = f"Decision on your submission: {paper_title}"
+    button = (
+        f"<div style=\"text-align:center;margin:24px 0;\">"
+        f"<a href=\"{decision_url}\" style=\"display:inline-block;"
+        f"background:#1e40af;color:#ffffff;text-decoration:none;"
+        f"font-weight:600;padding:12px 22px;border-radius:8px;\">"
+        f"View decision & reviewer reports</a></div>"
+        if decision_url else ""
+    )
     html = (
         f"<p>Dear {author_name},</p>"
         f"<p>A decision has been made on your submission "
         f"<strong>{paper_title}</strong>:</p>"
         f"<p><strong>Decision: {decision.replace('_', ' ').title()}</strong></p>"
-        f"<p>Editor's comments:<br>{editor_comments or 'No additional comments.'}</p>"
+        f"{button}"
+        f"<p style=\"font-size:12px;color:#6b7280;\">Full reviewer reports and the editor's letter "
+        f"are available in your author dashboard. Confidential reviewer-to-editor "
+        f"comments are not shown to authors.</p>"
         f"<p>Best regards,<br>Editorial Team</p>"
     )
     try:

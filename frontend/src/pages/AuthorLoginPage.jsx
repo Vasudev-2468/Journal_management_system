@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate, Link, useLocation } from 'react-router-dom';
-import { authorLogin, authorVerifyOtp, authorVerifyTotp, authorResendOtp } from '../api/authorAuth';
+import { authorLogin, authorVerifyOtp, authorResendOtp } from '../api/authorAuth';
 
 const STATS = [
   { value: '2,400+', label: 'Manuscripts Submitted' },
@@ -9,8 +9,9 @@ const STATS = [
   { value: 'Open', label: 'Access Policy' },
 ];
 
-// Author MFA — mandatory TOTP after email OTP. Stage lifecycle:
-//   credentials → emailOtp → (totpEnrol OR totpVerify) → done
+// Author MFA — single-factor email OTP. TOTP + WhatsApp were both
+// removed by request. Stage lifecycle:
+//   credentials → emailOtp → done
 export default function AuthorLoginPage() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -20,13 +21,10 @@ export default function AuthorLoginPage() {
   const [email, setEmail] = useState(location.state?.email || '');
   const [password, setPassword] = useState('');
   const [otp, setOtp] = useState('');
-  const [totpCode, setTotpCode] = useState('');
   const [preAuthToken, setPreAuthToken] = useState('');
   const [maskedDest, setMaskedDest] = useState('');
   const [channel, setChannel] = useState('email');
-  const [hasWhatsapp, setHasWhatsapp] = useState(false);
   const [devOtp, setDevOtp] = useState('');
-  const [totpSetup, setTotpSetup] = useState(null); // { secret, qr_data_uri, otpauth_uri }
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -45,7 +43,6 @@ export default function AuthorLoginPage() {
       setPreAuthToken(data.pre_auth_token);
       setMaskedDest(data.masked_destination || '');
       setChannel(data.channel || 'email');
-      setHasWhatsapp(!!data.has_whatsapp);
       setDevOtp(data.dev_otp || '');
       setOtp('');
       setStage('emailOtp');
@@ -57,42 +54,22 @@ export default function AuthorLoginPage() {
   };
 
   const applyNextStage = (data) => {
-    // Central switch for whichever stage the server tells us to render next.
-    if (data.stage === 'complete') {
+    // Email-OTP-only flow — the backend now mints the session as soon
+    // as the email code verifies. Save the session token, then land
+    // on the author dashboard. Any legacy ``totp_*`` / ``whatsapp_*``
+    // stage that arrives is treated as a completed sign-in if the
+    // response carries an access_token, otherwise it's an error.
+    if (data.access_token && data.token_type !== 'pre_auth') {
+      try {
+        localStorage.setItem('author_token', data.access_token);
+      } catch { /* private mode */ }
+    }
+    if (data.stage === 'complete' || (data.access_token && data.token_type !== 'pre_auth')) {
       navigate('/author-dashboard');
       return;
     }
-    // If the server minted a new pre-auth token (post-TOTP), pick it up.
-    if (data.stage !== 'complete' && data.token_type === 'pre_auth' && data.access_token) {
-      setPreAuthToken(data.access_token);
-    }
-    if (data.stage === 'totp_enrolment_needed') {
-      setTotpSetup({
-        secret: data.totp_secret,
-        qr_data_uri: data.totp_qr_data_uri,
-        otpauth_uri: data.totp_otpauth_uri,
-      });
-      setTotpCode('');
-      setDevOtp('');       // Clear the email dev OTP — irrelevant on this stage.
-      setStage('totpEnrol');
-      return;
-    }
-    if (data.stage === 'totp_needed') {
-      setTotpSetup(null);
-      setTotpCode('');
-      setDevOtp('');
-      setStage('totpVerify');
-      return;
-    }
-    if (data.stage === 'whatsapp_needed') {
-      setMaskedDest(data.masked_destination || '');
-      setChannel(data.channel || 'whatsapp');
-      setDevOtp(data.dev_otp || '');
-      setOtp('');
-      setStage('whatsappOtp');
-      return;
-    }
-    // Unknown stage — surface a real error rather than silently succeed.
+    // Unknown stage from a backend on a different version — surface it
+    // rather than silently succeed.
     setError(`Unexpected server response: ${data.stage}`);
   };
 
@@ -105,20 +82,6 @@ export default function AuthorLoginPage() {
       applyNextStage(data);
     } catch (err) {
       setError(errorFrom(err, 'Verification failed. Please try again.'));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleVerifyTotp = async (e) => {
-    e.preventDefault();
-    setError('');
-    setLoading(true);
-    try {
-      const data = await authorVerifyTotp(preAuthToken, totpCode);
-      applyNextStage(data);
-    } catch (err) {
-      setError(errorFrom(err, 'Authenticator verification failed. Check your device clock.'));
     } finally {
       setLoading(false);
     }
@@ -141,20 +104,16 @@ export default function AuthorLoginPage() {
 
   const goBack = () => {
     setOtp('');
-    setTotpCode('');
     setError('');
     if (stage === 'emailOtp') setStage('credentials');
-    else if (stage === 'totpEnrol' || stage === 'totpVerify') setStage('emailOtp');
-    else if (stage === 'whatsappOtp') setStage(totpSetup ? 'totpEnrol' : 'totpVerify');
   };
 
-  // Stage indices for the stepper. TOTP is the final factor.
-  const steps = ['Credentials', 'Email code', 'Authenticator'];
+  // Stage indices for the stepper. Two steps only now — the
+  // Authenticator step was removed on request.
+  const steps = ['Credentials', 'Email code'];
   const stageIdx = {
     credentials: 0,
     emailOtp: 1,
-    totpEnrol: 2,
-    totpVerify: 2,
   }[stage] ?? 0;
 
   const stepIndicator = (
@@ -258,9 +217,6 @@ export default function AuthorLoginPage() {
             <h2 className="text-2xl font-bold text-gray-900">
               {stage === 'credentials' && 'Author Sign In'}
               {stage === 'emailOtp' && 'Confirm your email'}
-              {stage === 'totpEnrol' && 'Set up your authenticator'}
-              {stage === 'totpVerify' && 'Authenticator code'}
-              {stage === 'whatsappOtp' && 'Confirm on WhatsApp'}
             </h2>
             <p className="text-gray-500 text-sm mt-1">
               {stage === 'credentials' && (
@@ -269,14 +225,8 @@ export default function AuthorLoginPage() {
                   <Link to="/author-register" className="text-green-700 font-semibold hover:text-green-800">Create an account</Link>
                 </>
               )}
-              {(stage === 'emailOtp' || stage === 'whatsappOtp') && (
+              {stage === 'emailOtp' && (
                 <>We sent a 6-digit code to <span className="font-mono text-gray-700">{maskedDest}</span> ({channel}).</>
-              )}
-              {stage === 'totpEnrol' && (
-                <>Scan the QR code with Google&nbsp;Authenticator, Authy, 1Password, or any RFC&nbsp;6238 app. This is a one-time setup.</>
-              )}
-              {stage === 'totpVerify' && (
-                <>Open your authenticator app and enter the current 6-digit code for JGAIR.</>
               )}
             </p>
           </div>
@@ -322,7 +272,15 @@ export default function AuthorLoginPage() {
                 />
               </div>
               <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-1.5">Password</label>
+                <div className="flex items-baseline justify-between mb-1.5">
+                  <label className="block text-sm font-semibold text-gray-700">Password</label>
+                  <Link
+                    to={`/forgot-password${email ? `?email=${encodeURIComponent(email)}` : ''}`}
+                    className="text-xs font-semibold text-green-700 hover:text-green-800 hover:underline"
+                  >
+                    Forgot password?
+                  </Link>
+                </div>
                 <input
                   type="password"
                   required
@@ -387,85 +345,6 @@ export default function AuthorLoginPage() {
                 >
                   Resend code
                 </button>
-              </div>
-            </form>
-          )}
-
-          {stage === 'totpEnrol' && totpSetup && (
-            <form onSubmit={handleVerifyTotp} className="space-y-4">
-              <div className="flex flex-col items-center gap-3 p-4 rounded-2xl bg-white border border-gray-200">
-                <img
-                  src={totpSetup.qr_data_uri}
-                  alt="Scan with your authenticator app"
-                  className="w-48 h-48"
-                />
-                <details className="w-full text-xs text-gray-500">
-                  <summary className="cursor-pointer text-gray-600 hover:text-gray-800">
-                    Can't scan? Enter this secret manually
-                  </summary>
-                  <p className="mt-2 font-mono break-all bg-gray-50 rounded-lg p-2 border border-gray-100">
-                    {totpSetup.secret}
-                  </p>
-                </details>
-              </div>
-              <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-1.5">
-                  Enter the 6-digit code from your app
-                </label>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  pattern="[0-9]{6}"
-                  maxLength={6}
-                  required
-                  autoFocus
-                  autoComplete="one-time-code"
-                  value={totpCode}
-                  onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, ''))}
-                  className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-center font-mono text-lg tracking-widest text-gray-900 outline-none transition focus:border-green-500 focus:ring-2 focus:ring-green-100 focus:bg-white"
-                />
-              </div>
-              <button
-                type="submit"
-                disabled={loading || totpCode.length !== 6}
-                className="w-full rounded-2xl bg-green-700 hover:bg-green-800 active:bg-green-900 px-5 py-3 text-sm font-semibold text-white transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-              >
-                {loading ? 'Confirming…' : 'Confirm and continue'}
-              </button>
-              <div className="flex items-center justify-between text-xs text-gray-500">
-                <button type="button" onClick={goBack} className="hover:text-gray-800">← Back</button>
-              </div>
-            </form>
-          )}
-
-          {stage === 'totpVerify' && (
-            <form onSubmit={handleVerifyTotp} className="space-y-4">
-              <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-1.5">
-                  Authenticator code
-                </label>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  pattern="[0-9]{6}"
-                  maxLength={6}
-                  required
-                  autoFocus
-                  autoComplete="one-time-code"
-                  value={totpCode}
-                  onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, ''))}
-                  className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-center font-mono text-lg tracking-widest text-gray-900 outline-none transition focus:border-green-500 focus:ring-2 focus:ring-green-100 focus:bg-white"
-                />
-              </div>
-              <button
-                type="submit"
-                disabled={loading || totpCode.length !== 6}
-                className="w-full rounded-2xl bg-green-700 hover:bg-green-800 active:bg-green-900 px-5 py-3 text-sm font-semibold text-white transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-              >
-                {loading ? 'Verifying…' : (hasWhatsapp ? 'Verify & continue' : 'Verify & sign in')}
-              </button>
-              <div className="flex items-center justify-between text-xs text-gray-500">
-                <button type="button" onClick={goBack} className="hover:text-gray-800">← Back</button>
               </div>
             </form>
           )}

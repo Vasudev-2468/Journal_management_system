@@ -37,6 +37,7 @@ from app.models.user import User
 from app.services.auth_service import authenticate_user, create_access_token
 from app.services.editor_auth import EDITOR_ROLES, require_editor_mfa
 from app.services.otp_service import create_and_send_otp, verify_otp
+from app.services import totp_service
 
 logger = logging.getLogger(__name__)
 
@@ -70,11 +71,28 @@ class EditorLoginRequest(BaseModel):
 
 
 class EditorLoginResponse(BaseModel):
+    """Result of ``/editor-auth/login``.
+
+    ``stage`` tells the frontend which factor to prompt for next:
+      * ``totp_needed`` — the editor has an authenticator paired, ask
+        for the 6-digit code. Email OTP is available as a fallback via
+        ``/editor-auth/request-email-otp``.
+      * ``email_otp_needed`` — first-time enrolment path: no
+        authenticator paired yet, so we email a code first to prove
+        identity before letting them pair a device.
+
+    ``channel`` / ``masked_destination`` / ``expires_in_seconds`` are
+    populated only on the ``email_otp_needed`` stage — an email was
+    actually dispatched. On ``totp_needed`` no email goes out; the
+    frontend can call ``/request-email-otp`` explicitly if the editor
+    hits the fallback link.
+    """
     mfa_required: bool = True
+    stage: str
     pre_auth_token: str
-    channel: str
-    masked_destination: str
-    expires_in_seconds: int
+    channel: Optional[str] = None
+    masked_destination: Optional[str] = None
+    expires_in_seconds: Optional[int] = None
     # dev_otp is populated only when EDITOR_DEV_MODE is on AND the email/SMS
     # provider is not configured. Never populated in production.
     dev_otp: Optional[str] = None
@@ -82,6 +100,28 @@ class EditorLoginResponse(BaseModel):
 
 class EditorVerifyOtpRequest(BaseModel):
     otp: str
+
+
+class EditorVerifyOtpResponse(BaseModel):
+    """Result of ``/editor-auth/verify-otp``.
+
+    After the email OTP clears the caller is NOT logged in yet — TOTP
+    is the required second factor. The response carries the next-stage
+    hint (either ``totp_enrolment_needed`` with a QR/secret payload for
+    first-time enrolment, or ``totp_needed`` for an already-enrolled
+    editor) and a fresh pre-auth token that stamps ``email_ok=true``
+    so ``/verify-totp`` can gate on it.
+    """
+    stage: str
+    pre_auth_token: str
+    email_verified: bool = True
+    totp_secret: Optional[str] = None
+    totp_otpauth_uri: Optional[str] = None
+    totp_qr_data_uri: Optional[str] = None
+
+
+class EditorTotpCodeRequest(BaseModel):
+    code: str
 
 
 class EditorUserResponse(BaseModel):
@@ -97,14 +137,28 @@ class EditorUserResponse(BaseModel):
 
 # ── Pre-auth token helpers ───────────────────────────────
 
-def _mint_pre_auth_token(email: str) -> str:
+def _mint_pre_auth_token(email: str, *, email_ok: bool = False) -> str:
+    """Sign a pre-auth JWT.
+
+    ``email_ok`` is stamped True once the caller cleared the email-OTP
+    stage — ``/verify-totp`` refuses any token that lacks this claim
+    so an attacker cannot skip straight to the authenticator step.
+    """
     return create_access_token(
-        data={"sub": email, "scope": _PRE_AUTH_SCOPE},
+        data={
+            "sub": email,
+            "scope": _PRE_AUTH_SCOPE,
+            "email_ok": bool(email_ok),
+        },
         expires_delta=PRE_AUTH_TOKEN_LIFETIME,
     )
 
 
-def _decode_pre_auth_token(authorization: Optional[str]) -> str:
+def _decode_pre_auth_token(
+    authorization: Optional[str],
+    *,
+    require_email_ok: bool = False,
+) -> str:
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -127,6 +181,11 @@ def _decode_pre_auth_token(authorization: Optional[str]) -> str:
     email = payload.get("sub")
     if not email:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+    if require_email_ok and not payload.get("email_ok"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Email verification required before authenticator code.",
+        )
     return email
 
 
@@ -146,10 +205,14 @@ def _load_editor(db: Session, email: str) -> User:
 
 @router.post("/login", response_model=EditorLoginResponse)
 def editor_login(body: EditorLoginRequest, db: Session = Depends(get_db)):
-    """
-    Authenticate with email + password. On success, dispatch an OTP and
-    return a short-lived pre-auth token that the client uses on
-    /editor-auth/verify-otp.
+    """Authenticate with email + password.
+
+    Enrolled editors go straight to the authenticator step — the
+    response is ``stage=totp_needed`` with a pre-auth token and no
+    email dispatched. Editors that don't yet have TOTP paired fall
+    onto the first-time-setup path: we email a code and return
+    ``stage=email_otp_needed`` so identity is verified before we let
+    them pair a device.
     """
     user = authenticate_user(db, body.email, body.password)
     if not user:
@@ -159,24 +222,96 @@ def editor_login(body: EditorLoginRequest, db: Session = Depends(get_db)):
     if user.role not in EDITOR_ROLES:
         raise HTTPException(status_code=403, detail="This login is for editors only")
 
+    if totp_service.is_enrolled(user):
+        # Authenticator is the primary second factor for a returning editor.
+        # No email goes out here — the editor can request one via
+        # /editor-auth/request-email-otp if they've lost app access.
+        return EditorLoginResponse(
+            stage="totp_needed",
+            pre_auth_token=_mint_pre_auth_token(user.email),
+        )
+
+    # First-time enrolment path — verify identity by email OTP first so a
+    # password-only compromise cannot pair an attacker's authenticator.
     otp_result = create_and_send_otp(db, user)
     if not otp_result.get("success"):
         raise HTTPException(
             status_code=500,
             detail=otp_result.get("error") or "Could not send verification code",
         )
-
     return EditorLoginResponse(
+        stage="email_otp_needed",
         pre_auth_token=_mint_pre_auth_token(user.email),
         channel=otp_result.get("channel", "email"),
         masked_destination=otp_result.get("masked_destination", ""),
         expires_in_seconds=otp_result.get("expires_in_seconds", 300),
-        # Only forward dev_otp when the operator has explicitly enabled dev mode.
         dev_otp=otp_result.get("dev_otp") if settings.EDITOR_DEV_MODE else None,
     )
 
 
+# ── Fallback: request an email OTP when authenticator is lost ──
+
+class EditorRequestEmailOtpResponse(BaseModel):
+    channel: str
+    masked_destination: str
+    expires_in_seconds: int
+    dev_otp: Optional[str] = None
+
+
+@router.post("/request-email-otp", response_model=EditorRequestEmailOtpResponse)
+def editor_request_email_otp(
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
+    """Powers the "Can't access authenticator? Verify by email instead"
+    fallback on the TOTP screen. Requires a pre-auth token (proves the
+    caller already cleared credentials) but not ``email_ok`` — this
+    endpoint is what makes ``email_ok`` true in the first place.
+    """
+    email = _decode_pre_auth_token(authorization)
+    user = _load_editor(db, email)
+    result = create_and_send_otp(db, user)
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=500,
+            detail=result.get("error") or "Could not send verification code",
+        )
+    return EditorRequestEmailOtpResponse(
+        channel=result.get("channel", "email"),
+        masked_destination=result.get("masked_destination", ""),
+        expires_in_seconds=result.get("expires_in_seconds", 300),
+        dev_otp=result.get("dev_otp") if settings.EDITOR_DEV_MODE else None,
+    )
+
+
 # ── Step 2: OTP → full session token ─────────────────────
+
+class EditorSessionResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: dict
+
+
+def _mint_editor_session(user: User) -> EditorSessionResponse:
+    token = create_access_token(
+        data={
+            "sub": user.email,
+            "role": user.role.value,
+            "mfa_verified": True,
+        },
+        expires_delta=timedelta(hours=8),
+    )
+    return EditorSessionResponse(
+        access_token=token,
+        token_type="bearer",
+        user={
+            "email": user.email,
+            "username": user.username,
+            "full_name": user.full_name,
+            "role": user.role.value,
+        },
+    )
+
 
 @router.post("/verify-otp")
 def editor_verify_otp(
@@ -184,6 +319,17 @@ def editor_verify_otp(
     authorization: Optional[str] = Header(None),
     db: Session = Depends(get_db),
 ):
+    """Verify an email OTP. Two roles depending on state:
+
+      * **Fallback path** — an already-enrolled editor used the "verify
+        by email instead" link because they lost app access. Verify the
+        code and mint the full session immediately; TOTP is not required
+        for this login.
+      * **First-time enrolment path** — the editor has never paired an
+        authenticator. Verify the code, then return a
+        ``totp_enrolment_needed`` response with the fresh secret + QR
+        so the caller can complete pairing via ``/verify-totp``.
+    """
     email = _decode_pre_auth_token(authorization)
     user = _load_editor(db, email)
 
@@ -192,6 +338,75 @@ def editor_verify_otp(
         raise HTTPException(
             status_code=403 if result.get("locked") else 400,
             detail=result.get("error") or "OTP verification failed",
+        )
+
+    if totp_service.is_enrolled(user):
+        # Fallback path — grant the session outright. The editor can
+        # rotate their authenticator secret from account settings later.
+        return _mint_editor_session(user).model_dump()
+
+    # First-time enrolment — mint a fresh secret and hand back the
+    # otpauth URI plus a QR data-URI the frontend can render inline.
+    # ``confirm_enrolment`` on ``/verify-totp`` will stamp
+    # ``totp_enrolled_at`` once the editor's code confirms the pairing.
+    secret = totp_service.start_enrolment(db, user)
+    uri = totp_service.provisioning_uri(secret, user.email)
+    new_pre_auth = _mint_pre_auth_token(user.email, email_ok=True)
+    return EditorVerifyOtpResponse(
+        stage="totp_enrolment_needed",
+        pre_auth_token=new_pre_auth,
+        totp_secret=secret,
+        totp_otpauth_uri=uri,
+        totp_qr_data_uri=totp_service.qr_code_data_uri(uri),
+    ).model_dump()
+
+
+# ── Step 3: TOTP → full session token ────────────────────
+
+@router.post("/verify-totp")
+def editor_verify_totp(
+    body: EditorTotpCodeRequest,
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
+    """Verify the authenticator code and mint the full editor session.
+
+    Two distinct branches:
+
+      * **Standard sign-in** — editor already has an authenticator paired.
+        Any valid pre-auth token from ``/login`` is accepted (TOTP is
+        now the primary second factor after credentials).
+      * **First-time enrolment confirmation** — editor is pairing their
+        first authenticator. Requires ``email_ok=true`` on the pre-auth
+        token so identity has been proven by email OTP before we let
+        anyone bind a device.
+    """
+    email = _decode_pre_auth_token(authorization)
+    user = _load_editor(db, email)
+
+    if totp_service.is_enrolled(user):
+        # Standard sign-in — TOTP is the primary second factor here,
+        # so any valid credentials-issued pre-auth token is enough.
+        ok = totp_service.verify(db, user, body.code)
+    else:
+        # First-time enrolment confirmation. Enrolment requires prior
+        # identity proof via email OTP, so re-decode with ``email_ok``
+        # enforcement. ``start_enrolment`` must also have run during
+        # /verify-otp — if not, bounce the caller back to that stage
+        # instead of pretending to accept a code with no secret to
+        # verify against.
+        _decode_pre_auth_token(authorization, require_email_ok=True)
+        if not user.totp_secret:
+            raise HTTPException(
+                status_code=409,
+                detail="TOTP enrolment has not been started. Complete email verification first.",
+            )
+        ok = totp_service.confirm_enrolment(db, user, body.code)
+
+    if not ok:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid authenticator code. Check your device clock and try again.",
         )
 
     token = create_access_token(

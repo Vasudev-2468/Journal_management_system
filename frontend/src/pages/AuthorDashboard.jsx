@@ -554,6 +554,22 @@ export default function AuthorDashboard() {
                         <h3 className="text-sm font-bold text-gray-900 line-clamp-2 leading-snug group-hover:text-green-800 transition-colors">
                           {sub.paper_title}
                         </h3>
+                        {/* "See decision" shortcut once an editorial decision
+                            has been issued. Deep-links straight to the
+                            author-facing decision view instead of forcing the
+                            author through the general dashboard drawer. */}
+                        {['accepted','rejected','revision_requested','returned_to_author'].includes(sub.status) && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              navigate(`/author-dashboard/${sub.paper_id_code || sub.id}/decision`);
+                            }}
+                            className="mt-2 text-xs font-semibold text-blue-700 hover:text-blue-900 hover:underline"
+                          >
+                            See editorial decision →
+                          </button>
+                        )}
                       </div>
                       <svg className="w-4 h-4 text-gray-300 group-hover:text-green-500 transition-colors shrink-0 mt-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7"/>

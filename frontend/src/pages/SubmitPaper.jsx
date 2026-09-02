@@ -364,14 +364,12 @@ export default function SubmitPaper() {
       title: '', abstract: '', keywords: [], category: '',
       authors: [{ ...EMPTY_AUTHOR, is_corresponding: true }],
       cover_letter: '',
-      original_work: false, ai_disclosure: false,
-      ai_disclosure_details: '', open_access_terms: false,
+      original_work: false, open_access_terms: false,
     },
   });
 
   const { fields, append, remove, replace } = useFieldArray({ control, name: 'authors' });
   const abstractValue = watch('abstract');
-  const aiDisclosure = watch('ai_disclosure');
   const abstractWords = countWords(abstractValue);
   const titleValue = watch('title');
   const authorsValue = watch('authors');
@@ -468,9 +466,6 @@ export default function SubmitPaper() {
     if (!pdfFile) { setPdfError('Please upload your manuscript PDF.'); setStep(1); return; }
     if (!data.original_work) { setError('original_work', { message: 'You must confirm originality.' }); return; }
     if (!data.open_access_terms) { setError('open_access_terms', { message: 'You must agree to the open-access terms.' }); return; }
-    if (data.ai_disclosure && !data.ai_disclosure_details?.trim()) {
-      setError('ai_disclosure_details', { message: 'Please describe your AI tool usage.' }); return;
-    }
 
     // Find corresponding author for backend fields
     const corrAuthor = data.authors.find((a) => a.is_corresponding) || data.authors[0] || {};
@@ -485,10 +480,9 @@ export default function SubmitPaper() {
       fd.append('research_category', data.category);
       fd.append('author_name', corrAuthor.name || data.authors[0]?.name || '');
       fd.append('author_email', corrAuthor.email || data.authors[0]?.email || '');
-      fd.append('ai_usage_disclosure', data.ai_disclosure ? 'true' : 'false');
-      if (data.ai_disclosure && data.ai_disclosure_details) {
-        fd.append('ai_disclosure_details', data.ai_disclosure_details);
-      }
+      // Backend still requires ai_usage_disclosure as a Form field even
+      // though the author-facing checkbox is gone; send false unconditionally.
+      fd.append('ai_usage_disclosure', 'false');
       // Send full author list as JSON
       fd.append('authors_json', JSON.stringify(data.authors));
       fd.append('pdf_file', pdfFile);
@@ -513,8 +507,19 @@ export default function SubmitPaper() {
       const detail = err?.response?.data?.detail;
       if (Array.isArray(detail)) {
         detail.forEach((d) => { const f = d.loc?.[d.loc.length - 1]; if (f) setError(f, { message: d.msg }); });
+      } else if (typeof detail === 'string') {
+        setServerError(detail);
+      } else if (!err?.response) {
+        // No response at all → network error, backend down, or the frontend
+        // 60s timeout fired. Surface something the author can act on.
+        const isTimeout = err?.code === 'ECONNABORTED' || /timeout/i.test(err?.message || '');
+        setServerError(
+          isTimeout
+            ? 'The submission timed out. Your paper may still have been received — please check "My Submissions" before retrying.'
+            : `Could not reach the server (${err?.message || 'network error'}). Check your connection and try again.`,
+        );
       } else {
-        setServerError(typeof detail === 'string' ? detail : 'Something went wrong. Please try again.');
+        setServerError(`Submission failed (HTTP ${err.response.status}). Please try again.`);
       }
     } finally {
       setSubmitting(false);
@@ -950,30 +955,6 @@ export default function SubmitPaper() {
                       <p className="text-sm text-red-700">{serverError}</p>
                     </div>
                   )}
-
-                  {/* AI Disclosure */}
-                  <div className={`rounded-2xl border overflow-hidden transition-colors ${aiDisclosure ? 'border-green-300' : 'border-gray-200'}`}>
-                    <label className="flex items-start gap-3 p-4 cursor-pointer hover:bg-gray-50 transition-colors">
-                      <input type="checkbox" {...register('ai_disclosure')} className="mt-0.5 w-4 h-4 accent-green-600" />
-                      <div>
-                        <p className="text-sm font-semibold text-gray-800">AI Tool Disclosure</p>
-                        <p className="text-xs text-gray-500 mt-0.5 leading-relaxed">I used AI writing or analysis tools (e.g., ChatGPT, Claude, Grammarly) in preparing this manuscript.</p>
-                      </div>
-                    </label>
-                    {aiDisclosure && (
-                      <div className="px-4 pb-4 bg-green-50/50">
-                        <textarea
-                          {...register('ai_disclosure_details')}
-                          rows={3}
-                          placeholder="Describe which AI tools were used and for what purpose…"
-                          className={`w-full rounded-xl border px-3 py-2.5 text-sm outline-none resize-none bg-white transition-all ${
-                            errors.ai_disclosure_details ? 'border-red-400 ring-1 ring-red-200' : 'border-gray-200 focus:border-green-400 focus:ring-2 focus:ring-green-100'
-                          }`}
-                        />
-                        {errors.ai_disclosure_details && <p className="text-xs text-red-600 mt-1">{errors.ai_disclosure_details.message}</p>}
-                      </div>
-                    )}
-                  </div>
 
                   {/* Originality */}
                   <label className={`flex items-start gap-3 p-4 rounded-2xl border cursor-pointer transition-colors hover:bg-gray-50 ${errors.original_work ? 'border-red-300 bg-red-50' : 'border-gray-200'}`}>

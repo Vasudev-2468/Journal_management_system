@@ -18,9 +18,11 @@ never appeared in the Crossref submission log.
 """
 
 from datetime import datetime
+from typing import Optional
 from xml.sax.saxutils import escape
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
 from sqlalchemy.orm import Session, joinedload
 
 from app.database import get_db
@@ -30,6 +32,16 @@ from app.models.user import User
 from app.services.crossref_service import (
     poll_crossref_status,
     register_article_via_crossref,
+)
+from app.services.doi_service import (
+    DoiConflictError,
+    DoiIneligibleError,
+    DoiPermissionError,
+    assign_doi,
+    check_doi_eligibility,
+    has_doi_assign_permission,
+    list_audit as list_doi_audit,
+    record_registration_attempt,
 )
 from app.services.editor_auth import require_editor_mfa
 
@@ -89,6 +101,151 @@ def _build_deposit_xml(article: Article) -> str:
     )
 
 
+# ── DOI eligibility, assignment, audit (spec §5, §16, §17) ─
+
+class DoiEligibilityResponse(BaseModel):
+    eligible: bool
+    reason: str
+    missing_checks: list
+    can_assign: bool
+    current_status: str
+    current_doi: Optional[str] = None
+    proposed_doi: Optional[str] = None
+
+
+class DoiAssignRequest(BaseModel):
+    submission_id: Optional[str] = None
+    # Editor confirmation — the frontend confirmation dialog sends
+    # ``confirmed=true`` so accidental double-clicks on the button
+    # don't skip past the "This DOI will permanently identify this
+    # article" warning.
+    confirmed: bool = False
+
+
+class DoiStateResponse(BaseModel):
+    doi: Optional[str] = None
+    doi_status: str
+    doi_assigned_by: Optional[int] = None
+    doi_assigned_at: Optional[datetime] = None
+    doi_registered_at: Optional[datetime] = None
+
+
+class DoiAuditEntryResponse(BaseModel):
+    id: int
+    action: str
+    performed_by_email: Optional[str] = None
+    performed_at: datetime
+    previous_status: Optional[str] = None
+    new_status: Optional[str] = None
+    proposed_doi: Optional[str] = None
+    reason: Optional[str] = None
+
+
+def _load_article(db: Session, article_id: int) -> Article:
+    article = (
+        db.query(Article)
+        .options(joinedload(Article.author))
+        .filter(Article.id == article_id)
+        .first()
+    )
+    if article is None:
+        raise HTTPException(status_code=404, detail="Article not found")
+    return article
+
+
+@router.get("/{article_id}/eligibility", response_model=DoiEligibilityResponse)
+def check_doi_eligibility_endpoint(
+    article_id: int,
+    submission_id: Optional[str] = None,
+    db: Session = Depends(get_db),
+    editor: User = Depends(require_editor_mfa),
+) -> DoiEligibilityResponse:
+    """Return the eligibility snapshot the editor UI renders on the
+    DOI Management card. The service is careful never to state that
+    a rejected manuscript is eligible — the eligibility check consults
+    the linked submission's status when a ``submission_id`` is passed."""
+    from app.services.doi_service import mint_doi
+
+    article = _load_article(db, article_id)
+    elig = check_doi_eligibility(db, article, submission_id=submission_id)
+    return DoiEligibilityResponse(
+        eligible=elig.eligible,
+        reason=elig.reason,
+        missing_checks=elig.missing_checks,
+        can_assign=has_doi_assign_permission(editor),
+        current_status=article.doi_status,
+        current_doi=article.doi,
+        proposed_doi=mint_doi(article) if elig.eligible else None,
+    )
+
+
+@router.post("/{article_id}/assign", response_model=DoiStateResponse)
+def assign_doi_endpoint(
+    article_id: int,
+    body: DoiAssignRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    editor: User = Depends(require_editor_mfa),
+) -> DoiStateResponse:
+    """Authorise the DOI. Blocks on permission, eligibility, and prior
+    frozen DOI. Every branch — including the refusals — writes an audit
+    row so the compliance log stays complete."""
+    if not body.confirmed:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "DOI assignment requires explicit confirmation. Re-submit "
+                "with confirmed=true after the editor accepts the "
+                "confirmation dialog."
+            ),
+        )
+    article = _load_article(db, article_id)
+    ip = request.client.host if request.client else None
+    try:
+        article = assign_doi(
+            db, article=article, editor=editor,
+            submission_id=body.submission_id, ip_address=ip,
+        )
+    except DoiPermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except DoiIneligibleError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except DoiConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+    return DoiStateResponse(
+        doi=article.doi,
+        doi_status=article.doi_status,
+        doi_assigned_by=article.doi_assigned_by,
+        doi_assigned_at=article.doi_assigned_at,
+        doi_registered_at=article.doi_registered_at,
+    )
+
+
+@router.get("/{article_id}/audit", response_model=list[DoiAuditEntryResponse])
+def doi_audit_endpoint(
+    article_id: int,
+    db: Session = Depends(get_db),
+    _editor: User = Depends(require_editor_mfa),
+) -> list[DoiAuditEntryResponse]:
+    """Full DOI audit trail for an article. Read-only — the log is
+    immutable at write time (append-only in ``doi_service``)."""
+    entries = list_doi_audit(db, article_id)
+    return [
+        DoiAuditEntryResponse(
+            id=e.id,
+            action=e.action,
+            performed_by_email=e.performed_by_email,
+            performed_at=e.performed_at,
+            previous_status=e.previous_status,
+            new_status=e.new_status,
+            proposed_doi=e.proposed_doi,
+            reason=e.reason,
+        )
+        for e in entries
+    ]
+
+
 @router.post("/{article_id}/register")
 def register_article_with_crossref(
     article_id: int,
@@ -103,15 +260,39 @@ def register_article_with_crossref(
     the outcome, keyed by the acting editor. The full Crossref response
     body (first 4 kB) is persisted into ``meta.raw`` so we can diagnose
     schema drift after the fact without having to replay the request.
+
+    Now hard-gated on DOI eligibility + DOI_ASSIGN permission: a rejected
+    or unassigned article can no longer be registered.
     """
-    article = (
-        db.query(Article)
-        .options(joinedload(Article.author))
-        .filter(Article.id == article_id)
-        .first()
-    )
-    if article is None:
-        raise HTTPException(status_code=404, detail="Article not found")
+    article = _load_article(db, article_id)
+
+    # (1) Permission — reviewers/authors/section editors never reach
+    # this branch even if they somehow authenticated with the wrong role.
+    if not has_doi_assign_permission(editor):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Your role is not authorised to register a DOI. "
+                "Contact the managing editor or editor-in-chief."
+            ),
+        )
+
+    # (2) Article must carry an already-assigned DOI. Assignment is a
+    # distinct action (POST /crossref/{id}/assign) — enforcing the split
+    # makes the authorisation moment explicit in the audit log.
+    if not article.doi:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "No DOI has been assigned yet. Call POST /crossref/{id}/assign "
+                "first and then register."
+            ),
+        )
+    if article.doi_status in ("registered", "active"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"A DOI is already registered for this article ({article.doi}).",
+        )
 
     xml = _build_deposit_xml(article)
     result = register_article_via_crossref(article, xml)
@@ -133,6 +314,18 @@ def register_article_with_crossref(
     )
     db.add(audit)
     db.commit()
+
+    # Flip doi_status → registered / registration_failed and write the
+    # DOI-scoped audit row so the DOI Management card can render a
+    # correct state without re-parsing the generic audit_logs table.
+    record_registration_attempt(
+        db,
+        article=article,
+        editor=editor,
+        ok=bool(result.get("ok")),
+        response_snippet=(result.get("detail") or "")[:2000],
+        ip_address=client_host,
+    )
 
     # Trim ``raw`` from the API payload — it is only useful in the audit log.
     return {

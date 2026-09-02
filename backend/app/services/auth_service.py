@@ -82,11 +82,16 @@ def authenticate_user(db: Session, email: str, password: str) -> Optional[User]:
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     to_encode = data.copy()
+    now = datetime.utcnow()
     if expires_delta:
-        expire = datetime.utcnow() + expires_delta
+        expire = now + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(days=settings.JWT_EXPIRE_DAYS)
-    to_encode.update({"exp": expire})
+        expire = now + timedelta(days=settings.JWT_EXPIRE_DAYS)
+    # ``iat`` (issued-at) lets downstream guards enforce a sign-out
+    # cutoff. The reviewer / editor sign-out-everywhere paths bump a
+    # ``last_login_at`` timestamp and refuse tokens whose ``iat``
+    # precedes it.
+    to_encode.update({"iat": now, "exp": expire})
     encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
     return encoded_jwt
 

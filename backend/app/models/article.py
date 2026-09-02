@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, ForeignKey, Index
+from sqlalchemy import Column, DateTime, Integer, String, Text, ForeignKey, Index
 from sqlalchemy.dialects.postgresql import TSVECTOR
 from sqlalchemy.orm import relationship
 from app.database import Base
@@ -39,7 +39,29 @@ class Article(Base):
     # article schemas.
     search_vector = Column(TSVECTOR)
 
-    author = relationship("User", back_populates="articles")
+    # ── DOI lifecycle (spec §10) ─────────────────────────
+    #
+    # Distinct from ``preprint_doi`` — that's an external identifier the
+    # author self-reports. This chain is the DOI we issue as the journal
+    # of record, and it MUST NOT be minted for a manuscript that hasn't
+    # been formally accepted. The eligibility + permission gates live in
+    # ``services/doi_service.py`` and every state change is reflected
+    # in ``doi_audit_log``.
+    #
+    # ``doi`` is nullable — it's populated only after the editor
+    # authorises the assignment.  ``doi_status`` stays "not_eligible"
+    # until the article's linked submission reaches ``accepted``.
+    doi = Column(String(200), nullable=True, index=True)
+    doi_status = Column(
+        String(32), nullable=False, default="not_eligible",
+        server_default="not_eligible", index=True,
+    )
+    doi_assigned_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    doi_assigned_at = Column(DateTime, nullable=True)
+    doi_registered_at = Column(DateTime, nullable=True)
+    doi_registration_response = Column(Text, nullable=True)
+
+    author = relationship("User", back_populates="articles", foreign_keys=[author_id])
     journal = relationship("Journal", back_populates="articles")
     ai_analysis = relationship("AIAnalysis", back_populates="article", uselist=False)
 

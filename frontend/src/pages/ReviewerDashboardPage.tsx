@@ -174,28 +174,28 @@ export default function ReviewerDashboardPage() {
             navigate('/reviewer-login', { replace: true });
             return;
         }
-        fetchDashboard()
-            .then(setData)
-            .catch((err) => {
-                if (err?.response?.status === 401) {
-                    navigate('/reviewer-login', { replace: true });
-                    return;
-                }
-                // Surface the backend's detail (e.g. FastAPI's HTTPException
-                // string, or the SQL error message wrapped by a 500) so the
-                // user gets an actionable message instead of a generic one.
-                const detail = err?.response?.data?.detail;
-                const status = err?.response?.status;
-                const detailStr = typeof detail === 'string'
-                    ? detail
-                    : (detail && JSON.stringify(detail)) || err?.message || '';
-                setError(
-                    status
-                        ? `Could not load the dashboard (${status}): ${detailStr || 'server error'}`
-                        : `Could not load the dashboard: ${detailStr || 'network error'}`,
-                );
-            })
-            .finally(() => setLoading(false));
+        const load = () => fetchDashboard().then(setData).catch((err) => {
+            if (err?.response?.status === 401) {
+                navigate('/reviewer-login', { replace: true });
+                return;
+            }
+            const detail = err?.response?.data?.detail;
+            const status = err?.response?.status;
+            const detailStr = typeof detail === 'string'
+                ? detail
+                : (detail && JSON.stringify(detail)) || err?.message || '';
+            setError(
+                status
+                    ? `Could not load the dashboard (${status}): ${detailStr || 'server error'}`
+                    : `Could not load the dashboard: ${detailStr || 'network error'}`,
+            );
+        });
+        // Live push — any WS event from the reviewer topic re-hydrates
+        // the counters + alerts without a manual reload.
+        const onLive = () => { load(); };
+        document.addEventListener('reviewer:live', onLive);
+        load().finally(() => setLoading(false));
+        return () => document.removeEventListener('reviewer:live', onLive);
     }, [navigate]);
 
     return (

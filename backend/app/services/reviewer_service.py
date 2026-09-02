@@ -11,6 +11,7 @@ from app.config import settings
 from app.models.reviewer import Reviewer
 from app.models.review import Review, ReviewStatus
 from app.models.submission import Submission, SubmissionStatus
+from app.services.state_machine import transition_or_direct
 from app.utils.helpers import hash_password
 from app.utils.link_tokens import create_review_link_token
 
@@ -153,100 +154,258 @@ def _colored_btn(label: str, url: str, background: str) -> str:
     )
 
 
+def _fetch_masthead(db: Session) -> dict:
+    """Read the active journal row and return the values the invitation
+    template renders — falling back to safe defaults if the row is
+    missing or a field is empty. Kept small so template rendering is
+    the same shape whether or not a journal row exists yet.
+    """
+    from app.models.journal import Journal
+
+    row = None
+    try:
+        row = db.query(Journal).filter(Journal.is_active.is_(True)).first()
+    except Exception:  # noqa: BLE001
+        row = None
+
+    frontend = (settings.FRONTEND_URL or "").rstrip("/")
+    return {
+        "name": (row.title if row and row.title else
+                 "JGAIR — Journal of Generative and Applied Intelligence Research"),
+        "email": (
+            (row.email_editorial if row else None)
+            or settings.EDITORIAL_INBOX_EMAIL
+            or settings.SENDGRID_FROM_EMAIL
+            or "editorial@jgair.org"
+        ),
+        "website": frontend or "https://jgair.org",
+        "editor_name": "Editorial Team",
+        "editor_position": "Editorial Office",
+    }
+
+
 def send_reviewer_activation_email(
     reviewer: Reviewer,
-    plaintext_password: str,
+    plaintext_password: Optional[str],
     accept_token: str,
     decline_token: str,
+    *,
+    db: Optional[Session] = None,
+    manuscript_id: str = "—",
+    manuscript_title: str = "(untitled manuscript)",
+    article_type: str = "Research Article",
+    review_deadline: Optional[str] = None,
+    include_temporary_password: bool = True,
+    attachments: Optional[list] = None,
 ) -> bool:
-    """Deliver the invitation email carrying the reviewer's initial
-    credentials and the Accept / Reject buttons.
+    """Deliver the reviewer invitation email.
 
-    The reviewer's login username is their email; the password is the
-    freshly-generated one from ``_generate_random_password`` — the
-    Accept button confirms membership and unlocks login, the Reject
-    button records a decline. Both links are one-click GETs so the
-    reviewer never leaves their inbox to answer.
+    The template follows the JGAIR spec: sectioned layout with
+    manuscript info, reviewer account block, Accept / Decline buttons,
+    confidentiality reminder, deadline and journal masthead sign-off.
 
-    Uses ``_send_and_log`` so delivery hits Gmail SMTP first (see the
-    provider chain in ``email_service._send_and_log``) and every send
-    lands in the notifications table for the editor's audit view.
-    Returns True on success, False on any provider failure.
+    Two credential paths (per the security recommendation): if
+    ``include_temporary_password=True`` the freshly-generated password
+    is embedded in the email (matches the plain-form template); if
+    False, only the Username is shown and the reviewer is nudged to
+    the "Set your password" activation link (the Accept button acts
+    as that link — hitting Accept lands them on the portal to define
+    their own password rather than surfacing a plaintext one in the
+    inbox).
+
+    Accept and Decline URLs are one-click GETs so nothing else in the
+    inbox pipeline (link previewers, tracking indirection) fails
+    silently on a POST. The Decline URL renders a reason-capture form
+    at the destination page — see ``routers/reviewer_membership.py``.
+
+    Returns True on successful send, False on provider failure.
     """
     from app.services.email_service import _send_and_log, _wrap
 
     frontend = (settings.FRONTEND_URL or "").rstrip("/")
-    # Backend endpoints — GET so an email-client's link tracker
-    # doesn't accidentally consume the click through a HEAD request.
     root = (settings.PUBLIC_API_URL or "").rstrip("/") or frontend
     accept_url = f"{root}/reviewer-membership-invite/{accept_token}/accept"
     decline_url = f"{root}/reviewer-membership-invite/{decline_token}/decline"
+    portal_url = f"{frontend}/reviewer-login" if frontend else "/reviewer-login"
 
-    expertise_line = ""
-    if reviewer.expertise_tags:
-        expertise_line = (
-            f"<p style='margin:6px 0 18px 0;'>Areas we would like your input on: "
-            f"<strong>{', '.join(reviewer.expertise_tags)}</strong>.</p>"
+    masthead = _fetch_masthead(db) if db is not None else {
+        "name": "JGAIR — Journal of Generative and Applied Intelligence Research",
+        "email": settings.EDITORIAL_INBOX_EMAIL or "editorial@jgair.org",
+        "website": frontend or "https://jgair.org",
+        "editor_name": "Editorial Team",
+        "editor_position": "Editorial Office",
+    }
+
+    if review_deadline is None:
+        review_deadline = (datetime.utcnow() + _REVIEWER_INVITE_TTL).strftime("%d %B %Y")
+
+    subject = f"Review Invitation: {manuscript_id} – {masthead['name']}"
+
+    # Reviewer Account block — password shown only when explicitly
+    # asked. Otherwise the Accept flow becomes the password-setting
+    # link, matching the recommended security posture.
+    if include_temporary_password and plaintext_password:
+        credential_rows = (
+            f"<p style='margin:2px 0;font-size:14px;font-family:monospace;color:#111827;'>"
+            f"<strong>Username:</strong> {reviewer.email}<br>"
+            f"<strong>Temporary Password:</strong> {plaintext_password}"
+            f"</p>"
+            f"<p style='margin:8px 0 0 0;font-size:12px;color:#6b7280;'>"
+            f"You will be asked to change your temporary password after your first login."
+            f"</p>"
+        )
+    else:
+        credential_rows = (
+            f"<p style='margin:2px 0;font-size:14px;font-family:monospace;color:#111827;'>"
+            f"<strong>Username:</strong> {reviewer.email}"
+            f"</p>"
+            f"<p style='margin:8px 0 0 0;font-size:12px;color:#6b7280;'>"
+            f"After you click <strong>Accept Review</strong>, you will be prompted to set your password."
+            f"</p>"
         )
 
-    days = int(_REVIEWER_INVITE_TTL.total_seconds() // 86400)
-    login_url = f"{frontend}/reviewer-login" if frontend else "/reviewer-login"
+    # Attachment note — surfaces only when the caller included one or
+    # more files. Kept in the body (not just the mailer's attachment
+    # panel) so the reviewer can spot the manuscript even when their
+    # client hides attachments behind a paperclip icon.
+    if attachments:
+        pdf_names = [a.get("filename", "manuscript.pdf") for a in attachments]
+        attachment_note = (
+            f"<div style='background:#eff6ff;border:1px solid #bfdbfe;"
+            f"border-left:4px solid #1e40af;border-radius:6px;"
+            f"padding:12px 16px;margin:6px 0 18px 0;'>"
+            f"<p style='margin:0;font-size:13px;color:#1e3a8a;'>"
+            f"📎 <strong>Manuscript attached:</strong> "
+            f"{', '.join(pdf_names)}. The file is redacted where "
+            f"available to preserve reviewer anonymity."
+            f"</p></div>"
+        )
+    else:
+        attachment_note = ""
 
     body = _wrap(
         f"""
-        <p>Dear {reviewer.name},</p>
+        <p>Dear Dr. {reviewer.name},</p>
 
-        <p>You have been invited to join the JGAIR reviewer panel. Please
-           <strong>Accept</strong> or <strong>Reject</strong> this invitation
-           within <strong>{days} days</strong> — if we hear nothing before
-           then, the invitation will be revoked automatically.</p>
+        <p>You have been invited to review the following manuscript submitted
+           to <strong>{masthead['name']}</strong>.</p>
 
-        {expertise_line}
+        <h3 style="margin:22px 0 6px 0;color:#111827;">📄 Manuscript Information</h3>
+        <table style="width:100%;border-collapse:collapse;margin:6px 0 18px 0;">
+          <tr>
+            <td style="padding:8px 12px;background:#f3f4f6;font-weight:600;
+                       border:1px solid #e5e7eb;width:38%;">Manuscript ID</td>
+            <td style="padding:8px 12px;border:1px solid #e5e7eb;">{manuscript_id}</td>
+          </tr>
+          <tr>
+            <td style="padding:8px 12px;background:#f3f4f6;font-weight:600;
+                       border:1px solid #e5e7eb;">Manuscript Title</td>
+            <td style="padding:8px 12px;border:1px solid #e5e7eb;">{manuscript_title}</td>
+          </tr>
+          <tr>
+            <td style="padding:8px 12px;background:#f3f4f6;font-weight:600;
+                       border:1px solid #e5e7eb;">Article Type</td>
+            <td style="padding:8px 12px;border:1px solid #e5e7eb;">{article_type}</td>
+          </tr>
+          <tr>
+            <td style="padding:8px 12px;background:#f3f4f6;font-weight:600;
+                       border:1px solid #e5e7eb;">Journal</td>
+            <td style="padding:8px 12px;border:1px solid #e5e7eb;">{masthead['name']}</td>
+          </tr>
+          <tr>
+            <td style="padding:8px 12px;background:#f3f4f6;font-weight:600;
+                       border:1px solid #e5e7eb;">Review Due Date</td>
+            <td style="padding:8px 12px;border:1px solid #e5e7eb;">{review_deadline}</td>
+          </tr>
+        </table>
 
-        <div style="text-align:center;margin:24px 0;">
-          {_colored_btn("Accept invitation", accept_url, "#16a34a")}
-          &nbsp;&nbsp;
-          {_colored_btn("Reject invitation", decline_url, "#dc2626")}
-        </div>
+        <p>We would be grateful for your expert evaluation of this manuscript
+           and your recommendation to the editor.</p>
 
+        {attachment_note}
+
+        <h3 style="margin:22px 0 6px 0;color:#111827;">🔐 Reviewer Account</h3>
         <div style="background:#f3f4f6;border:1px solid #e5e7eb;border-radius:8px;
-                    padding:14px 18px;margin:20px 0;">
+                    padding:14px 18px;margin:6px 0 18px 0;">
           <p style="margin:0 0 6px 0;font-size:13px;color:#374151;">
-            Once you accept, sign in with these credentials — please change
-            the password after first login:
+            A reviewer account has been created for you.
           </p>
-          <p style="margin:2px 0;font-size:14px;font-family:monospace;color:#111827;">
-            <strong>Username:</strong> {reviewer.email}<br>
-            <strong>Password:</strong> {plaintext_password}
-          </p>
-          <p style="margin:8px 0 0 0;font-size:12px;">
-            <a href="{login_url}" style="color:#1e40af;">Sign in to the reviewer portal</a>
+          {credential_rows}
+          <p style="margin:10px 0 0 0;font-size:12px;">
+            Reviewer Portal:
+            <a href="{portal_url}" style="color:#1e40af;word-break:break-all;">{portal_url}</a>
           </p>
         </div>
 
-        <p style="font-size:12px;color:#6b7280;">
+        <h3 style="margin:22px 0 6px 0;color:#111827;">📌 Please Respond to This Invitation</h3>
+        <p>Before accessing the manuscript for review, please indicate whether
+           you are able to undertake this review.</p>
+
+        <div style="text-align:center;margin:22px 0;">
+          {_colored_btn("✅ ACCEPT REVIEW", accept_url, "#16a34a")}
+          &nbsp;&nbsp;
+          {_colored_btn("❌ DECLINE REVIEW", decline_url, "#dc2626")}
+        </div>
+
+        <p style="font-size:13px;color:#4b5563;">
+          If you <strong>accept</strong> the invitation, you will be taken to
+          your reviewer dashboard, where you can access the manuscript and
+          complete the review.
+        </p>
+        <p style="font-size:13px;color:#4b5563;">
+          If you <strong>decline</strong>, you may optionally provide a
+          reason: outside your area of expertise, conflict of interest,
+          unable to complete within the deadline, personal or professional
+          commitments, or other.
+        </p>
+
+        <h3 style="margin:22px 0 6px 0;color:#111827;">🔒 Confidentiality</h3>
+        <p style="font-size:13px;color:#4b5563;">
+          The manuscript and all materials associated with the peer-review
+          process are confidential. Please do not share, distribute, or
+          reproduce the manuscript or review materials.
+        </p>
+        <p style="font-size:13px;color:#4b5563;">
+          If you identify a conflict of interest, please decline the
+          invitation and inform the editorial office where appropriate.
+        </p>
+
+        <h3 style="margin:22px 0 6px 0;color:#111827;">⏰ Review Deadline</h3>
+        <p style="font-size:13px;color:#4b5563;">
+          If you accept this invitation, please submit your completed review by:
+          <strong>{review_deadline}</strong>.
+        </p>
+        <p style="font-size:13px;color:#4b5563;">
+          If you require an extension, you may request one through the
+          reviewer portal.
+        </p>
+
+        <p style="font-size:11px;color:#6b7280;margin-top:22px;">
           If the buttons above do not work, copy and paste these links into
           your browser:<br>
           Accept: <a href="{accept_url}" style="color:#1e40af;word-break:break-all;">{accept_url}</a><br>
-          Reject: <a href="{decline_url}" style="color:#1e40af;word-break:break-all;">{decline_url}</a>
+          Decline: <a href="{decline_url}" style="color:#1e40af;word-break:break-all;">{decline_url}</a>
         </p>
 
-        <div style="background:#eef2ff;border:1px solid #c7d2fe;border-left:4px solid #1e40af;
-                    padding:12px 16px;border-radius:6px;margin:20px 0;">
-          <p style="margin:0;font-size:13px;color:#1e3a8a;">
-            If you were not expecting this invitation you can safely ignore
-            this email — inaction is treated as a decline after {days} days.
-          </p>
-        </div>
+        <p style="margin-top:22px;">
+          Thank you for contributing your expertise to the peer-review process.
+        </p>
 
-        <p>Best regards,<br><strong>Editorial Team</strong></p>
+        <p style="margin-top:22px;">Sincerely,<br>
+          <strong>{masthead['editor_name']}</strong><br>
+          <span style="font-size:13px;color:#6b7280;">{masthead['editor_position']}</span><br>
+          <span style="font-size:13px;color:#6b7280;">{masthead['name']}</span><br>
+          <a href="mailto:{masthead['email']}" style="font-size:13px;color:#1e40af;">{masthead['email']}</a><br>
+          <a href="{masthead['website']}" style="font-size:13px;color:#1e40af;">{masthead['website']}</a>
+        </p>
         """
     )
     return _send_and_log(
         reviewer.email,
-        "You've been invited to review for JGAIR — please accept or reject",
+        subject,
         body,
         "reviewer_invitation",
+        attachments=attachments,
     )
 
 
@@ -271,11 +430,44 @@ def _stamp_new_invitation(reviewer: Reviewer) -> str:
     return plaintext
 
 
-def _send_membership_invitation(reviewer: Reviewer, plaintext: str) -> bool:
+def _publish_reviewer_event(reviewer_id: uuid.UUID, event: str, meta: dict | None = None) -> None:
+    """Publish a lightweight event to the reviewer's WS topic. Best-effort."""
+    try:
+        from app.services import pubsub
+        pubsub.publish_threadsafe(
+            f"reviewer:{reviewer_id}",
+            {"event": event, "meta": meta or {}},
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _send_membership_invitation(
+    reviewer: Reviewer,
+    plaintext: Optional[str],
+    *,
+    db: Optional[Session] = None,
+    manuscript_id: str = "—",
+    manuscript_title: str = "(untitled manuscript)",
+    article_type: str = "Research Article",
+    review_deadline: Optional[str] = None,
+    include_temporary_password: bool = True,
+    attachments: Optional[list] = None,
+) -> bool:
     accept_token = mint_reviewer_accept_token(reviewer.id)
     decline_token = mint_reviewer_decline_token(reviewer.id)
     return send_reviewer_activation_email(
-        reviewer, plaintext, accept_token, decline_token,
+        reviewer,
+        plaintext,
+        accept_token,
+        decline_token,
+        db=db,
+        manuscript_id=manuscript_id,
+        manuscript_title=manuscript_title,
+        article_type=article_type,
+        review_deadline=review_deadline,
+        include_temporary_password=include_temporary_password,
+        attachments=attachments,
     )
 
 
@@ -334,6 +526,24 @@ def build_invitation_link(reviewer: Reviewer) -> str:
     return f"{api_root}/reviewer-membership-invite/{accept_token}/accept"
 
 
+def reset_reviewer_password_only(db: Session, reviewer: Reviewer) -> str:
+    """Regenerate a plaintext password for the reviewer, store the new
+    hash, and return the plaintext so the editor can share it out-of-band.
+
+    Distinct from ``resend_reviewer_invitation``: this touches ONLY the
+    password. Invitation-lifecycle stamps, ``email_verified_at``, and
+    the ``accepted`` state are all preserved, so a reviewer who has
+    already onboarded keeps their onboarded state — only their password
+    changes. Use this when an editor is answering "I forgot my password"
+    on the reviewer's behalf.
+    """
+    plaintext = _generate_random_password()
+    reviewer.password_hash = hash_password(plaintext)
+    db.commit()
+    db.refresh(reviewer)
+    return plaintext
+
+
 def resend_reviewer_invitation(db: Session, reviewer: Reviewer) -> bool:
     """Regenerate the password, reset every lifecycle timestamp, and
     dispatch a fresh Accept/Reject email. Un-revokes a
@@ -365,17 +575,91 @@ def accept_reviewer_invitation(db: Session, reviewer: Reviewer) -> None:
     db.commit()
 
 
-def decline_reviewer_invitation(db: Session, reviewer: Reviewer) -> None:
+def decline_reviewer_invitation(
+    db: Session,
+    reviewer: Reviewer,
+    *,
+    reason_code: Optional[str] = None,
+    reason_notes: Optional[str] = None,
+) -> None:
     """Reviewer clicked Reject — stamp both ``invitation_declined_at``
     and ``invitation_revoked_at`` so the row is fully retired but the
     audit trail records the reviewer's choice (rather than the
-    editor's or the agent's). Idempotent."""
+    editor's or the agent's). Idempotent.
+
+    The optional ``reason_code`` / ``reason_notes`` capture the
+    decline reason from the form the reviewer filled in — they are
+    persisted onto the reviewer row when the columns exist and always
+    written to the notifications audit trail so the editor sees the
+    context. Also flips the paired Review rows (if any) to declined
+    and pings the editorial inbox so a replacement reviewer can be
+    chosen.
+    """
     now = datetime.utcnow()
     if reviewer.invitation_declined_at is None:
         reviewer.invitation_declined_at = now
     if reviewer.invitation_revoked_at is None:
         reviewer.invitation_revoked_at = now
+    # Optional columns on the reviewer row — set them only if the
+    # migration that added them has been applied; skip silently
+    # otherwise to keep older DBs functional.
+    if hasattr(reviewer, "decline_reason_code") and reason_code:
+        reviewer.decline_reason_code = reason_code
+    if hasattr(reviewer, "decline_reason_notes") and reason_notes:
+        reviewer.decline_reason_notes = reason_notes
+
+    # Roll every open pending Review for this reviewer over to declined
+    # so the state matches the panel decision — the editor's Review Room
+    # will then show the assignment slot as free and the Reviewer
+    # Suggester Agent can pick a replacement.
+    try:
+        open_reviews = (
+            db.query(Review)
+            .filter(
+                Review.reviewer_id == reviewer.id,
+                Review.status == ReviewStatus.pending,
+            )
+            .all()
+        )
+        for rv in open_reviews:
+            if hasattr(rv, "state"):
+                try:
+                    rv.state = "declined"
+                except Exception:  # noqa: BLE001
+                    pass
+            rv.status = ReviewStatus.declined if hasattr(ReviewStatus, "declined") else rv.status
+    except Exception:  # noqa: BLE001
+        pass
+
     db.commit()
+
+    # Best-effort notification to the editorial inbox so a replacement
+    # can be lined up. Failures never break the reviewer's flow.
+    try:
+        from app.services.email_service import _send_and_log, _wrap
+        editor_inbox = settings.EDITORIAL_INBOX_EMAIL or settings.SENDGRID_FROM_EMAIL
+        if editor_inbox:
+            reason_line = ""
+            if reason_code:
+                reason_line = (
+                    f"<p><strong>Reason:</strong> {reason_code}"
+                    f"{' — ' + reason_notes if reason_notes else ''}</p>"
+                )
+            _send_and_log(
+                editor_inbox,
+                f"Reviewer declined — {reviewer.name}",
+                _wrap(
+                    f"<p><strong>{reviewer.name}</strong> "
+                    f"({reviewer.email}) has declined the review invitation.</p>"
+                    f"{reason_line}"
+                    f"<p>The paired assignment(s) have been released — the "
+                    f"Reviewer Suggester Agent can propose a replacement from "
+                    f"the Review Room.</p>"
+                ),
+                "reviewer_declined_editor_notice",
+            )
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def auto_revoke_expired_invitations(db: Session) -> int:
@@ -518,6 +802,17 @@ def get_reviewer_detail(db: Session, reviewer_id: uuid.UUID):
         "is_active": reviewer.is_active,
         "created_at": reviewer.created_at,
         "review_history": history,
+        # Access lifecycle — surfaced so the editor detail modal can
+        # answer "has this reviewer logged in yet? has their invite
+        # expired?" without the editor guessing.
+        "password_set": bool(getattr(reviewer, "password_hash", None)),
+        "email_verified_at": getattr(reviewer, "email_verified_at", None),
+        "last_login_at": getattr(reviewer, "last_login_at", None),
+        "invitation_sent_at": getattr(reviewer, "invitation_sent_at", None),
+        "invitation_accepted_at": getattr(reviewer, "invitation_accepted_at", None),
+        "invitation_declined_at": getattr(reviewer, "invitation_declined_at", None),
+        "invitation_revoked_at": getattr(reviewer, "invitation_revoked_at", None),
+        "invitation_expires_at": getattr(reviewer, "invitation_expires_at", None),
     }
 
 
@@ -585,7 +880,7 @@ def assign_reviewers(
         reviewer.current_load += 1
         created_reviews.append(review)
 
-    submission.status = SubmissionStatus.under_review
+    transition_or_direct(db, submission, SubmissionStatus.under_review)
     db.commit()
 
     for review in created_reviews:

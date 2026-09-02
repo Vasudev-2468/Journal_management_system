@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Link } from 'react-router-dom';
+import React, { useMemo, useState } from 'react';
+import { Link, useLocation } from 'react-router-dom';
 import Header from '../components/layout/Header';
 import Footer from '../components/layout/Footer';
 import { requestReset } from '../api/passwordReset';
@@ -17,7 +17,19 @@ const GENERIC_SUCCESS =
     "If an account exists for that email, we've sent a reset link.";
 
 const ForgotPasswordPage: React.FC = () => {
-    const [email, setEmail] = useState('');
+    // Prefill from ?email=… so a user who clicked "Forgot password?"
+    // on the Author login screen (which passes the address in the
+    // querystring) doesn't have to retype it. Falls back to empty
+    // when the URL didn't carry one.
+    const location = useLocation();
+    const initialEmail = useMemo(() => {
+        try {
+            return new URLSearchParams(location.search).get('email') || '';
+        } catch {
+            return '';
+        }
+    }, [location.search]);
+    const [email, setEmail] = useState(initialEmail);
     const [submitting, setSubmitting] = useState(false);
     const [sent, setSent] = useState(false);
     const [error, setError] = useState<string | null>(null);

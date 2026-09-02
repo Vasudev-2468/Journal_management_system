@@ -308,6 +308,17 @@ const EditorProductionQueue: React.FC = () => {
                                         placeholder="10.xxxxx/…"
                                         className="w-full border border-gray-300 rounded px-2 py-1.5 font-mono"
                                     />
+                                    <div className="mt-1.5 text-xs">
+                                        <a
+                                            href={`/editor/doi/${(editing as any).article_id ?? editing.id}`}
+                                            className="text-blue-700 hover:underline"
+                                        >
+                                            → Open DOI management page
+                                        </a>
+                                        <span className="text-gray-400 ml-2">
+                                            Enforces the accepted-only + DOI_ASSIGN permission rules.
+                                        </span>
+                                    </div>
                                 </label>
                             </div>
                             <div className="mt-6 flex justify-end gap-2">

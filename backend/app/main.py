@@ -12,6 +12,9 @@ from fastapi.staticfiles import StaticFiles
 
 from app.routers import auth, journals, articles, reviews, ai, submissions, reviewers, editorial
 from app.routers import editor_portal, editor_auth, author_auth, policies, article_reviews
+from app.routers import rbac_and_workflow as rbac_workflow_router
+from app.routers import corrections as corrections_router
+from app.routers import bid_room as bid_room_router
 from app.routers import volumes as volumes_router
 from app.routers import contact as contact_router
 from app.routers import announcements as announcements_router
@@ -37,6 +40,7 @@ from app.routers import reviewer_invite as reviewer_invite_router
 from app.routers import reviewer_membership as reviewer_membership_router
 from app.routers import reviewer_portal as reviewer_portal_router
 from app.routers import author_revision as author_revision_router
+from app.routers import journal_identifier as journal_identifier_router
 from app.routers import editor_badges as editor_badges_router
 from app.routers import authors_notifications as authors_notifications_router
 from app.routers import csp_report as csp_report_router
@@ -150,10 +154,28 @@ def _seed_initial_editor_if_configured() -> None:
         db.close()
 
 
+def _seed_permissions_matrix() -> None:
+    """Idempotent — writes any missing rows from the RBAC catalogue.
+    See ``services/permissions.seed_default_permissions`` for the
+    role→action matrix."""
+    from app.services.permissions import seed_default_permissions
+    db = SessionLocal()
+    try:
+        seed_default_permissions(db)
+    except Exception:  # noqa: BLE001
+        # A fresh install may boot before the migration has landed; a
+        # failed seed here is not fatal (the /permissions endpoints
+        # simply have nothing to serve until the next boot).
+        pass
+    finally:
+        db.close()
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     _run_migrations_if_requested()
     _seed_initial_editor_if_configured()
+    _seed_permissions_matrix()
     yield
 
 
@@ -207,6 +229,18 @@ app.include_router(editor_portal.router, prefix="/editor-portal", tags=["editor-
 app.include_router(editor_auth.router, prefix="/editor-auth", tags=["editor-auth"])
 app.include_router(author_auth.router, prefix="/author-auth", tags=["author-auth"])
 app.include_router(policies.router, prefix="/policies", tags=["policies"])
+# RBAC + workflow gates. Includes:
+#   GET  /permissions/me
+#   GET  /submissions/{id}/decision-briefing
+#   POST /articles/{id}/publish
+app.include_router(rbac_workflow_router.router, tags=["rbac-workflow"])
+# Corrections + retractions (spec §29, §30). Notices are public read;
+# publishing requires CORRECT_ARTICLE / RETRACT_ARTICLE respectively.
+app.include_router(corrections_router.router, tags=["corrections"])
+# Bid Room aggregator (spec §Bid-Room). Mounted at /editor-portal so
+# the editor UI can hit /editor-portal/bid-room/{submission_id} and
+# /editor-portal/bid-room/reviews/{review_id}/remind.
+app.include_router(bid_room_router.router, prefix="/editor-portal", tags=["bid-room"])
 app.include_router(article_reviews.router, prefix="/article-reviews", tags=["article-reviews"])
 app.include_router(volumes_router.router, prefix="/publication", tags=["publication"])
 app.include_router(contact_router.router, prefix="/contact", tags=["contact"])
@@ -239,6 +273,7 @@ app.include_router(reviewer_invite_router.router, prefix="/reviewer-invite", tag
 app.include_router(reviewer_membership_router.router, prefix="/reviewer-membership-invite", tags=["reviewer-membership-invite"])
 app.include_router(reviewer_portal_router.router, prefix="/reviewer-portal", tags=["reviewer-portal"])
 app.include_router(author_revision_router.router, prefix="/author-revision", tags=["author-revision"])
+app.include_router(journal_identifier_router.router, prefix="/journal-identifier", tags=["journal-identifier"])
 app.include_router(editor_badges_router.router, prefix="/editor-badges", tags=["editor-badges"])
 app.include_router(authors_notifications_router.router, prefix="/authors-notifications", tags=["authors-notifications"])
 app.include_router(csp_report_router.router, tags=["csp-report"])
@@ -306,6 +341,7 @@ _V1_ALIASES = [
     (reviewer_membership_router.router, "/reviewer-membership-invite"),
     (reviewer_portal_router.router, "/reviewer-portal"),
     (author_revision_router.router, "/author-revision"),
+    (journal_identifier_router.router, "/journal-identifier"),
     (editor_badges_router.router, "/editor-badges"),
     (authors_notifications_router.router, "/authors-notifications"),
     (password_reset_router.router, "/password-reset"),
