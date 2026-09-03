@@ -219,6 +219,76 @@ def submit_revision(
     db.commit()
     db.refresh(version)
 
+    # ── REVISION_SUBMITTED event ────────────────────────
+    # Explicit event row so the editorial queue and dashboard counter
+    # never depend on the email side-effect landing. Writing this row
+    # is the system-of-record signal that a revision was submitted:
+    # any downstream agent (queue, notification, revision-comparison,
+    # audit) reacts to the row's presence, not to email delivery.
+    #
+    # The trigger_event carries the submission id so ``editor_portal.queue``
+    # can join back to the submission by prefix match, and the row's
+    # ``sent_at`` is stamped at emit time so time-based filters work.
+    try:
+        from app.models.notification import Notification, NotificationChannel, NotificationStatus
+        event_row = Notification(
+            recipient_email="editorial-queue@internal",  # sentinel — this row is an event, not a message
+            channel=NotificationChannel.email,
+            trigger_event=f"revision_submitted:{submission_id}",
+            message_body=(
+                f"Revision R{next_number} submitted for {submission.paper_title} "
+                f"by {getattr(submission, 'author_name', 'author')}."
+            ),
+            status=NotificationStatus.sent,   # the event itself is complete
+            sent_at=datetime.utcnow(),
+        )
+        db.add(event_row)
+        db.commit()
+    except Exception:  # noqa: BLE001
+        db.rollback()  # event write must not fail the resubmit
+
+    # ── Notify the handling editor (email side-effect) ──
+    # Best-effort; the event row above is the authoritative signal.
+    try:
+        from app.services.email_service import _send_and_log, _wrap
+        from app.config import settings as _settings
+
+        editor_inbox = getattr(_settings, "EDITORIAL_INBOX_EMAIL", None) or getattr(
+            _settings, "SENDGRID_FROM_EMAIL", None,
+        )
+        if editor_inbox:
+            paper_id = getattr(submission, "paper_id_code", None) or str(submission_id)[:8]
+            frontend = (getattr(_settings, "FRONTEND_URL", "") or "").rstrip("/")
+            review_url = f"{frontend}/editor/submissions/{submission_id}/revision-assessment"
+            body = _wrap(f"""
+                <p>A revision has just been submitted.</p>
+                <table role="presentation" cellspacing="0" cellpadding="0" border="0"
+                       style="width:100%;border-collapse:collapse;margin:16px 0;">
+                  <tr><td style="padding:6px 0;color:#374151;width:170px;"><strong>Manuscript ID:</strong></td>
+                      <td style="padding:6px 0;color:#111827;">{paper_id}</td></tr>
+                  <tr><td style="padding:6px 0;color:#374151;"><strong>Title:</strong></td>
+                      <td style="padding:6px 0;color:#111827;">{submission.paper_title}</td></tr>
+                  <tr><td style="padding:6px 0;color:#374151;"><strong>Round:</strong></td>
+                      <td style="padding:6px 0;color:#111827;">{next_number}</td></tr>
+                  <tr><td style="padding:6px 0;color:#374151;"><strong>Author:</strong></td>
+                      <td style="padding:6px 0;color:#111827;">{getattr(submission, 'author_name', '—')}</td></tr>
+                </table>
+                <p><a href="{review_url}" style="display:inline-block;padding:12px 28px;
+                       background:#1e40af;color:#ffffff;text-decoration:none;
+                       font-weight:600;border-radius:6px;">Review revision</a></p>
+                <p style="font-size:13px;color:#6b7280;">
+                    The revision is currently marked <strong>under_review</strong> pending your assessment.
+                </p>
+            """)
+            _send_and_log(
+                editor_inbox,
+                f"Revision submitted: {paper_id}",
+                body,
+                f"revision_submitted:{submission_id}:email",
+            )
+    except Exception:  # noqa: BLE001
+        pass  # editor notify is best-effort
+
     _log(
         db,
         "revision.submitted",

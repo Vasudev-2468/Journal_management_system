@@ -846,12 +846,43 @@ def assign_reviewers(
     db: Session,
     submission_id: uuid.UUID,
     reviewer_ids: List[uuid.UUID],
+    round_number: Optional[int] = None,
+    deadline_days: Optional[int] = None,
 ) -> List[Review]:
+    """Create reviewer assignments for a submission.
+
+    ``round_number`` — when omitted, the helper auto-computes the next
+    round by looking at the highest existing ``Review.round_number`` for
+    the submission. Round 1 (the first-ever assignment) is the default.
+    Re-review calls pass ``round_number=None`` and get Round N+1
+    automatically. **Every new row carries an explicit round number so
+    old reviews are never overwritten — the audit trail across rounds
+    is preserved end-to-end.**
+
+    ``deadline_days`` — override the default reviewer window (the JWT
+    expiry). Editors use this to give re-reviewers a shorter window
+    since they already know the paper.
+    """
     submission = (
         db.query(Submission).filter(Submission.id == submission_id).first()
     )
     if submission is None:
         raise ValueError("Submission not found.")
+
+    # Compute the next round number if the caller didn't specify.
+    if round_number is None:
+        existing_max = (
+            db.query(Review.round_number)
+            .filter(Review.submission_id == submission_id)
+            .order_by(Review.round_number.desc())
+            .first()
+        )
+        round_number = ((existing_max[0] if existing_max else 0) or 0) + 1
+        # Round 1 fallback for the very first assignment.
+        if round_number < 1:
+            round_number = 1
+
+    window_days = deadline_days if (deadline_days and deadline_days > 0) else settings.JWT_EXPIRE_DAYS
 
     created_reviews: List[Review] = []
     for rid in reviewer_ids:
@@ -871,8 +902,9 @@ def assign_reviewers(
             id=review_id,
             submission_id=submission_id,
             reviewer_id=rid,
+            round_number=round_number,   # explicit — prevents overwriting Round 1 rows
             link_token=create_review_link_token(review_id),
-            link_expires_at=datetime.utcnow() + timedelta(days=settings.JWT_EXPIRE_DAYS),
+            link_expires_at=datetime.utcnow() + timedelta(days=window_days),
             status=ReviewStatus.pending,
         )
         db.add(review)

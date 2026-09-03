@@ -414,6 +414,47 @@ def decision_briefing_endpoint(
     AI never overwrites the editor's choice — see spec §12."""
     from app.services.permissions import ACTION_FINAL_DECISION
     briefing = build_briefing(db, submission_id)
+
+    # Layer-2 audit persistence — write every briefing as a new
+    # AgentAnalysis row so editors can diff rounds and reproduce the
+    # AI's advice at decision time. Best-effort: a persistence failure
+    # never blocks the response.
+    try:
+        from app.models.agent_analysis import AgentAnalysis
+        from app.models.submission import Submission
+        from uuid import UUID as _UUID
+        try:
+            sid = _UUID(briefing.submission_id)
+        except Exception:  # noqa: BLE001
+            sid = None
+        if sid is not None:
+            payload = {
+                "submission_id": briefing.submission_id,
+                "reviews_received": briefing.reviews_received,
+                "reviews_expected": briefing.reviews_expected,
+                "recommendations": briefing.recommendations,
+                "consensus": briefing.consensus,
+                "suggested_decision": briefing.suggested_decision,
+                "suggestion_reason": briefing.suggestion_reason,
+                "confidence": briefing.confidence,
+                "common_concerns": briefing.common_concerns,
+                "ethics_flags": briefing.ethics_flags,
+                "coi_declared": briefing.coi_declared,
+            }
+            db.add(AgentAnalysis(
+                submission_id=sid,
+                agent_name="editorial_decision",
+                round_number=None,
+                payload=payload,
+                suggested_decision=briefing.suggested_decision,
+                confidence=briefing.confidence,
+                reviews_received=briefing.reviews_received,
+                reviews_expected=briefing.reviews_expected,
+            ))
+            db.commit()
+    except Exception:  # noqa: BLE001
+        db.rollback()
+
     return DecisionBriefingResponse(
         submission_id=briefing.submission_id,
         reviews_received=briefing.reviews_received,

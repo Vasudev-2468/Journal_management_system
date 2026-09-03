@@ -4,6 +4,7 @@ from .article import Article
 from .review import Review, ReviewState, ReviewStatus, OverallRecommendation
 from .review_draft import ReviewDraft
 from .revision_response import RevisionResponse
+from .comment_moderation import CommentModeration
 from .editorial_decision import EditorialDecision
 from .reviewer_session import ReviewerSession
 from .journal_identifier import JournalIdentifier, IdentifierType, IdentifierStatus
@@ -34,3 +35,5 @@ from .plagiarism_check import PlagiarismCheck
 from .submission_message import SubmissionMessage
 from .article_event import ArticleEvent
 from .user_session import UserSession
+from .indexing_status import IndexingStatus, IndexingService, IndexingState
+from .agent_analysis import AgentAnalysis

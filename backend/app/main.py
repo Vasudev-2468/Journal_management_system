@@ -42,7 +42,13 @@ from app.routers import reviewer_portal as reviewer_portal_router
 from app.routers import author_revision as author_revision_router
 from app.routers import journal_identifier as journal_identifier_router
 from app.routers import editor_badges as editor_badges_router
+from app.routers import editor_pending_actions as editor_pending_actions_router
+from app.routers import comment_moderation as comment_moderation_router
 from app.routers import authors_notifications as authors_notifications_router
+from app.routers import indexing as indexing_router
+from app.routers import author_proof as author_proof_router
+from app.routers import revision_comparison as revision_comparison_router
+from app.routers import editor_screening as editor_screening_router
 from app.routers import csp_report as csp_report_router
 from app.routers import password_reset as password_reset_router
 from app.routers import recovery_codes as recovery_codes_router
@@ -275,7 +281,13 @@ app.include_router(reviewer_portal_router.router, prefix="/reviewer-portal", tag
 app.include_router(author_revision_router.router, prefix="/author-revision", tags=["author-revision"])
 app.include_router(journal_identifier_router.router, prefix="/journal-identifier", tags=["journal-identifier"])
 app.include_router(editor_badges_router.router, prefix="/editor-badges", tags=["editor-badges"])
+app.include_router(editor_pending_actions_router.router, prefix="/editor-portal", tags=["editor-pending-actions"])
+app.include_router(comment_moderation_router.router, prefix="/comment-moderation", tags=["comment-moderation"])
 app.include_router(authors_notifications_router.router, prefix="/authors-notifications", tags=["authors-notifications"])
+app.include_router(indexing_router.router, prefix="/indexing", tags=["indexing"])
+app.include_router(author_proof_router.router, prefix="/author-proof", tags=["author-proof"])
+app.include_router(revision_comparison_router.router, prefix="/revision-comparison", tags=["revision-comparison"])
+app.include_router(editor_screening_router.router, prefix="/editor-portal", tags=["editor-screening"])
 app.include_router(csp_report_router.router, tags=["csp-report"])
 app.include_router(password_reset_router.router, prefix="/password-reset", tags=["password-reset"])
 app.include_router(recovery_codes_router.router, prefix="/recovery-codes", tags=["recovery-codes"])

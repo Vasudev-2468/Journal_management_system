@@ -1,9 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import Header from '../components/layout/Header';
-import Footer from '../components/layout/Footer';
 import Loading from '../components/common/Loading';
-import FileDropzone, { UploadedFile } from '../components/common/FileDropzone';
+import AuthorSidebar from '../components/authors/AuthorSidebar';
+import client from '../api/client';
 import useFilePreview from '../hooks/useFilePreview';
 import {
     FileKind,
@@ -11,6 +10,40 @@ import {
     fetchVersionsForSubmission,
     submitRevision,
 } from '../api/platform';
+
+/** Shape returned by /uploads/manuscript-file (same as FileDropzone). */
+interface UploadedFile {
+    kind: FileKind;
+    original_filename: string;
+    stored_url: string;
+    mime_type?: string | null;
+    size_bytes?: number | null;
+}
+
+// The three fixed slots the author fills for a revision submission.
+const SLOTS: { key: FileKind; label: string; hint: string; icon: string; accept: string }[] = [
+    {
+        key: 'response',
+        label: 'Reviewer comments with Q & A',
+        hint: 'The point-by-point response to every reviewer comment.',
+        icon: '💬',
+        accept: '.pdf,.doc,.docx',
+    },
+    {
+        key: 'figure',
+        label: 'Updated Figures & Tables',
+        hint: 'A single file containing every updated figure and table.',
+        icon: '📊',
+        accept: '.pdf,.pptx,.zip,.png,.jpg,.jpeg',
+    },
+    {
+        key: 'manuscript',
+        label: 'Updated Manuscript',
+        hint: 'The revised manuscript file.',
+        icon: '📄',
+        accept: '.pdf,.doc,.docx',
+    },
+];
 
 const KIND_LABEL: Record<FileKind, string> = {
     manuscript: 'Revised manuscript',
@@ -36,19 +69,98 @@ const KIND_ACCENT: Record<FileKind, string> = {
     other: 'bg-gray-100 text-gray-700 border-gray-200',
 };
 
-// Kinds authors can attach to a revision, in the order they should appear
-// in the per-row dropdown. Manuscript first so the natural default picks
-// the most-common intent.
-const REVISION_KINDS: FileKind[] = [
-    'manuscript',
-    'response',
-    'figure',
-    'supplementary',
-    'cover_letter',
-    'dataset',
-    'video',
-    'other',
-];
+interface UploadSlotProps {
+    slot: { key: FileKind; label: string; hint: string; icon: string; accept: string };
+    uploaded: UploadedFile | null;
+    uploading: boolean;
+    onFile: (file: File) => void;
+    onClear: () => void;
+}
+
+const UploadSlot: React.FC<UploadSlotProps> = ({ slot, uploaded, uploading, onFile, onClear }) => {
+    const inputRef = useRef<HTMLInputElement | null>(null);
+    const done = uploaded !== null;
+
+    const openPicker = () => inputRef.current?.click();
+    const onChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const f = e.target.files?.[0];
+        if (f) onFile(f);
+        e.target.value = '';
+    };
+    const onDrop = (e: React.DragEvent) => {
+        e.preventDefault();
+        const f = e.dataTransfer.files?.[0];
+        if (f) onFile(f);
+    };
+    const onDragOver = (e: React.DragEvent) => e.preventDefault();
+
+    return (
+        <div
+            className={
+                'rounded-2xl border-2 border-dashed p-4 transition-colors ' +
+                (done
+                    ? 'border-emerald-300 bg-emerald-50/50'
+                    : uploading
+                        ? 'border-blue-300 bg-blue-50/50'
+                        : 'border-gray-300 bg-white hover:bg-gray-50')
+            }
+            onDrop={onDrop}
+            onDragOver={onDragOver}
+        >
+            <div className="flex items-start gap-3">
+                <span aria-hidden className="text-2xl mt-0.5">{slot.icon}</span>
+                <div className="flex-1 min-w-0">
+                    <div className="text-sm font-bold text-gray-900">{slot.label}</div>
+                    <div className="text-xs text-gray-500 mt-0.5">{slot.hint}</div>
+
+                    {done ? (
+                        <div className="mt-3 flex items-center gap-2 rounded-lg bg-white border border-emerald-200 px-3 py-2">
+                            <span aria-hidden className="text-emerald-700">✓</span>
+                            <div className="flex-1 min-w-0">
+                                <div className="text-sm font-semibold text-gray-900 truncate">
+                                    {uploaded!.original_filename}
+                                </div>
+                                {typeof uploaded!.size_bytes === 'number' && (
+                                    <div className="text-[11px] text-gray-500">
+                                        {(uploaded!.size_bytes / 1024 / 1024).toFixed(2)} MB
+                                    </div>
+                                )}
+                            </div>
+                            <button
+                                type="button" onClick={onClear}
+                                className="text-xs text-rose-600 hover:text-rose-800 font-semibold"
+                            >
+                                Replace
+                            </button>
+                        </div>
+                    ) : (
+                        <div className="mt-3 flex items-center gap-2">
+                            <button
+                                type="button"
+                                onClick={openPicker}
+                                disabled={uploading}
+                                className="text-xs font-bold px-3 py-1.5 rounded-lg bg-blue-700 text-white hover:bg-blue-800 disabled:opacity-50"
+                            >
+                                {uploading ? 'Uploading…' : 'Choose file'}
+                            </button>
+                            <span className="text-[11px] text-gray-400">
+                                or drag &amp; drop here · {slot.accept.replace(/,/g, ', ')}
+                            </span>
+                        </div>
+                    )}
+
+                    <input
+                        ref={inputRef}
+                        type="file"
+                        accept={slot.accept}
+                        onChange={onChange}
+                        className="hidden"
+                    />
+                </div>
+            </div>
+        </div>
+    );
+};
 
 const AuthorRevisionPage: React.FC = () => {
     const { submissionId = '' } = useParams<{ submissionId: string }>();
@@ -58,17 +170,16 @@ const AuthorRevisionPage: React.FC = () => {
     const [submitting, setSubmitting] = useState(false);
     const [success, setSuccess] = useState(false);
 
-    const [label, setLabel] = useState('');
-    const [coverLetter, setCoverLetter] = useState('');
-    const [response, setResponse] = useState('');
-    const [summary, setSummary] = useState('');
-    // Files come pre-uploaded from FileDropzone — no more URL/filename
-    // paste-boxes. The list refreshes on every dropzone state change; we
-    // only forward the *successful* uploads to the submit call.
-    const [files, setFiles] = useState<UploadedFile[]>([]);
-    // Remount key: forces FileDropzone to reset its internal state after a
-    // successful submission so the next revision starts from a clean slate.
-    const [dropzoneKey, setDropzoneKey] = useState(0);
+    // Exactly three slots — a revision submission is Reviewer-Q&A +
+    // Updated Figures & Tables + Updated Manuscript. Keyed by FileKind
+    // so the payload maps cleanly onto submitRevision().
+    const [slotFiles, setSlotFiles] = useState<Record<FileKind, UploadedFile | null>>({
+        response: null,
+        figure: null,
+        manuscript: null,
+    } as Record<FileKind, UploadedFile | null>);
+    // Per-slot upload progress state.
+    const [uploading, setUploading] = useState<Record<string, boolean>>({});
 
     // Inline preview for prior-version files — click a filename to view
     // it in a modal without leaving the revision workflow.
@@ -87,38 +198,63 @@ const AuthorRevisionPage: React.FC = () => {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [submissionId]);
 
-    const canSubmit = files.length > 0;
+    const allSlotsFilled = SLOTS.every((s) => slotFiles[s.key] !== null);
+    const canSubmit = allSlotsFilled;
+
+    const uploadToSlot = async (kind: FileKind, file: File) => {
+        setUploading((u) => ({ ...u, [kind]: true }));
+        setError(null);
+        try {
+            const fd = new FormData();
+            fd.append('file', file);
+            fd.append('kind', kind);
+            const { data } = await client.post('/uploads/manuscript-file', fd, {
+                headers: { 'Content-Type': 'multipart/form-data' },
+            });
+            const uploaded: UploadedFile = {
+                kind,
+                original_filename: data.original_filename || file.name,
+                stored_url: data.stored_url,
+                mime_type: data.mime_type || file.type || null,
+                size_bytes: data.size_bytes ?? file.size ?? null,
+            };
+            setSlotFiles((s) => ({ ...s, [kind]: uploaded }));
+        } catch (err: any) {
+            setError(err?.response?.data?.detail || err?.message || 'Upload failed.');
+        } finally {
+            setUploading((u) => ({ ...u, [kind]: false }));
+        }
+    };
+
+    const clearSlot = (kind: FileKind) => {
+        setSlotFiles((s) => ({ ...s, [kind]: null }));
+    };
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         setError(null);
         setSuccess(false);
         if (!canSubmit) {
-            setError('Attach at least one file before submitting the revision.');
+            setError('Please upload all three files before submitting the revision.');
             return;
         }
         setSubmitting(true);
         try {
+            const files: UploadedFile[] = SLOTS
+                .map((s) => slotFiles[s.key])
+                .filter((f): f is UploadedFile => f !== null);
             await submitRevision(submissionId, {
-                label: label || undefined,
-                cover_letter: coverLetter || undefined,
-                response_to_reviewers: response || undefined,
-                change_summary: summary || undefined,
                 files: files.map((f) => ({
                     kind: f.kind,
                     original_filename: f.original_filename,
                     stored_url: f.stored_url,
-                    mime_type: f.mime_type,
-                    size_bytes: f.size_bytes,
+                    // ``submitRevision`` expects string | undefined, not null.
+                    mime_type: f.mime_type ?? undefined,
+                    size_bytes: f.size_bytes ?? undefined,
                 })),
             });
             setSuccess(true);
-            setLabel('');
-            setCoverLetter('');
-            setResponse('');
-            setSummary('');
-            setFiles([]);
-            setDropzoneKey((k) => k + 1);
+            setSlotFiles({ response: null, figure: null, manuscript: null } as Record<FileKind, UploadedFile | null>);
             load();
         } catch (err: any) {
             setError(err?.response?.data?.detail || err?.message || 'Could not submit revision.');
@@ -128,32 +264,32 @@ const AuthorRevisionPage: React.FC = () => {
     };
 
     return (
-        <div className="min-h-screen flex flex-col bg-gray-50">
-            <Header />
+        <div className="flex min-h-screen bg-[#f0f7f0]">
+            <AuthorSidebar />
 
-            <section className="relative py-14 overflow-hidden bg-gradient-to-br from-brand-950 via-brand-900 to-indigo-950">
-                <div className="absolute inset-0 opacity-30">
-                    <div className="absolute -top-24 -right-24 w-96 h-96 rounded-full bg-brand-500 blur-3xl" />
-                </div>
-                <div className="relative max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
-                    <Link to="/author-dashboard" className="text-brand-200 hover:text-white text-sm no-underline">
-                        ← Back to my submissions
-                    </Link>
-                    <h1 className="mt-4 text-3xl sm:text-4xl font-extrabold text-white tracking-tight">
-                        Submit a revision
-                    </h1>
-                    <p className="mt-2 text-brand-200 max-w-2xl">
-                        Upload the revised manuscript, response-to-reviewers, and any new files. Previous
-                        versions are preserved — nothing is ever overwritten.
-                    </p>
-                </div>
-            </section>
+            <main className="flex-1 min-w-0 py-8 px-4 lg:px-8">
+                <div className="max-w-5xl mx-auto">
+                    <nav className="text-xs text-gray-500 mb-4">
+                        <Link to="/author-dashboard" className="hover:underline">Dashboard</Link>
+                        <span className="mx-1">›</span>
+                        <Link to="/author/revisions" className="hover:underline">Revisions</Link>
+                        <span className="mx-1">›</span>
+                        <span className="text-gray-700 font-semibold">Submit</span>
+                    </nav>
 
-            <main className="flex-1 py-12">
-                <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 grid lg:grid-cols-3 gap-8">
+                    <div className="mb-6">
+                        <div className="text-xs uppercase tracking-widest text-gray-400 font-bold">Author Portal</div>
+                        <h1 className="text-2xl font-black text-gray-900 mt-1">Submit a revision</h1>
+                        <p className="text-sm text-gray-600 mt-2 max-w-2xl">
+                            Upload three files: your reviewer Q&amp;A, the updated figures and tables, and the
+                            revised manuscript. Previous versions are preserved — nothing is ever overwritten.
+                        </p>
+                    </div>
+
+                <div className="grid lg:grid-cols-3 gap-8">
                     {/* Form */}
                     <form onSubmit={handleSubmit} className="lg:col-span-2 bg-white rounded-3xl border border-gray-100 shadow-sm p-6 space-y-6">
-                        <h2 className="text-xl font-bold text-gray-900">New version</h2>
+                        <h2 className="text-xl font-bold text-gray-900">Revision files</h2>
 
                         {error && (
                             <div role="alert" className="text-sm text-red-700 bg-red-50 border border-red-200 rounded p-3">
@@ -166,86 +302,17 @@ const AuthorRevisionPage: React.FC = () => {
                             </div>
                         )}
 
-                        <div className="grid grid-cols-2 gap-4">
-                            <label className="text-sm">
-                                <span className="block text-gray-700 font-semibold mb-1">Label (optional)</span>
-                                <input
-                                    value={label}
-                                    onChange={(e) => setLabel(e.target.value)}
-                                    placeholder="revised-1 / final / …"
-                                    className="w-full border border-gray-300 rounded px-3 py-2"
+                        <div className="space-y-4">
+                            {SLOTS.map((slot) => (
+                                <UploadSlot
+                                    key={slot.key}
+                                    slot={slot}
+                                    uploaded={slotFiles[slot.key]}
+                                    uploading={!!uploading[slot.key]}
+                                    onFile={(f) => uploadToSlot(slot.key, f)}
+                                    onClear={() => clearSlot(slot.key)}
                                 />
-                            </label>
-                            <label className="text-sm">
-                                <span className="block text-gray-700 font-semibold mb-1">Change summary (optional)</span>
-                                <input
-                                    value={summary}
-                                    onChange={(e) => setSummary(e.target.value)}
-                                    placeholder="Restructured Section 3; added new dataset"
-                                    className="w-full border border-gray-300 rounded px-3 py-2"
-                                />
-                            </label>
-                        </div>
-
-                        <label className="block text-sm">
-                            <span className="block text-gray-700 font-semibold mb-1">Cover letter</span>
-                            <textarea
-                                value={coverLetter}
-                                onChange={(e) => setCoverLetter(e.target.value)}
-                                rows={4}
-                                placeholder="Dear editors, we thank the reviewers for their thoughtful comments…"
-                                className="w-full border border-gray-300 rounded px-3 py-2"
-                            />
-                        </label>
-
-                        <label className="block text-sm">
-                            <span className="block text-gray-700 font-semibold mb-1">Response to reviewers</span>
-                            <textarea
-                                value={response}
-                                onChange={(e) => setResponse(e.target.value)}
-                                rows={6}
-                                placeholder="Reviewer 1 — Comment: …  Response: …"
-                                className="w-full border border-gray-300 rounded px-3 py-2 font-mono text-xs"
-                            />
-                        </label>
-
-                        <div>
-                            <div className="flex items-center justify-between mb-3">
-                                <span className="text-sm text-gray-700 font-semibold">Files</span>
-                                {files.length > 0 && (
-                                    <span className="text-[11px] text-gray-500">
-                                        {files.length} file{files.length === 1 ? '' : 's'} ready
-                                    </span>
-                                )}
-                            </div>
-
-                            <FileDropzone
-                                key={dropzoneKey}
-                                kinds={REVISION_KINDS}
-                                onUploaded={setFiles}
-                                maxSizeMB={25}
-                            />
-
-                            {files.length > 0 && (
-                                <ul className="mt-3 flex flex-wrap gap-2">
-                                    {files.map((f, i) => (
-                                        <li
-                                            key={`${f.stored_url}-${i}`}
-                                            className={`inline-flex items-center gap-2 px-2.5 py-1 rounded-full border text-[11px] font-semibold ${KIND_ACCENT[f.kind]}`}
-                                        >
-                                            <span>{KIND_LABEL[f.kind]}</span>
-                                            <span className="text-[10px] text-gray-600 truncate max-w-[160px]">
-                                                {f.original_filename}
-                                            </span>
-                                        </li>
-                                    ))}
-                                </ul>
-                            )}
-
-                            <p className="mt-2 text-[11px] text-gray-400">
-                                Files upload straight from your device — no need to paste URLs. Each file
-                                lands in the same storage the original submission uses.
-                            </p>
+                            ))}
                         </div>
 
                         <button
@@ -253,7 +320,7 @@ const AuthorRevisionPage: React.FC = () => {
                             disabled={submitting || !canSubmit}
                             className="w-full py-3 rounded-xl bg-brand-600 text-white font-bold hover:bg-brand-700 disabled:bg-gray-300 transition shadow-lg"
                         >
-                            {submitting ? 'Submitting…' : 'Submit revision'}
+                            {submitting ? 'Submitting…' : canSubmit ? 'Submit revision' : `Upload all three files to continue`}
                         </button>
                     </form>
 
@@ -328,9 +395,9 @@ const AuthorRevisionPage: React.FC = () => {
                         )}
                     </aside>
                 </div>
+                </div>
             </main>
 
-            <Footer />
             {PreviewNode}
         </div>
     );

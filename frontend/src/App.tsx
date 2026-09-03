@@ -27,6 +27,9 @@ import ProtectedAuthorRoute from './components/common/ProtectedAuthorRoute';
 import { AuthProvider } from './context/AuthContext';
 import { JournalProvider } from './context/JournalContext';
 import { PermissionsProvider } from './context/PermissionsContext';
+import { ThemeProvider } from './context/ThemeContext';
+import { ToastProvider, ConfirmHost } from './components/ui/Toast';
+import CommandPalette from './components/ui/CommandPalette';
 import EditorJournalIdentityPage from './pages/EditorJournalIdentityPage';
 import ArticleListPage from './pages/ArticleListPage';
 import PolicyPageView from './pages/PolicyPageView';
@@ -64,10 +67,29 @@ import GuidelinesPage from './pages/reviewer/GuidelinesPage';
 import EditorReviewerReportPage from './pages/editor/EditorReviewerReportPage';
 import EditorReviewerReportsPage from './pages/editor/EditorReviewerReportsPage';
 import EditorManuscriptWorkspacePage from './pages/editor/EditorManuscriptWorkspacePage';
+import EditorRevisionAssessmentPage from './pages/editor/EditorRevisionAssessmentPage';
+import EditorEditorialQueuePage from './pages/editor/EditorEditorialQueuePage';
+import EditorPendingActionsPage from './pages/editor/EditorPendingActionsPage';
+import EditorCommentModerationPage from './pages/editor/EditorCommentModerationPage';
+import EditorSubmissionListPage from './pages/editor/EditorSubmissionListPage';
+import {
+    EditorReviewerPoolPage,
+    EditorActiveReviewsPage,
+    EditorReviewHistoryPage,
+} from './pages/editor/EditorReviewerPages';
 import EditorJournalIdentifiersPage from './pages/EditorJournalIdentifiersPage';
 import EditorRecoveryCodesPage from './pages/EditorRecoveryCodesPage';
 import EditorJournalsAdminPage from './pages/EditorJournalsAdminPage';
 import AuthorRevisionPage from './pages/AuthorRevisionPage';
+import AuthorRevisionsHubPage from './pages/author/AuthorRevisionsHubPage';
+import {
+    AuthorManuscriptsPage,
+    AuthorPublishedPage,
+    AuthorDecisionLettersPage,
+    AuthorMessagesPage,
+    AuthorNotificationsPage,
+    AuthorSettingsPage,
+} from './pages/author/AuthorGenericPage';
 import AuthorRevisionResponsePage from './pages/AuthorRevisionResponsePage';
 import AuthorDecisionViewPage from './pages/AuthorDecisionViewPage';
 import EditorUsersAdmin from './pages/EditorUsersAdmin';
@@ -79,6 +101,12 @@ import EditorDoiManagementPage from './pages/EditorDoiManagementPage';
 import EditorCorrectionsPage from './pages/EditorCorrectionsPage';
 import EditorDecisionWorkspacePage from './pages/EditorDecisionWorkspacePage';
 import EditorBidRoomPage from './pages/EditorBidRoomPage';
+import EditorIndexingStatusPage from './pages/EditorIndexingStatusPage';
+import EditorNewSubmissionsPage from './pages/EditorNewSubmissionsPage';
+import EditorScreeningPage from './pages/EditorScreeningPage';
+import EditorEthicsScreeningPage from './pages/EditorEthicsScreeningPage';
+import AuthorProofReviewPage from './pages/author/AuthorProofReviewPage';
+import RevisionComparisonPage from './pages/reviewer/RevisionComparisonPage';
 import StatisticsPage from './pages/StatisticsPage';
 import SearchPage from './pages/SearchPage';
 import AuthorProfilePage from './pages/AuthorProfilePage';
@@ -90,11 +118,15 @@ import './styles/index.css';
 
 const App: React.FC = () => {
     return (
+        <ThemeProvider>
+        <ToastProvider>
         <AuthProvider>
             <AnalyticsLoader />
             <JournalProvider>
                 <PermissionsProvider>
                 <Router>
+                    <ConfirmHost />
+                    <CommandPalette />
                     <CookieBanner />
                     <Routes>
                     <Route path="/" element={<Dashboard />} />
@@ -227,6 +259,44 @@ const App: React.FC = () => {
                             <EditorManuscriptWorkspacePage />
                         </ProtectedEditorRoute>
                     } />
+                    <Route path="/editor/submissions/:submissionId/revision-assessment" element={
+                        <ProtectedEditorRoute>
+                            <EditorRevisionAssessmentPage />
+                        </ProtectedEditorRoute>
+                    } />
+                    <Route path="/editor/queue" element={
+                        <ProtectedEditorRoute>
+                            <EditorEditorialQueuePage />
+                        </ProtectedEditorRoute>
+                    } />
+                    <Route path="/editor/pending-actions" element={
+                        <ProtectedEditorRoute>
+                            <EditorPendingActionsPage />
+                        </ProtectedEditorRoute>
+                    } />
+                    <Route path="/editor/submissions/:submissionId/comment-moderation" element={
+                        <ProtectedEditorRoute>
+                            <EditorCommentModerationPage />
+                        </ProtectedEditorRoute>
+                    } />
+                    <Route path="/editor/revision-required" element={
+                        <ProtectedEditorRoute><EditorSubmissionListPage variant="revision_required" /></ProtectedEditorRoute>
+                    } />
+                    <Route path="/editor/accepted" element={
+                        <ProtectedEditorRoute><EditorSubmissionListPage variant="accepted" /></ProtectedEditorRoute>
+                    } />
+                    <Route path="/editor/rejected" element={
+                        <ProtectedEditorRoute><EditorSubmissionListPage variant="rejected" /></ProtectedEditorRoute>
+                    } />
+                    <Route path="/editor/reviewers/pool" element={
+                        <ProtectedEditorRoute><EditorReviewerPoolPage /></ProtectedEditorRoute>
+                    } />
+                    <Route path="/editor/reviewers/active-reviews" element={
+                        <ProtectedEditorRoute><EditorActiveReviewsPage /></ProtectedEditorRoute>
+                    } />
+                    <Route path="/editor/reviewers/history" element={
+                        <ProtectedEditorRoute><EditorReviewHistoryPage /></ProtectedEditorRoute>
+                    } />
                     <Route path="/editor/journal-identifiers" element={
                         <ProtectedEditorRoute>
                             <EditorJournalIdentifiersPage />
@@ -266,6 +336,29 @@ const App: React.FC = () => {
                         <ProtectedAuthorRoute>
                             <AuthorDecisionViewPage />
                         </ProtectedAuthorRoute>
+                    } />
+
+                    {/* Author portal sidebar destinations */}
+                    <Route path="/author/revisions" element={
+                        <ProtectedAuthorRoute><AuthorRevisionsHubPage /></ProtectedAuthorRoute>
+                    } />
+                    <Route path="/author/manuscripts" element={
+                        <ProtectedAuthorRoute><AuthorManuscriptsPage /></ProtectedAuthorRoute>
+                    } />
+                    <Route path="/author/published" element={
+                        <ProtectedAuthorRoute><AuthorPublishedPage /></ProtectedAuthorRoute>
+                    } />
+                    <Route path="/author/decision-letters" element={
+                        <ProtectedAuthorRoute><AuthorDecisionLettersPage /></ProtectedAuthorRoute>
+                    } />
+                    <Route path="/author/messages" element={
+                        <ProtectedAuthorRoute><AuthorMessagesPage /></ProtectedAuthorRoute>
+                    } />
+                    <Route path="/author/notifications" element={
+                        <ProtectedAuthorRoute><AuthorNotificationsPage /></ProtectedAuthorRoute>
+                    } />
+                    <Route path="/author/settings" element={
+                        <ProtectedAuthorRoute><AuthorSettingsPage /></ProtectedAuthorRoute>
                     } />
 
                     {/* Editor admin — user mgmt / audit / email templates / special issues / production */}
@@ -314,11 +407,40 @@ const App: React.FC = () => {
                             <EditorBidRoomPage />
                         </ProtectedEditorRoute>
                     } />
+                    <Route path="/editor/indexing" element={
+                        <ProtectedEditorRoute>
+                            <EditorIndexingStatusPage />
+                        </ProtectedEditorRoute>
+                    } />
+                    <Route path="/editor/new-submissions" element={
+                        <ProtectedEditorRoute>
+                            <EditorNewSubmissionsPage />
+                        </ProtectedEditorRoute>
+                    } />
+                    <Route path="/editor/screening/:submissionId" element={
+                        <ProtectedEditorRoute>
+                            <EditorScreeningPage />
+                        </ProtectedEditorRoute>
+                    } />
+                    <Route path="/editor/ethics/:submissionId" element={
+                        <ProtectedEditorRoute>
+                            <EditorEthicsScreeningPage />
+                        </ProtectedEditorRoute>
+                    } />
+                    <Route path="/author/proof/:submissionId" element={
+                        <ProtectedAuthorRoute>
+                            <AuthorProofReviewPage />
+                        </ProtectedAuthorRoute>
+                    } />
+                    <Route path="/reviewer/revision-comparison/:submissionId"
+                           element={<RevisionComparisonPage />} />
                     </Routes>
                 </Router>
                 </PermissionsProvider>
             </JournalProvider>
         </AuthProvider>
+        </ToastProvider>
+        </ThemeProvider>
     );
 };
 

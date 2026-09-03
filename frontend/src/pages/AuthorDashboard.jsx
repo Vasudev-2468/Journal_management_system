@@ -6,6 +6,7 @@ import ReviewerCommentsCard from '../components/authors/ReviewerCommentsCard';
 import DecisionLetterCard from '../components/authors/DecisionLetterCard';
 import SubmissionThread from '../components/authors/SubmissionThread';
 import AuthorNotificationBell from '../components/authors/AuthorNotificationBell';
+import AuthorSidebar from '../components/authors/AuthorSidebar';
 
 /* ── Status metadata ─────────────────────────────────── */
 export const STATUS_META = {
@@ -247,11 +248,25 @@ export default function AuthorDashboard() {
     );
   }
 
+  // Sidebar badge counts — derived from the loaded submissions so the
+  // rail always agrees with what the dashboard is showing.
+  const revisionsRequired = submissions.filter(
+    (s) => s.status === 'revision_requested' || s.status === 'returned_to_author',
+  ).length;
+  const sidebarCounts = {
+    total: submissions.length,
+    revisions_required: revisionsRequired,
+    unread_notifications: NOTIFS.filter((n) => n.unread).length,
+  };
+
   return (
     <>
       <style>{CSS}</style>
 
-      <div className="min-h-screen bg-[#f0f7f0] pb-16">
+      <div className="flex min-h-screen bg-[#f0f7f0]">
+        <AuthorSidebar profile={profile} pendingCounts={sidebarCounts} />
+
+        <div className="flex-1 min-w-0 pb-16">
 
         {/* ── Nav ──────────────────────────────────────── */}
         <nav className="sticky top-0 z-40 bg-white border-b border-gray-200 shadow-sm">
@@ -644,6 +659,7 @@ export default function AuthorDashboard() {
               Showing {visible.length} of {submissions.length} submission{submissions.length !== 1 ? 's' : ''}
             </p>
           )}
+        </div>
         </div>
       </div>
     </>

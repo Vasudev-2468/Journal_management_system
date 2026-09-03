@@ -42,6 +42,8 @@ class EditorBadgeCounts(BaseModel):
     notifications_unread: int
     production_queue: int
     pending_actions: int
+    revisions_submitted: int = 0
+    pending_actions_urgent: int = 0
 
 
 @router.get("/counts", response_model=EditorBadgeCounts)
@@ -91,10 +93,53 @@ def get_editor_badge_counts(
         .count()
     )
 
+    # Count revision-submitted events that have NOT been resolved by
+    # a subsequent editorial decision. Same logic as /editor-portal/queue
+    # so the badge and the queue always agree.
+    from app.models.editorial_decision import EditorialDecision
+    revision_event_rows = (
+        db.query(Notification)
+        .filter(Notification.trigger_event.like("revision_submitted:%"))
+        .filter(~Notification.trigger_event.like("%:email"))
+        .all()
+    )
+    revisions_submitted = 0
+    seen: set = set()
+    for ev in revision_event_rows:
+        try:
+            sub_id_str = ev.trigger_event.split(":", 1)[1]
+            import uuid as _uuid
+            sub_id = _uuid.UUID(sub_id_str)
+        except (ValueError, IndexError):
+            continue
+        if sub_id in seen:
+            continue
+        seen.add(sub_id)
+        newer_dec = (
+            db.query(EditorialDecision)
+            .filter(EditorialDecision.submission_id == sub_id)
+            .filter(EditorialDecision.decided_at > (ev.sent_at or datetime.min))
+            .first()
+        )
+        if newer_dec is None:
+            revisions_submitted += 1
+
+    # Urgent-count for the Pending Actions sidebar badge — we call the
+    # same aggregator the page uses so the two views can never diverge.
+    urgent_pending = 0
+    try:
+        from app.routers.editor_pending_actions import compute_pending_actions
+        result = compute_pending_actions(db)
+        urgent_pending = int(result.priority_counts.get("urgent", 0))
+    except Exception:  # noqa: BLE001
+        urgent_pending = 0
+
     return EditorBadgeCounts(
         contact_inbox_unread=contact_inbox_unread,
         overdue_reviews=overdue_reviews,
         notifications_unread=notifications_unread,
         production_queue=production_queue,
         pending_actions=pending_actions,
+        revisions_submitted=revisions_submitted,
+        pending_actions_urgent=urgent_pending,
     )

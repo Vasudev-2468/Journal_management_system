@@ -30,7 +30,7 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import datetime
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -394,13 +394,31 @@ class AuthorReviewerReport(BaseModel):
     # No confidential_comments field. Never expose.
 
 
+class DecisionHistoryEntry(BaseModel):
+    round_number: int
+    decision: str
+    decided_at: Optional[datetime] = None
+
+
+class ConsensusSummary(BaseModel):
+    recommendation: Optional[str] = None
+    strength: Optional[str] = None   # unanimous / majority / split / n/a
+    breakdown: Dict[str, int] = {}   # {"minor_revision": 2, ...}
+
+
 class AuthorDecisionResponse(BaseModel):
     submission_id: str
+    paper_id_code: Optional[str] = None
     paper_title: str
     editor_decision: Optional[str] = None
     editor_decision_letter: str = ""
     decided_at: Optional[datetime] = None
     round_number: int
+    revision_deadline: Optional[datetime] = None
+    manuscript_url: Optional[str] = None
+    editorial_email: Optional[str] = None
+    consensus: ConsensusSummary = ConsensusSummary()
+    history: List[DecisionHistoryEntry] = []
     reports: List[AuthorReviewerReport]
 
 
@@ -439,6 +457,26 @@ def author_decision_view(
     editor_decision_letter = dec_row.letter_text if dec_row else ""
     decided_at = dec_row.decided_at if dec_row else None
 
+    # ── Author-visible reviewer reports (JG-Editor-Moderation) ──
+    # SECURITY: the author must NEVER see the reviewer's raw comment.
+    # Every comment must be moderated by an editor and released before
+    # it becomes author-visible. This block filters through the
+    # comment_moderations table:
+    #
+    #   * A moderation row with status='RELEASED_TO_AUTHOR' AND
+    #     visibility='AUTHOR_VISIBLE' → the released_text (or the
+    #     editor's edited text if released_text wasn't populated) is
+    #     shown to the author.
+    #   * Any other state → the comment is withheld.
+    #
+    # If a review has NO moderation rows at all — i.e. the editor
+    # hasn't opened the moderation workspace yet — we withhold every
+    # comment for that reviewer. Empty reviewer sections in the author
+    # view is the safe default; the editor still sees them in their
+    # own workspace.
+    from app.models.comment_moderation import (
+        CommentModeration, STATUS_RELEASED_TO_AUTHOR, VIS_AUTHOR_VISIBLE,
+    )
     reports: List[AuthorReviewerReport] = []
     for idx, r in enumerate(reviews, start=1):
         if r.state != ReviewState.submitted or (r.round_number or 1) != target_round:
@@ -454,26 +492,187 @@ def author_decision_view(
             except Exception:  # noqa: BLE001
                 return []
 
+        # Load every moderation row for this review, keyed by (kind, idx).
+        mods = (
+            db.query(CommentModeration)
+            .filter(CommentModeration.review_id == r.id)
+            .all()
+        )
+        released_map = {
+            (m.comment_kind, m.comment_index): m
+            for m in mods
+            if m.status == STATUS_RELEASED_TO_AUTHOR and m.visibility == VIS_AUTHOR_VISIBLE
+        }
+
+        def _filter_kind(kind: str, raw_list_json: Optional[str]) -> list:
+            if not released_map:
+                return []
+            filtered: list = []
+            for i, item in enumerate(_load_list(raw_list_json)):
+                mod = released_map.get((kind, i))
+                if mod is None:
+                    continue
+                # Swap the wording for the editor-released text so the
+                # author sees the editor's moderated version, not the
+                # reviewer's raw comment.
+                new_text = mod.released_text or mod.edited_text or mod.original_text
+                if isinstance(item, dict):
+                    itm = dict(item)
+                    itm["comment"] = new_text
+                    filtered.append(itm)
+                else:
+                    filtered.append(new_text)
+            return filtered
+
         reports.append(AuthorReviewerReport(
             review_id=str(r.id),
             reviewer_display_name=display_name,
             round_number=r.round_number or 1,
             submitted_at=r.completed_at,
             overall_assessment=r.overall_assessment or "",
-            major_comments=_load_list(r.major_comments),
-            minor_comments=_load_list(r.minor_comments),
+            major_comments=_filter_kind("major", r.major_comments),
+            minor_comments=_filter_kind("minor", r.minor_comments),
             suggestions=_load_list(r.suggestions_to_authors),
             comments_to_authors=r.comments_to_authors or "",
             recommendation=(r.overall_recommendation.value if r.overall_recommendation else None),
         ))
 
+    # ── Extra context (JG-Author §17) ────────────────────
+    # Fills the previously-thin decision page: manuscript ID, deadline,
+    # a link to the manuscript PDF, a consensus tile across the
+    # reviewer reports, and the round-by-round decision history so
+    # authors can see how they got here.
+
+    # Revision deadline — 30 days from the decision by convention when
+    # the editor didn't set one explicitly. This is the same window the
+    # scheduled reminder job uses.
+    from datetime import timedelta as _td
+    revision_deadline = None
+    if editor_decision in ("minor_revision", "major_revision", "revision_requested", "revision") and decided_at:
+        revision_deadline = decided_at + _td(days=30)
+
+    # Manuscript URL — the current version's file if we have a versioned
+    # row, otherwise the original ``pdf_s3_key`` on the submission.
+    manuscript_url = None
+    try:
+        pdf_key = getattr(submission, "pdf_s3_key", None)
+        if pdf_key:
+            # Storage service exposes signed URLs elsewhere; here we
+            # emit the object key + a relative fetch endpoint the
+            # frontend already understands.
+            manuscript_url = f"/submissions/{submission.id}/pdf"
+    except Exception:  # noqa: BLE001
+        manuscript_url = None
+
+    # Consensus across the current-round reports.
+    consensus = ConsensusSummary()
+    try:
+        breakdown: Dict[str, int] = {}
+        for rep in reports:
+            key = rep.recommendation or "unknown"
+            breakdown[key] = breakdown.get(key, 0) + 1
+        if breakdown:
+            # Winner = highest count; ties → "split".
+            sorted_items = sorted(breakdown.items(), key=lambda kv: kv[1], reverse=True)
+            top_key, top_count = sorted_items[0]
+            total = sum(breakdown.values())
+            if len(sorted_items) > 1 and sorted_items[0][1] == sorted_items[1][1]:
+                strength = "split"
+                rec_key = top_key  # arbitrary tie-break for display
+            elif top_count == total:
+                strength = "unanimous"
+                rec_key = top_key
+            elif top_count > total / 2:
+                strength = "majority"
+                rec_key = top_key
+            else:
+                strength = "split"
+                rec_key = top_key
+            consensus = ConsensusSummary(
+                recommendation=rec_key,
+                strength=strength,
+                breakdown=breakdown,
+            )
+    except Exception:  # noqa: BLE001
+        consensus = ConsensusSummary()
+
+    # Round-by-round decision history.
+    history: List[DecisionHistoryEntry] = []
+    try:
+        prior_rows = (
+            db.query(EditorialDecision)
+            .filter(EditorialDecision.submission_id == submission.id)
+            .order_by(EditorialDecision.decided_at.asc())
+            .all()
+        )
+        for row in prior_rows:
+            history.append(DecisionHistoryEntry(
+                round_number=getattr(row, "round_number", 1) or 1,
+                decision=row.decision or "",
+                decided_at=row.decided_at,
+            ))
+    except Exception:  # noqa: BLE001
+        history = []
+
+    # Editorial email — pulled from the active Journal row so the
+    # "Contact editor" mailto link on the frontend has a real address.
+    editorial_email = None
+    try:
+        from app.models.journal import Journal
+        row = (
+            db.query(Journal)
+            .filter(Journal.is_active.is_(True))
+            .order_by(Journal.id.asc())
+            .first()
+        )
+        if row and getattr(row, "email_editorial", None):
+            editorial_email = row.email_editorial
+    except Exception:  # noqa: BLE001
+        editorial_email = None
+
+    # Fallback letter — when the editor typed no comments, synthesize a
+    # brief editorial note from the decision + consensus so the author
+    # is never staring at an empty card.
+    letter = editor_decision_letter or ""
+    if not letter.strip():
+        parts = [
+            f"Dear author,",
+            "",
+            f"After careful consideration of the reviewers' assessments, "
+            f"the editorial decision on your manuscript is: "
+            f"{(editor_decision or 'under review').replace('_', ' ').title()}.",
+        ]
+        if consensus.recommendation:
+            parts.append(
+                f"The reviewer consensus was {consensus.strength or 'mixed'} "
+                f"({consensus.recommendation.replace('_', ' ')}). "
+                f"Please read each reviewer's report in full below."
+            )
+        if revision_deadline:
+            parts.append(
+                f"Please upload your revised manuscript and point-by-point "
+                f"response by {revision_deadline.strftime('%d %B %Y')}."
+            )
+        parts.extend([
+            "",
+            "Sincerely,",
+            "Editorial Office",
+        ])
+        letter = "\n".join(parts)
+
     return AuthorDecisionResponse(
         submission_id=str(submission.id),
+        paper_id_code=getattr(submission, "paper_id_code", None),
         paper_title=submission.paper_title,
         editor_decision=editor_decision,
-        editor_decision_letter=editor_decision_letter or "",
+        editor_decision_letter=letter,
         decided_at=decided_at,
         round_number=target_round,
+        revision_deadline=revision_deadline,
+        manuscript_url=manuscript_url,
+        editorial_email=editorial_email,
+        consensus=consensus,
+        history=history,
         reports=reports,
     )
 

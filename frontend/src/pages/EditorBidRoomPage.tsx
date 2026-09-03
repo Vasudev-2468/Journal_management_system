@@ -159,6 +159,9 @@ const EditorBidRoomPage: React.FC = () => {
                     <LoadingIndicator label="Loading Review Room…" fullPage />
                 ) : !data ? null : (
                     <>
+                        {/* ── Proactive alert banner — overdue + never-opened flags at page top ── */}
+                        <ReviewRoomAlerts reviewers={data.reviewers} />
+
                         {/* ── Paper header + status ── */}
                         <section className="bg-white border border-gray-200 rounded-2xl p-6 mb-4">
                             <div className="flex items-start justify-between gap-4 flex-wrap">
@@ -433,6 +436,54 @@ const EditorBidRoomPage: React.FC = () => {
                         </section>
                     </>
                 )}
+            </div>
+        </div>
+    );
+};
+
+// ── Proactive Review Room alert banner ─────────────────
+//
+// Surfaces at the top of the page whenever the editor needs to know
+// something. Two categories today:
+//   * Overdue reviewers — deadline has passed and no review submitted
+//   * Silent reviewers  — assigned > 3 days ago and still status=pending
+// Wired to the same reviewer array the cards below read, so the
+// numbers can't drift out of sync.
+
+const ReviewRoomAlerts: React.FC<{ reviewers: BidRoomReviewer[] }> = ({ reviewers }) => {
+    const overdue = reviewers.filter((r) => r.is_overdue && r.status !== 'completed');
+    const silent = reviewers.filter((r) => {
+        if (r.status !== 'pending') return false;
+        if (r.is_overdue) return false; // already covered by "overdue"
+        const assigned = new Date(r.assigned_at).getTime();
+        if (Number.isNaN(assigned)) return false;
+        const daysSince = (Date.now() - assigned) / (1000 * 60 * 60 * 24);
+        return daysSince >= 3;
+    });
+    if (overdue.length === 0 && silent.length === 0) return null;
+    return (
+        <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800 p-4">
+            <div className="flex items-start gap-3">
+                <span className="text-xl leading-none pt-0.5">⚠</span>
+                <div className="min-w-0 flex-1">
+                    <p className="text-sm font-bold text-amber-900 dark:text-amber-200">
+                        This paper needs your attention
+                    </p>
+                    <ul className="text-xs text-amber-900 dark:text-amber-100 mt-1 space-y-0.5">
+                        {overdue.length > 0 && (
+                            <li>
+                                <strong>{overdue.length}</strong> reviewer{overdue.length === 1 ? '' : 's'} overdue —
+                                consider a reminder or reassignment: {overdue.map((r) => r.reviewer_name || 'Reviewer').join(', ')}.
+                            </li>
+                        )}
+                        {silent.length > 0 && (
+                            <li>
+                                <strong>{silent.length}</strong> reviewer{silent.length === 1 ? '' : 's'} haven't accepted
+                                after 3 days: {silent.map((r) => r.reviewer_name || 'Reviewer').join(', ')}.
+                            </li>
+                        )}
+                    </ul>
+                </div>
             </div>
         </div>
     );

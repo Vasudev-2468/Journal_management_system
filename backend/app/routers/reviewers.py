@@ -2,6 +2,7 @@ import uuid
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel as BaseModel_
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -157,6 +158,94 @@ def list_all_reviewers(
 
 
 # ── GET /reviewers/{reviewer_id} (editor only) ──────────
+
+class ReviewActivityItem(BaseModel_):
+    review_id: str
+    reviewer_id: Optional[str] = None
+    reviewer_name: Optional[str] = None
+    reviewer_email: Optional[str] = None
+    submission_id: str
+    paper_id_code: Optional[str] = None
+    paper_title: str
+    round_number: int = 1
+    state: Optional[str] = None
+    status: Optional[str] = None
+    assigned_at: Optional[str] = None
+    accepted_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    link_expires_at: Optional[str] = None
+    recommendation: Optional[str] = None
+    is_overdue: bool = False
+
+
+class ReviewActivityResponse(BaseModel_):
+    filter: str
+    items: List[ReviewActivityItem]
+
+
+@router.get("/activity", response_model=ReviewActivityResponse)
+def review_activity(
+    filter: str = Query("active", pattern="^(active|history)$"),
+    db: Session = Depends(get_db),
+    _editor=Depends(require_editor_mfa),
+):
+    """List reviewer-side review rows for the editor's Reviewers module.
+
+    ``filter=active``   → assignments the reviewer has accepted or is
+                          still working on; submitted rows excluded.
+    ``filter=history``  → every submitted review, newest first.
+    """
+    from app.models.review import Review, ReviewState
+    from datetime import datetime as _dt
+
+    q = db.query(Review)
+    if filter == "active":
+        q = q.filter(Review.state.in_((
+            ReviewState.accepted, ReviewState.in_progress, ReviewState.draft_saved,
+            ReviewState.invited,
+        )))
+    else:  # history
+        q = q.filter(Review.state == ReviewState.submitted)
+
+    rows = q.all()
+    # Sort in Python because we join to submission/reviewer for display.
+    def _sort_key(r):
+        if filter == "history":
+            return (r.completed_at or _dt.min).timestamp() * -1
+        return (r.assigned_at or _dt.min).timestamp() * -1
+    rows.sort(key=_sort_key)
+
+    now = _dt.utcnow()
+    items: List[ReviewActivityItem] = []
+    for r in rows[:500]:
+        submission = r.submission
+        reviewer = r.reviewer
+        if submission is None:
+            continue
+        items.append(ReviewActivityItem(
+            review_id=str(r.id),
+            reviewer_id=str(r.reviewer_id) if r.reviewer_id else None,
+            reviewer_name=(reviewer.name if reviewer else None),
+            reviewer_email=(reviewer.email if reviewer else None),
+            submission_id=str(submission.id),
+            paper_id_code=getattr(submission, "paper_id_code", None),
+            paper_title=submission.paper_title,
+            round_number=(r.round_number or 1),
+            state=(r.state.value if r.state else None),
+            status=(r.status.value if r.status else None),
+            assigned_at=(r.assigned_at.isoformat() if r.assigned_at else None),
+            accepted_at=(r.accepted_at.isoformat() if r.accepted_at else None),
+            completed_at=(r.completed_at.isoformat() if r.completed_at else None),
+            link_expires_at=(r.link_expires_at.isoformat() if r.link_expires_at else None),
+            recommendation=(r.overall_recommendation.value if r.overall_recommendation else None),
+            is_overdue=(
+                filter == "active"
+                and r.link_expires_at is not None
+                and r.link_expires_at < now
+            ),
+        ))
+    return ReviewActivityResponse(filter=filter, items=items)
+
 
 @router.get("/{reviewer_id}", response_model=ReviewerDetailResponse)
 def get_reviewer(

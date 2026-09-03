@@ -57,6 +57,35 @@ const apaCitation = (a: ArticleEntry, volume: number, issue: number, year: numbe
     return `${names} (${year}). ${title}. Journal of Generative and Applied Intelligence Research, ${volume}(${issue}), ${a.pages}. https://doi.org/${a.doi}`;
 };
 
+/** Build an MLA-9 works-cited entry. Uses "et al." after three authors
+ *  per MLA guidance, wraps the article title in quotes, italicises the
+ *  journal title via the leading/trailing underscore markers that most
+ *  MLA cheat-sheets show, and closes with a stable DOI URL. */
+const mlaCitation = (a: ArticleEntry, volume: number, issue: number, year: number): string => {
+    const authors = a.authorList ?? [{ name: a.authors }];
+    // MLA formats the first author as "Last, First" and the rest as "First Last".
+    const flip = (name: string): string => {
+        const parts = name.trim().split(/\s+/);
+        if (parts.length < 2) return name;
+        const last = parts.pop() as string;
+        return `${last}, ${parts.join(' ')}`;
+    };
+    let names: string;
+    if (authors.length === 0) {
+        names = '';
+    } else if (authors.length === 1) {
+        names = flip(authors[0].name);
+    } else if (authors.length <= 3) {
+        const first = flip(authors[0].name);
+        const rest = authors.slice(1).map((au) => au.name).join(', and ');
+        names = `${first}, and ${rest}`;
+    } else {
+        names = `${flip(authors[0].name)}, et al.`;
+    }
+    const title = a.title.replace(/\.$/, '');
+    return `${names}. "${title}." _Journal of Generative and Applied Intelligence Research_, vol. ${volume}, no. ${issue}, ${year}, pp. ${a.pages}, https://doi.org/${a.doi}.`;
+};
+
 const bibtexCitation = (a: ArticleEntry, volume: number, issue: number, year: number): string => {
     const key = `jgair${year}_${a.id}`;
     const names = (a.authorList ?? [{ name: a.authors }]).map((au) => au.name).join(' and ');
@@ -289,10 +318,11 @@ const CitationModal: React.FC<{
     year: number;
     onClose: () => void;
 }> = ({ article, volume, issue, year, onClose }) => {
-    const [tab, setTab] = useState<'apa' | 'bibtex' | 'ris'>('apa');
+    const [tab, setTab] = useState<'apa' | 'mla' | 'bibtex' | 'ris'>('apa');
     const [copied, setCopied] = useState(false);
     const value = useMemo(() => {
         if (tab === 'apa') return apaCitation(article, volume, issue, year);
+        if (tab === 'mla') return mlaCitation(article, volume, issue, year);
         if (tab === 'bibtex') return bibtexCitation(article, volume, issue, year);
         return risCitation(article, volume, issue, year);
     }, [tab, article, volume, issue, year]);
@@ -324,7 +354,7 @@ const CitationModal: React.FC<{
                 </div>
                 <div className="px-6 pt-4">
                     <div className="inline-flex rounded-xl bg-gray-100 p-1">
-                        {(['apa', 'bibtex', 'ris'] as const).map((t) => (
+                        {(['apa', 'mla', 'bibtex', 'ris'] as const).map((t) => (
                             <button
                                 key={t}
                                 onClick={() => setTab(t)}
@@ -334,7 +364,7 @@ const CitationModal: React.FC<{
                                         : 'text-gray-500 hover:text-gray-700'
                                 }`}
                             >
-                                {t === 'apa' ? 'APA 7' : t === 'bibtex' ? 'BibTeX' : 'RIS'}
+                                {t === 'apa' ? 'APA 7' : t === 'mla' ? 'MLA 9' : t === 'bibtex' ? 'BibTeX' : 'RIS'}
                             </button>
                         ))}
                     </div>

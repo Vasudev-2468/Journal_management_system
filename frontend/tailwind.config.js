@@ -2,6 +2,8 @@ module.exports = {
   content: [
     "./src/**/*.{js,jsx,ts,tsx}",
   ],
+  // Class-driven dark mode — ThemeContext toggles `dark` on <html>.
+  darkMode: 'class',
   theme: {
     extend: {
       fontFamily: {

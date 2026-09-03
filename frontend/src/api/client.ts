@@ -97,9 +97,21 @@ function tokenForUrl(url: string | undefined): string | null {
     if (
         u.startsWith('/author-') ||
         u.startsWith('/author-revision') ||
-        u.startsWith('/submissions')
+        u.startsWith('/submissions') ||
+        u.startsWith('/revisions')
     ) {
-        return localStorage.getItem('author_token');
+        // ``/submissions/*`` is shared between authors and editors. Author-
+        // scoped endpoints (``/my-submissions``, ``/submit``) require an
+        // author token; editor-scoped ones (``GET /submissions/``, PATCH
+        // /override-classification) accept any authenticated user via
+        // ``get_current_user``. Prefer the author token so author flows
+        // stay untouched, then fall back to the editor token so the
+        // Accepted / New Submissions / Rejected panels stop 401-ing when
+        // the signed-in user is only an editor.
+        return (
+            localStorage.getItem('author_token') ||
+            localStorage.getItem('editor_token')
+        );
     }
     // JG-U — /uploads/* is a generic authenticated upload endpoint used by
     // both the author revision UI and the initial-submission wizard. Route

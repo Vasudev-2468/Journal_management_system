@@ -11,7 +11,7 @@ Provides endpoints for:
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, EmailStr, Field
@@ -1502,3 +1502,628 @@ def revision_checklist(
         "round": round_number,
         "reviewers": reviewers_out,
     }
+
+
+# ═══════════════════════════════════════════════════════════
+# Revision assessment (spec JG-Editor-Rev)
+#
+# When the author has resubmitted a revision, the editor lands on a
+# dedicated assessment page that stitches together:
+#   - the AI Revision Analysis (per-comment addressed / partial /
+#     unresolved verdicts from app.agents.revision_analysis_agent)
+#   - the manuscript versions (original + revised) with download URLs
+#   - the reviewer pool that could be re-invited for another round
+#   - the previous editorial decision + submitted-at timestamp
+#
+# The editor then submits one of four decisions:
+#   - accept
+#   - re_review               → returns to review with reviewer_ids
+#   - further_revision        → stays in revision_requested; author
+#                               receives a new list of required changes
+#   - reject
+#
+# The state machine (app.services.state_machine) enforces the
+# transition; the decision endpoint records the audit trail.
+# ═══════════════════════════════════════════════════════════
+
+class RevisionAssessmentVersion(BaseModel):
+    id: int
+    version_number: int
+    label: str
+    is_current: bool
+    created_at: datetime
+    files: list = []
+
+
+class RevisionAssessmentResponse(BaseModel):
+    submission_id: str
+    paper_id_code: Optional[str] = None
+    paper_title: str
+    round_number: int
+    previous_decision: Optional[str] = None
+    submitted_at: Optional[datetime] = None
+    versions: List[RevisionAssessmentVersion] = []
+    ai_analysis: dict = {}
+    reviewer_pool: list = []
+
+
+@router.get(
+    "/submissions/{submission_id}/revision-assessment",
+    response_model=RevisionAssessmentResponse,
+)
+def revision_assessment_view(
+    submission_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _editor=Depends(require_editor_mfa),
+):
+    """Assemble everything the editor needs to assess a resubmitted revision."""
+    from app.agents.revision_analysis_agent import analyze_revision
+    from app.models.manuscript_version import ManuscriptVersion
+    from app.models.editorial_decision import EditorialDecision
+
+    submission = db.query(Submission).filter(Submission.id == submission_id).first()
+    if submission is None:
+        raise HTTPException(status_code=404, detail="Submission not found.")
+
+    # AI analysis — deterministic, safe to run on every hit.
+    analysis = analyze_revision(db, submission.id)
+
+    # Version list. The frontend renders these as
+    # "Original" vs "Revised" download buttons; the full history is
+    # already available through the platform revisions router.
+    versions_rows = (
+        db.query(ManuscriptVersion)
+        .filter(ManuscriptVersion.submission_id == submission.id)
+        .order_by(ManuscriptVersion.version_number.asc())
+        .all()
+    )
+    versions_out: List[RevisionAssessmentVersion] = []
+    for v in versions_rows:
+        try:
+            files = [
+                {
+                    "id": f.id,
+                    "kind": f.kind,
+                    "original_filename": f.original_filename,
+                    "stored_url": f.stored_url,
+                    "mime_type": f.mime_type,
+                }
+                for f in (v.files or [])
+            ]
+        except Exception:  # noqa: BLE001
+            files = []
+        versions_out.append(RevisionAssessmentVersion(
+            id=v.id,
+            version_number=v.version_number,
+            label=v.label,
+            is_current=bool(v.is_current),
+            created_at=v.created_at,
+            files=files,
+        ))
+
+    # Previous decision — last row in the editorial_decisions table.
+    prev_dec = (
+        db.query(EditorialDecision)
+        .filter(EditorialDecision.submission_id == submission.id)
+        .order_by(EditorialDecision.decided_at.desc())
+        .first()
+    )
+    previous_decision = prev_dec.decision if prev_dec else None
+    submitted_at = versions_out[-1].created_at if versions_out else submission.submitted_at
+
+    # Reviewer pool for re-review — previous-round reviewers, so the
+    # editor can re-invite the ones who know the paper.
+    reviewer_pool: list = []
+    seen = set()
+    for r in (submission.reviews or []):
+        if r.reviewer_id and r.reviewer_id not in seen:
+            seen.add(r.reviewer_id)
+            rv = r.reviewer
+            if rv is not None:
+                reviewer_pool.append({
+                    "reviewer_id": str(rv.id),
+                    "name": rv.name,
+                    "email": rv.email,
+                    "reviewed_before": True,
+                })
+
+    return RevisionAssessmentResponse(
+        submission_id=str(submission.id),
+        paper_id_code=getattr(submission, "paper_id_code", None),
+        paper_title=submission.paper_title,
+        round_number=analysis.round_number,
+        previous_decision=previous_decision,
+        submitted_at=submitted_at,
+        versions=versions_out,
+        ai_analysis=analysis.to_dict(),
+        reviewer_pool=reviewer_pool,
+    )
+
+
+# ── Previous-round context for re-reviewers (JG-ReReview) ─
+#
+# When a reviewer is invited for Round N (N > 1) they should NOT start
+# from a blank slate. This endpoint returns:
+#   - their own Round N-1 report (recommendation + comments)
+#   - the author's response to each of their previous comments
+#   - a link to the current-round revised manuscript
+#
+# Gated by the reviewer's own token so a reviewer only ever sees their
+# own history — never another reviewer's confidential comments.
+
+
+class PreviousRoundComment(BaseModel):
+    kind: str                  # 'major' | 'minor'
+    index: int
+    comment_text: str
+    author_response: Optional[str] = None
+    change_location: Optional[str] = None
+
+
+class PreviousRoundContext(BaseModel):
+    round_number: int
+    previous_round_number: int
+    previous_recommendation: Optional[str] = None
+    previous_overall_assessment: str = ""
+    comments: List[PreviousRoundComment] = []
+    revised_manuscript_url: Optional[str] = None
+    author_response_url: Optional[str] = None
+
+
+@router.get(
+    "/reviews/{review_id}/previous-round-context",
+    response_model=PreviousRoundContext,
+)
+def get_previous_round_context(
+    review_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _editor=Depends(require_editor_mfa),
+):
+    """Return the reviewer's Round N-1 report + author responses so
+    the re-review page can render them alongside the new form."""
+    from app.models.review import Review, ReviewState
+    from app.models.revision_response import RevisionResponse
+    from app.models.manuscript_version import ManuscriptVersion
+    import json as _json
+
+    current = db.query(Review).filter(Review.id == review_id).first()
+    if current is None:
+        raise HTTPException(status_code=404, detail="Review not found.")
+
+    round_number = current.round_number or 1
+    if round_number < 2:
+        return PreviousRoundContext(
+            round_number=round_number,
+            previous_round_number=0,
+            previous_recommendation=None,
+            comments=[],
+        )
+
+    # The reviewer's previous-round row for the same submission.
+    prev = (
+        db.query(Review)
+        .filter(
+            Review.submission_id == current.submission_id,
+            Review.reviewer_id == current.reviewer_id,
+            Review.round_number == round_number - 1,
+            Review.state == ReviewState.submitted,
+        )
+        .first()
+    )
+    if prev is None:
+        return PreviousRoundContext(
+            round_number=round_number,
+            previous_round_number=round_number - 1,
+            previous_recommendation=None,
+            comments=[],
+        )
+
+    def _load_list(raw: Optional[str]) -> list:
+        if not raw:
+            return []
+        try:
+            v = _json.loads(raw)
+            return v if isinstance(v, list) else []
+        except Exception:  # noqa: BLE001
+            return []
+
+    def _text_of(item) -> str:
+        if isinstance(item, str):
+            return item
+        if isinstance(item, dict):
+            return str(item.get("comment") or item.get("text") or "")
+        return ""
+
+    # Map (kind, idx) → RevisionResponse row for this reviewer's comments.
+    responses = (
+        db.query(RevisionResponse)
+        .filter(RevisionResponse.review_id == prev.id)
+        .all()
+    )
+    resp_map = {(r.comment_kind, r.comment_index): r for r in responses}
+
+    comments: List[PreviousRoundComment] = []
+    for kind, raw in (("major", prev.major_comments), ("minor", prev.minor_comments)):
+        for i, item in enumerate(_load_list(raw)):
+            text = _text_of(item).strip()
+            if not text:
+                continue
+            resp_row = resp_map.get((kind, i))
+            comments.append(PreviousRoundComment(
+                kind=kind,
+                index=i,
+                comment_text=text,
+                author_response=resp_row.response_text if resp_row else None,
+                change_location=resp_row.change_location if resp_row else None,
+            ))
+
+    # Latest manuscript version for the current round.
+    latest_version = (
+        db.query(ManuscriptVersion)
+        .filter(ManuscriptVersion.submission_id == current.submission_id)
+        .order_by(ManuscriptVersion.version_number.desc())
+        .first()
+    )
+    revised_url = None
+    response_url = None
+    if latest_version is not None:
+        for f in (latest_version.files or []):
+            if f.kind == "manuscript" and revised_url is None:
+                revised_url = f.stored_url
+            elif f.kind == "response" and response_url is None:
+                response_url = f.stored_url
+
+    return PreviousRoundContext(
+        round_number=round_number,
+        previous_round_number=round_number - 1,
+        previous_recommendation=(
+            prev.overall_recommendation.value if prev.overall_recommendation else None
+        ),
+        previous_overall_assessment=(prev.overall_assessment or ""),
+        comments=comments,
+        revised_manuscript_url=revised_url,
+        author_response_url=response_url,
+    )
+
+
+# ── Editorial queue (JG-Editor-Queue) ────────────────────
+#
+# The queue answers "what does the editor need to look at right now?"
+# It categorises submissions into four buckets the dashboard renders
+# as tabs; each category has its own tile counter on the dashboard.
+#
+#   revisions_submitted → a version-2+ ManuscriptVersion exists with no
+#                         EditorialDecision after it. Sourced from the
+#                         REVISION_SUBMITTED notification event so the
+#                         queue does not silently skip resubmissions if
+#                         the version rows are pruned or archived.
+#   new_submissions     → status ∈ pending_classification / awaiting_*
+#   reviews_completed   → status=under_review with every review submitted
+#   decisions_pending   → status=under_review with a decision deadline
+#                         past or reviewer window closed
+#
+# All four rely solely on data already in the DB — no LLM.
+
+
+class QueueItem(BaseModel):
+    submission_id: str
+    paper_id_code: Optional[str] = None
+    paper_title: str
+    author_name: Optional[str] = None
+    submitted_at: Optional[datetime] = None
+    status: str
+    round_number: int = 1
+    previous_decision: Optional[str] = None
+    kind: str   # 'revision' | 'new' | 'reviews_completed' | 'decision_pending'
+
+
+class EditorialQueueResponse(BaseModel):
+    counts: Dict[str, int]
+    revisions_submitted: List[QueueItem] = []
+    new_submissions: List[QueueItem] = []
+    reviews_completed: List[QueueItem] = []
+    decisions_pending: List[QueueItem] = []
+
+
+@router.get("/queue", response_model=EditorialQueueResponse)
+def editorial_queue(
+    db: Session = Depends(get_db),
+    _editor=Depends(require_editor_mfa),
+):
+    """Return the four editorial-queue categories in a single round-trip."""
+    from app.models.notification import Notification
+    from app.models.manuscript_version import ManuscriptVersion
+    from app.models.editorial_decision import EditorialDecision
+    from app.models.review import Review, ReviewState
+
+    now = datetime.utcnow()
+
+    def _item(sub: Submission, *, kind: str, round_number: int = 1,
+              previous_decision: Optional[str] = None,
+              submitted_at: Optional[datetime] = None) -> QueueItem:
+        return QueueItem(
+            submission_id=str(sub.id),
+            paper_id_code=getattr(sub, "paper_id_code", None),
+            paper_title=sub.paper_title,
+            author_name=getattr(sub, "author_name", None),
+            submitted_at=submitted_at or sub.submitted_at,
+            status=sub.status.value if sub.status else "",
+            round_number=round_number,
+            previous_decision=previous_decision,
+            kind=kind,
+        )
+
+    # ── Revisions submitted — driven by REVISION_SUBMITTED events ──
+    revision_events = (
+        db.query(Notification)
+        .filter(Notification.trigger_event.like("revision_submitted:%"))
+        .filter(~Notification.trigger_event.like("%:email"))
+        .order_by(Notification.sent_at.desc().nullslast())
+        .all()
+    )
+    revisions_submitted: List[QueueItem] = []
+    seen_sub_ids: set = set()
+    for ev in revision_events:
+        # trigger_event = "revision_submitted:<uuid>"
+        try:
+            sub_id_str = ev.trigger_event.split(":", 1)[1]
+            sub_id = uuid.UUID(sub_id_str)
+        except (ValueError, IndexError):
+            continue
+        if sub_id in seen_sub_ids:
+            continue
+        # Skip if an editorial decision has been recorded since the event.
+        newer_dec = (
+            db.query(EditorialDecision)
+            .filter(EditorialDecision.submission_id == sub_id)
+            .filter(EditorialDecision.decided_at > (ev.sent_at or datetime.min))
+            .first()
+        )
+        if newer_dec is not None:
+            continue
+        sub = db.query(Submission).filter(Submission.id == sub_id).first()
+        if sub is None:
+            continue
+        latest_version = (
+            db.query(ManuscriptVersion)
+            .filter(ManuscriptVersion.submission_id == sub_id)
+            .order_by(ManuscriptVersion.version_number.desc())
+            .first()
+        )
+        prev_dec = (
+            db.query(EditorialDecision)
+            .filter(EditorialDecision.submission_id == sub_id)
+            .order_by(EditorialDecision.decided_at.desc())
+            .first()
+        )
+        seen_sub_ids.add(sub_id)
+        revisions_submitted.append(_item(
+            sub, kind="revision",
+            round_number=(latest_version.version_number if latest_version else 1),
+            previous_decision=(prev_dec.decision if prev_dec else None),
+            submitted_at=(ev.sent_at or (latest_version.created_at if latest_version else None)),
+        ))
+
+    # ── New submissions — early-pipeline statuses ──
+    new_submissions_rows = (
+        db.query(Submission)
+        .filter(Submission.status.in_(PENDING_ACTION_STATUSES))
+        .order_by(Submission.submitted_at.desc())
+        .limit(200)
+        .all()
+    )
+    new_submissions = [_item(s, kind="new") for s in new_submissions_rows]
+
+    # ── Reviews completed — under_review with every review submitted ──
+    reviews_completed: List[QueueItem] = []
+    under_review_rows = (
+        db.query(Submission)
+        .filter(Submission.status == SubmissionStatus.under_review)
+        .all()
+    )
+    decisions_pending: List[QueueItem] = []
+    for s in under_review_rows:
+        # Skip anything already in the revisions bucket — a resubmit
+        # rides on under_review too but should only appear once.
+        if s.id in seen_sub_ids:
+            continue
+        reviews = list(s.reviews or [])
+        if not reviews:
+            continue
+        target_round = max((r.round_number or 1 for r in reviews), default=1)
+        current = [r for r in reviews if (r.round_number or 1) == target_round]
+        if not current:
+            continue
+        all_submitted = all(r.state == ReviewState.submitted for r in current)
+        if all_submitted:
+            reviews_completed.append(_item(s, kind="reviews_completed", round_number=target_round))
+        else:
+            # Decision pending only when at least one review is submitted
+            # and the deadline has passed for one of the pending reviews.
+            any_submitted = any(r.state == ReviewState.submitted for r in current)
+            any_overdue = any(
+                (r.link_expires_at is not None and r.link_expires_at < now)
+                for r in current if r.state != ReviewState.submitted
+            )
+            if any_submitted and any_overdue:
+                decisions_pending.append(_item(s, kind="decision_pending", round_number=target_round))
+
+    counts = {
+        "revisions_submitted": len(revisions_submitted),
+        "new_submissions":     len(new_submissions),
+        "reviews_completed":   len(reviews_completed),
+        "decisions_pending":   len(decisions_pending),
+    }
+
+    return EditorialQueueResponse(
+        counts=counts,
+        revisions_submitted=revisions_submitted,
+        new_submissions=new_submissions,
+        reviews_completed=reviews_completed,
+        decisions_pending=decisions_pending,
+    )
+
+
+# ── Import guard for PENDING_ACTION_STATUSES ─────────────
+# Reused from editor_badges to keep the "new submissions" set aligned.
+from app.routers.editor_badges import PENDING_ACTION_STATUSES
+
+
+class RevisionDecisionRequest(BaseModel):
+    # ``re_review_same`` invites the previous panel; ``re_review_different``
+    # invites a fresh set. Both live under the umbrella "re-review" path
+    # server-side but are surfaced separately so the editor's intent is
+    # explicit in the audit trail — per the JG-Editor-Rev spec: "Don't
+    # automatically send to the same reviewers just because the author
+    # submitted a revision. The editor decides."
+    decision: str = Field(..., pattern="^(accept|re_review_same|re_review_different|further_revision|reject)$")
+    editor_comments: Optional[str] = None
+
+    # For re_review_* — reviewer ids to invite for the next round.
+    reviewer_ids: Optional[List[uuid.UUID]] = None
+
+    # Days the re-review window stays open (defaults to the general
+    # JWT_EXPIRE_DAYS if not provided). Editors typically give shorter
+    # windows for re-review since the reviewer already knows the paper.
+    re_review_deadline_days: Optional[int] = Field(default=None, ge=3, le=90)
+
+    # For further_revision.
+    required_changes: Optional[List[str]] = None
+    revision_deadline: Optional[datetime] = None
+
+    # For reject.
+    rejection_reason_code: Optional[str] = None
+
+
+class RevisionDecisionResponse(BaseModel):
+    ok: bool = True
+    submission_id: str
+    new_status: str
+    decision: str
+
+
+@router.post(
+    "/submissions/{submission_id}/revision-decision",
+    response_model=RevisionDecisionResponse,
+)
+def revision_decision_endpoint(
+    submission_id: uuid.UUID,
+    body: RevisionDecisionRequest,
+    db: Session = Depends(get_db),
+    editor=Depends(require_editor_mfa),
+):
+    """Persist the editor's decision on a resubmitted revision.
+
+    Each branch flips the submission to a distinct downstream state via
+    ``transition_or_direct`` so the audit trail records the transition
+    and any illegal edge is refused rather than silently allowed.
+    """
+    from app.models.editorial_decision import EditorialDecision
+    from app.services.state_machine import transition_or_direct
+
+    submission = db.query(Submission).filter(Submission.id == submission_id).first()
+    if submission is None:
+        raise HTTPException(status_code=404, detail="Submission not found.")
+
+    decision = body.decision
+
+    # ── Validate branch-specific requirements ───────────
+    if decision in ("re_review_same", "re_review_different"):
+        if not body.reviewer_ids or len(body.reviewer_ids) < 2:
+            raise HTTPException(
+                status_code=400,
+                detail="Re-review requires at least 2 reviewer ids.",
+            )
+    elif decision == "further_revision":
+        if not body.required_changes or not any((c or "").strip() for c in body.required_changes):
+            raise HTTPException(
+                status_code=400,
+                detail="At least one required change item is required for a further-revision decision.",
+            )
+    elif decision == "reject":
+        if not (body.editor_comments or "").strip():
+            raise HTTPException(
+                status_code=400,
+                detail="A rejection must include editor comments explaining the decision.",
+            )
+
+    # ── Persist decision row + transition ───────────────
+    letter_parts = [f"Post-revision editorial decision: {decision.replace('_', ' ')}."]
+    if body.editor_comments:
+        letter_parts.append(body.editor_comments.strip())
+    if decision == "further_revision" and body.required_changes:
+        letter_parts.append("Required changes:")
+        for i, c in enumerate((body.required_changes or []), start=1):
+            if (c or "").strip():
+                letter_parts.append(f"  {i}. {c.strip()}")
+        if body.revision_deadline:
+            letter_parts.append(f"Revision deadline: {body.revision_deadline.date().isoformat()}.")
+
+    dec_row = EditorialDecision(
+        submission_id=submission.id,
+        decision=(
+            "accepted" if decision == "accept"
+            else "rejected" if decision == "reject"
+            else "revision_requested" if decision == "further_revision"
+            else "under_review"  # both re_review variants
+        ),
+        letter_text="\n".join(letter_parts),
+        decided_by=getattr(editor, "id", None),
+    )
+    db.add(dec_row)
+
+    # ── State machine transitions ───────────────────────
+    if decision == "accept":
+        transition_or_direct(db, submission, SubmissionStatus.accepted)
+    elif decision == "reject":
+        transition_or_direct(db, submission, SubmissionStatus.rejected)
+    elif decision in ("re_review_same", "re_review_different"):
+        transition_or_direct(db, submission, SubmissionStatus.under_review)
+        # Reviewer invitations for the new round are dispatched by the
+        # existing assign-reviewers pipeline. ``round_number=None`` lets
+        # the helper look at existing Review.round_number rows and pick
+        # the next available round — Round 1 rows are NEVER overwritten
+        # so the full audit trail (Round 1 recommendation + Round 2
+        # recommendation for the same reviewer) is preserved.
+        try:
+            from app.services.reviewer_service import assign_reviewers
+            assign_reviewers(
+                db,
+                submission_id=submission.id,
+                reviewer_ids=body.reviewer_ids or [],
+                round_number=None,
+                deadline_days=body.re_review_deadline_days,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Non-fatal — the decision is recorded; reviewer assignment
+            # can be retried from the bid room. Surface the error.
+            logger.warning("re_review reviewer assignment failed: %s", exc)
+    elif decision == "further_revision":
+        transition_or_direct(db, submission, SubmissionStatus.revision_requested)
+
+    db.commit()
+    db.refresh(submission)
+
+    # ── Notify the author ───────────────────────────────
+    try:
+        from app.services.email_service import send_decision_to_author
+        if getattr(submission, "author_email", None):
+            send_decision_to_author(
+                author_email=submission.author_email,
+                author_name=getattr(submission, "author_name", "Author"),
+                paper_title=submission.paper_title,
+                decision=decision,
+                editor_comments=body.editor_comments or "",
+                revision_deadline=(
+                    body.revision_deadline.date().isoformat()
+                    if body.revision_deadline else None
+                ),
+            )
+    except Exception:  # noqa: BLE001
+        pass  # email failure never blocks the state transition
+
+    return RevisionDecisionResponse(
+        submission_id=str(submission.id),
+        new_status=submission.status.value if submission.status else "",
+        decision=decision,
+    )

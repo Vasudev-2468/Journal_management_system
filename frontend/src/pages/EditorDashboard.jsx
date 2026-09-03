@@ -184,22 +184,81 @@ const MANUSCRIPT_TAB_FILTERS = {
 // the action. Server-side ``require_permission`` gates on those routes
 // stay the actual security boundary; hiding here just keeps the UI
 // honest.
-const SIDEBAR_LINKS = [
-  { to: '/editor/production', label: 'Production Queue', icon: '⚙️', countKey: 'production_queue', permission: 'PUBLISH' },
-  { to: '/editor/issues', label: 'Volumes & Issues', icon: '📚', permission: 'CONFIGURE_JOURNAL' },
-  { to: '/editor/special-issues', label: 'Special Issues', icon: '✨', permission: 'CONFIGURE_JOURNAL' },
-  { to: '/editor/journal-identifiers', label: 'Journal Identifiers', icon: '🆔', permission: 'CONFIGURE_JOURNAL' },
-  { to: '/editor/recovery-codes', label: 'Recovery Codes', icon: '🔑' },
-  { to: '/editor/journals-admin', label: 'Journals Admin', icon: '📰' },
-  { to: '/editor/editorial-board', label: 'Editorial Board', icon: '🧑‍🎓', permission: 'CONFIGURE_JOURNAL' },
-  { to: '/editor/announcements', label: 'Announcements', icon: '📣', permission: 'CONFIGURE_JOURNAL' },
-  { to: '/editor/policies', label: 'Policy Pages', icon: '📜', permission: 'CONFIGURE_JOURNAL' },
-  { to: '/editor/contact-inbox', label: 'Contact Inbox', icon: '📬', countKey: 'contact_inbox_unread' },
-  { to: '/editor/journal-identity', label: 'Journal Identity', icon: '🏛️', permission: 'CONFIGURE_JOURNAL' },
-  { to: '/editor/email-templates', label: 'Email Templates', icon: '✉️', permission: 'CONFIGURE_JOURNAL' },
-  { to: '/editor/users', label: 'User Management', icon: '👤', permission: 'MANAGE_USERS' },
-  { to: '/editor/audit-log', label: 'Audit Log', icon: '📋', permission: 'VIEW_AUDIT' },
+// Sidebar sections — semantic grouping per JG-Editor-IA spec. Each
+// section is rendered under a caps-header; items with a ``permission``
+// key are hidden from editors who lack the RBAC action.
+const SIDEBAR_SECTIONS = [
+  {
+    header: 'Inbox',
+    items: [
+      { to: '/editor/pending-actions', label: 'Pending Actions', icon: '📌', countKey: 'pending_actions_urgent' },
+      { to: '/editor/queue',           label: 'Editorial Queue', icon: '📥', countKey: 'revisions_submitted' },
+    ],
+  },
+  {
+    header: 'Submissions',
+    items: [
+      // "Under Review" and "Reviews Completed" already live on the
+      // dashboard as filter tabs; deep-links go to the queue with a
+      // preset filter. Revision Required has its own list page.
+      { to: '/editor/new-submissions',                label: 'New Submissions',   icon: '📥', countKey: 'new_submissions' },
+      { to: '/editor/queue?filter=reviews_completed', label: 'Reviews Completed', icon: '✅' },
+      { to: '/editor/revision-required',              label: 'Revision Required', icon: '✏️' },
+    ],
+  },
+  {
+    header: 'Decisions',
+    items: [
+      { to: '/editor/accepted', label: 'Accepted', icon: '🟢' },
+      { to: '/editor/rejected', label: 'Rejected', icon: '🔴' },
+    ],
+  },
+  {
+    header: 'Reviewers',
+    items: [
+      { to: '/editor/reviewers/pool',           label: 'Reviewer Pool',   icon: '👥' },
+      { to: '/editor/reviewers/active-reviews', label: 'Active Reviews',  icon: '🕒' },
+      { to: '/editor/reviewers/history',        label: 'Review History',  icon: '📜' },
+    ],
+  },
+  {
+    header: 'Production',
+    items: [
+      { to: '/editor/production',       label: 'Production Queue', icon: '⚙️', countKey: 'production_queue', permission: 'PUBLISH' },
+      { to: '/editor/issues',           label: 'Volumes & Issues', icon: '📚', permission: 'CONFIGURE_JOURNAL' },
+      { to: '/editor/special-issues',   label: 'Special Issues',   icon: '✨', permission: 'CONFIGURE_JOURNAL' },
+    ],
+  },
+  {
+    header: 'Communication',
+    items: [
+      { to: '/editor/contact-inbox',    label: 'Contact Inbox',      icon: '📬', countKey: 'contact_inbox_unread' },
+      { to: '/editor/announcements',    label: 'Announcements',      icon: '📣', permission: 'CONFIGURE_JOURNAL' },
+      { to: '/editor/email-templates',  label: 'Email Templates',    icon: '✉️', permission: 'CONFIGURE_JOURNAL' },
+    ],
+  },
+  {
+    header: 'Journal Admin',
+    items: [
+      { to: '/editor/journal-identity',    label: 'Journal Identity',    icon: '🏛️', permission: 'CONFIGURE_JOURNAL' },
+      { to: '/editor/journal-identifiers', label: 'Journal Identifiers', icon: '🆔', permission: 'CONFIGURE_JOURNAL' },
+      { to: '/editor/editorial-board',     label: 'Editorial Board',     icon: '🧑‍🎓', permission: 'CONFIGURE_JOURNAL' },
+      { to: '/editor/policies',            label: 'Policy Pages',        icon: '📜', permission: 'CONFIGURE_JOURNAL' },
+      { to: '/editor/journals-admin',      label: 'Journals Admin',      icon: '📰' },
+    ],
+  },
+  {
+    header: 'Account',
+    items: [
+      { to: '/editor/users',           label: 'User Management', icon: '👤', permission: 'MANAGE_USERS' },
+      { to: '/editor/audit-log',       label: 'Audit Log',       icon: '📋', permission: 'VIEW_AUDIT' },
+      { to: '/editor/recovery-codes',  label: 'Recovery Codes',  icon: '🔑' },
+    ],
+  },
 ];
+
+// Flat list kept for legacy callers that still iterate SIDEBAR_LINKS.
+const SIDEBAR_LINKS = SIDEBAR_SECTIONS.flatMap((s) => s.items);
 
 // Small red-circle counter used next to any sidebar entry with a matching
 // `countKey`. Hidden when the count is falsy so idle rows stay clean.
@@ -339,24 +398,32 @@ export default function EditorDashboard() {
             );
           })}
           <div className="pt-3 mt-3 border-t border-gray-100">
-            <p className="px-3 pb-2 text-[10px] font-bold uppercase tracking-wider text-gray-400">
-              Journal admin
-            </p>
-            {SIDEBAR_LINKS
-              .filter((item) => !item.permission || permissionsCtx.has(item.permission))
-              .map((item) => (
-              <Link
-                key={item.to}
-                to={item.to}
-                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-100 no-underline"
-              >
-                <span>{item.icon}</span>
-                <span className="flex-1 text-left">{item.label}</span>
-                {item.countKey && (
-                  <CountBadge count={badgeCounts[item.countKey]} />
-                )}
-              </Link>
-            ))}
+            {SIDEBAR_SECTIONS.map((section) => {
+              const visible = section.items.filter(
+                (item) => !item.permission || permissionsCtx.has(item.permission),
+              );
+              if (visible.length === 0) return null;
+              return (
+                <div key={section.header} className="mb-3">
+                  <p className="px-3 pb-1 text-[10px] font-bold uppercase tracking-wider text-gray-400">
+                    {section.header}
+                  </p>
+                  {visible.map((item) => (
+                    <Link
+                      key={item.to}
+                      to={item.to}
+                      className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-100 no-underline"
+                    >
+                      <span>{item.icon}</span>
+                      <span className="flex-1 text-left">{item.label}</span>
+                      {item.countKey && (
+                        <CountBadge count={badgeCounts[item.countKey]} />
+                      )}
+                    </Link>
+                  ))}
+                </div>
+              );
+            })}
           </div>
         </nav>
       </aside>
@@ -2017,6 +2084,14 @@ function UnderReviewPanel() {
                           <span aria-hidden>📋</span>
                         </Link>
                         <Link
+                          to={`/editor/submissions/${r.submission_id}/comment-moderation`}
+                          className="inline-flex items-center justify-center w-9 h-9 rounded-lg border border-gray-200 text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1"
+                          title="Moderate reviewer comments"
+                          aria-label="Moderate reviewer comments"
+                        >
+                          <span aria-hidden>🛡️</span>
+                        </Link>
+                        <Link
                           to={`/editor/submissions/${r.submission_id}/decision`}
                           className="inline-flex items-center justify-center w-9 h-9 rounded-lg border border-gray-200 text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1"
                           title="Decision workspace"
@@ -2031,6 +2106,14 @@ function UnderReviewPanel() {
                           aria-label="Review Room"
                         >
                           <span aria-hidden>🏠</span>
+                        </Link>
+                        <Link
+                          to={`/editor/submissions/${r.submission_id}/revision-assessment`}
+                          className="inline-flex items-center justify-center w-9 h-9 rounded-lg border border-gray-200 text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1"
+                          title="Revision assessment (post-resubmission)"
+                          aria-label="Revision assessment"
+                        >
+                          <span aria-hidden>🔄</span>
                         </Link>
                       </div>
                     </td>
@@ -2083,8 +2166,13 @@ function SubStatusPanel({ filterKey, statuses, onOpenDrawer }) {
           const list = Array.isArray(r) ? r : (r?.results || r?.items || []);
           for (const s of list) merged.push(s);
         }
-        // Newest first.
-        merged.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+        // Newest first. Backend field is ``submitted_at`` on the list
+        // schema; some legacy rows may still carry ``created_at``, so
+        // fall back to it.
+        merged.sort((a, b) =>
+          new Date(b.submitted_at || b.created_at || 0) -
+          new Date(a.submitted_at || a.created_at || 0),
+        );
         setRows(merged);
       })
       .catch((err) => {
@@ -2108,10 +2196,10 @@ function SubStatusPanel({ filterKey, statuses, onOpenDrawer }) {
             [
               { key: 'paper_id_code', label: 'Manuscript ID' },
               { key: 'paper_title',   label: 'Title' },
-              { key: 'status',        label: 'Status' },
-              { key: 'created_at',    label: 'Submitted' },
-              { key: 'author_name',   label: 'Author' },
+              { key: 'author_name',   label: 'Submitted by' },
               { key: 'author_email',  label: 'Author email' },
+              { key: 'status',        label: 'Status' },
+              { label: 'Submitted', value: (s) => s.submitted_at || s.created_at || '' },
             ],
             `${filterKey}-${new Date().toISOString().slice(0,10)}.csv`,
           )}
@@ -2135,6 +2223,7 @@ function SubStatusPanel({ filterKey, statuses, onOpenDrawer }) {
               <tr>
                 <th className="px-4 py-3">Manuscript</th>
                 <th className="px-4 py-3">Title</th>
+                <th className="px-4 py-3">Submitted by</th>
                 <th className="px-4 py-3">Status</th>
                 <th className="px-4 py-3">Submitted</th>
                 <th className="px-4 py-3 text-right">Action</th>
@@ -2148,12 +2237,32 @@ function SubStatusPanel({ filterKey, statuses, onOpenDrawer }) {
                     <div className="line-clamp-1">{s.paper_title || 'Untitled'}</div>
                   </td>
                   <td className="px-4 py-3">
+                    {s.author_name || s.author_email ? (
+                      <div className="min-w-0">
+                        <div className="text-sm text-gray-900 truncate">{s.author_name || '—'}</div>
+                        {s.author_email && (
+                          <a
+                            href={`mailto:${s.author_email}`}
+                            className="text-xs text-blue-700 hover:underline truncate block"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            {s.author_email}
+                          </a>
+                        )}
+                      </div>
+                    ) : (
+                      <span className="text-xs text-gray-400">—</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3">
                     <span className="text-[11px] font-bold px-2 py-0.5 rounded bg-gray-100 text-gray-700 uppercase">
                       {(s.status || '').replace('_', ' ')}
                     </span>
                   </td>
                   <td className="px-4 py-3 whitespace-nowrap text-gray-600">
-                    {s.created_at ? new Date(s.created_at).toLocaleDateString() : '—'}
+                    {(s.submitted_at || s.created_at)
+                      ? new Date(s.submitted_at || s.created_at).toLocaleDateString()
+                      : '—'}
                   </td>
                   <td className="px-4 py-3 text-right">
                     <Link
